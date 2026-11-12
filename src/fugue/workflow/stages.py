@@ -39,7 +39,8 @@ class RunState(StrEnum):
 
 TRANSITIONS: Mapping[Stage, frozenset[Stage]] = {
     Stage.LOAD: frozenset({Stage.VALIDATE}),
-    Stage.VALIDATE: frozenset({Stage.ANALYSE, Stage.PREPARE}),
+    # XL follows load -> validate -> close without implementation.
+    Stage.VALIDATE: frozenset({Stage.ANALYSE, Stage.PREPARE, Stage.CLOSE}),
     Stage.ANALYSE: frozenset({Stage.SELECT}),
     Stage.SELECT: frozenset({Stage.PREPARE}),
     Stage.PREPARE: frozenset({Stage.IMPLEMENT}),

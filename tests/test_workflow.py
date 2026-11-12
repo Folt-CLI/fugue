@@ -1,4 +1,4 @@
-from itertools import product
+from itertools import pairwise, product
 
 import pytest
 
@@ -36,6 +36,7 @@ EDGES = {
     ("load", "validate"),
     ("validate", "analyse"),
     ("validate", "prepare"),
+    ("validate", "close"),
     ("analyse", "select"),
     ("select", "prepare"),
     ("prepare", "implement"),
@@ -111,6 +112,12 @@ def test_transition_table_and_enum_values() -> None:
 )
 def test_stages_for(size: Size, expected: str) -> None:
     assert stages_for(size, RepoPolicy()) == tuple(Stage(value) for value in expected.split())
+
+
+@pytest.mark.parametrize("size", list(Size))
+def test_happy_path_transitions_are_permitted(size: Size) -> None:
+    stages = stages_for(size, RepoPolicy())
+    assert all(can_transition(source, target) for source, target in pairwise(stages))
 
 
 @pytest.mark.parametrize("size", list(Size))
