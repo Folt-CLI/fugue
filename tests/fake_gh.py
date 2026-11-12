@@ -7,6 +7,7 @@ FAKE_GH_RECORD names a JSON-lines invocation log, including stdin.
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,12 @@ def main() -> int:
         print(f"Unexpected fake gh invocation: {argv!r}", file=sys.stderr)
         return 99
     _, response = max(matches, key=lambda item: len(item[0]))
+    for name, present in response.get("expect_env", {}).items():
+        if (name in os.environ) != present:
+            print(f"Unexpected environment presence: {name}", file=sys.stderr)
+            return 98
+    if argv[:2] == ["attach", "download"] and "download_file" in response:
+        shutil.copyfile(response["download_file"], argv[argv.index("--output") + 1])
     if response.get("echo_env"):
         print(json.dumps({name: name in os.environ for name in ("GITHUB_TOKEN", "GH_TOKEN")}))
     else:
