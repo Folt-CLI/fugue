@@ -39,6 +39,7 @@ def test_success() -> None:
     assert not result.cancelled
     assert not result.stdout_truncated
     assert not result.stderr_truncated
+    assert not result.callback_line_truncated
     assert result.full_output_path is None
     assert result.duration_seconds >= 0
     with pytest.raises(FrozenInstanceError):
@@ -306,13 +307,35 @@ def test_line_callback() -> None:
                 "sys.stderr.write('separate\\n')"
             ),
             max_output_bytes=10,
-            max_line_bytes=210_000,
+            max_line_bytes=None,
             on_stdout_line=receive,
         )
     )
     assert lines == ["first\n", "\n", "\u2603" * 70_000 + "\n", "last"]
     assert result.stdout_truncated
     assert result.stderr == "separate\n"
+    assert not result.callback_line_truncated
+
+
+@pytest.mark.parametrize("with_callback", [True, False])
+def test_default_callback_line_limit(with_callback: bool) -> None:
+    lines: list[str] = []
+
+    async def receive(line: str) -> None:
+        lines.append(line)
+
+    result = asyncio.run(
+        run_command(
+            _python("import sys; sys.stdout.write('x' * 70000 + '\\nlast')"),
+            on_stdout_line=receive if with_callback else None,
+        )
+    )
+    assert result.returncode == 0
+    assert result.callback_line_truncated is with_callback
+    if with_callback:
+        assert lines == ["x" * 65536 + " [line truncated]\n", "last"]
+    else:
+        assert lines == []
 
 
 def test_callback_caps_unterminated_line(tmp_path: Path) -> None:
@@ -337,6 +360,7 @@ def test_callback_caps_unterminated_line(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert lines == ["x" * 1024 + " [line truncated]"]
     assert len(lines[0].encode()) <= 1024 + len(b" [line truncated]")
+    assert result.callback_line_truncated
     assert result.stdout == "xxxxxxxx\n[... truncated 5242864 bytes ...]\nxxxxxxxx"
     assert result.stdout_truncated
     assert result.full_output_path is not None
@@ -365,6 +389,7 @@ def test_callback_line_cap_boundaries(cap: int) -> None:
     assert lines == expected
     assert result.stdout == "abcd\n\nz\nlast"
     assert not result.stdout_truncated
+    assert result.callback_line_truncated == (cap < 4)
 
 
 def test_callback_cap_resets_after_discarded_line() -> None:

@@ -22,6 +22,7 @@ class CommandResult:
     stderr: str
     stdout_truncated: bool
     stderr_truncated: bool
+    callback_line_truncated: bool
     full_output_path: Path | None
     duration_seconds: float
 
@@ -32,6 +33,7 @@ class _Capture:
         self.total = 0
         self.first = bytearray()
         self.last = bytearray()
+        self.callback_line_truncated = False
 
     @property
     def truncated(self) -> bool:
@@ -112,14 +114,14 @@ async def _read_stream(
     capture: _Capture,
     spool: _Spool,
     on_line: Callable[[str], Awaitable[None]] | None = None,
-    max_line_bytes: int = 65536,
+    max_line_bytes: int | None = 65536,
 ) -> None:
     pending = bytearray()
     line_truncated = False
 
     def callback_line() -> str:
         line = pending.decode("utf-8", errors="replace")
-        if line_truncated:
+        if line_truncated and max_line_bytes is not None:
             # A capped prefix can end inside a UTF-8 character. Keep the encoded
             # callback prefix within the cap even after replacement decoding.
             line = line.encode("utf-8")[:max_line_bytes].decode("utf-8", errors="ignore")
@@ -132,9 +134,14 @@ async def _read_stream(
         if on_line is not None:
             segments = data.split(b"\n")
             for index, segment in enumerate(segments):
-                remaining = max_line_bytes - len(pending)
-                pending.extend(segment[:remaining])
-                line_truncated = line_truncated or len(segment) > remaining
+                if max_line_bytes is None:
+                    pending.extend(segment)
+                else:
+                    remaining = max_line_bytes - len(pending)
+                    pending.extend(segment[:remaining])
+                    line_truncated = line_truncated or len(segment) > remaining
+                    if line_truncated:
+                        capture.callback_line_truncated = True
                 if index < len(segments) - 1:
                     await on_line(callback_line() + "\n")
                     pending.clear()
@@ -173,24 +180,27 @@ async def run_command(
     stdin: str | None = None,
     timeout: float | None = None,
     max_output_bytes: int = 65536,
-    max_line_bytes: int = 65536,
+    max_line_bytes: int | None = 65536,
     spool_dir: Path | None = None,
     on_stdout_line: Callable[[str], Awaitable[None]] | None = None,
 ) -> CommandResult:
     """Execute argv; callback lines retain newlines, including an unterminated tail.
 
-    Callback line content is capped at max_line_bytes, with a truncation marker
-    before any retained newline. Limits apply independently to stdout and stderr.
-    The optional spool contains
-    their complete bytes in chunk arrival order. Cancellation cleans up and
-    propagates, so returned results always have cancelled=False.
+    Callback line content is capped at max_line_bytes (65536 by default), with a
+    truncation marker before any retained newline. The result field
+    callback_line_truncated is True if any callback line was truncated. Setting
+    max_line_bytes=None delivers complete lines and accepts unbounded line memory.
+
+    Output capture limits apply independently to stdout and stderr. The optional
+    spool contains their complete bytes in chunk arrival order. Cancellation cleans
+    up and propagates, so returned results always have cancelled=False.
     """
     args = tuple(argv)
     if not args:
         raise ValueError("argv must not be empty")
     if max_output_bytes < 0:
         raise ValueError("max_output_bytes must not be negative")
-    if max_line_bytes < 0:
+    if max_line_bytes is not None and max_line_bytes < 0:
         raise ValueError("max_line_bytes must not be negative")
     started = time.monotonic()
     process = await asyncio.create_subprocess_exec(
@@ -277,6 +287,7 @@ async def run_command(
         stderr=stderr.text(),
         stdout_truncated=stdout.truncated,
         stderr_truncated=stderr.truncated,
+        callback_line_truncated=stdout.callback_line_truncated,
         full_output_path=spool.path,
         duration_seconds=time.monotonic() - started,
     )
