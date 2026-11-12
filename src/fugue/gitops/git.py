@@ -121,11 +121,37 @@ class Git:
         return ref.removeprefix("refs/heads/")
 
     async def status_porcelain(self) -> list[str]:
-        output = await self._run("status", "--porcelain=v1", "--no-renames")
-        return output.splitlines()
+        output = await self._run(
+            "-c",
+            "core.quotepath=off",
+            "-c",
+            "diff.noprefix=false",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--untracked-files=all",
+        )
+        return output.removesuffix("\0").split("\0") if output else []
 
     async def staged_files(self) -> list[str]:
-        output = await self._run("diff", "--cached", "--name-only", "--no-renames", "-z", "--")
+        output = await self._run(
+            "-c",
+            "core.quotepath=off",
+            "-c",
+            "diff.noprefix=false",
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "-z",
+            "--",
+        )
         return output.removesuffix("\0").split("\0") if output else []
 
     async def stage(self, paths: Sequence[str]) -> None:
@@ -145,7 +171,23 @@ class Git:
         base_sha = await self.resolve_ref(base)
         head_sha = await self.resolve_ref(head)
         return await self._run(
-            "diff", "--no-ext-diff", "--no-color", "--no-renames", base_sha, head_sha, "--"
+            "-c",
+            "core.quotepath=off",
+            "-c",
+            "diff.noprefix=false",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--no-relative",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--submodule=short",
+            base_sha,
+            head_sha,
+            "--",
         )
 
     async def commit(self, message: CommitMessage) -> str:

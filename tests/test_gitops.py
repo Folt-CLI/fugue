@@ -108,7 +108,7 @@ def test_stage_commit_diff_and_push(repo: Path) -> None:
         names = ["space name.txt", "line\nbreak.txt", "unicode-雪.txt", "-option.txt"]
         for name in names:
             (repo / name).write_text("new content\n")
-        assert '?? "space name.txt"' in await git.status_porcelain()
+        assert set(await git.status_porcelain()) == {f"?? {name}" for name in names}
         await git.stage([*names[:-1], "./-option.txt"])
         assert set(await git.staged_files()) == set(names)
         commit_message = replace(message(), changes=("Add commands: support Git", "Add tests"))
@@ -518,5 +518,48 @@ def test_hex_revision_collisions_rejected_across_helpers(repo: Path, namespace: 
         assert not path.exists()
         assert await git.head_sha(f"{namespace}/{prefix}") == head
         assert await git.head_sha(original) == original
+
+    asyncio.run(scenario())
+
+
+def test_validation_output_ignores_submodule_and_display_config(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        base = await git.head_sha()
+        git_command(repo, "config", "diff.ignoreSubmodules", "all")
+        git_command(repo, "config", "diff.noprefix", "true")
+        git_command(repo, "config", "diff.mnemonicPrefix", "true")
+        git_command(repo, "config", "diff.srcPrefix", "custom-source/")
+        git_command(repo, "config", "diff.dstPrefix", "custom-destination/")
+        git_command(repo, "config", "status.showUntrackedFiles", "no")
+        git_command(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},sub")
+        assert "sub" in await git.staged_files()
+        assert validate_staging(await git.staged_files(), ["allowed/"]) == ["sub"]
+        assert any(line[3:] == "sub" for line in await git.status_porcelain())
+        head = await git.commit(message())
+        diff = await git.diff(base, head)
+        assert "diff --git a/sub b/sub" in diff
+        assert "new file mode 160000" in diff
+        assert f"+Subproject commit {base}" in diff
+        (repo / "untracked 雪\nfile.txt").write_text("untracked\n")
+        assert "?? untracked 雪\nfile.txt" in await git.status_porcelain()
+
+    asyncio.run(scenario())
+
+
+def test_diff_disables_external_diff_and_textconv(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        base = await git.head_sha()
+        git_command(repo, "config", "diff.external", "false")
+        git_command(repo, "config", "diff.blocked.textconv", "false")
+        (repo / ".git" / "info" / "attributes").write_text("*.txt diff=blocked\n")
+        (repo / "initial.txt").write_text("changed content\n")
+        await git.stage(["initial.txt"])
+        assert await git.staged_files() == ["initial.txt"]
+        head = await git.commit(message())
+        diff = await git.diff(base, head)
+        assert "-initial\n" in diff
+        assert "+changed content\n" in diff
 
     asyncio.run(scenario())
