@@ -30,12 +30,38 @@ Non-blocking.
 - Passes: correctness against the scope always; restart and failure safety only
   when the scope lists restart or failure scenarios; security only when the
   scope touches subprocesses, the filesystem, credentials or the network.
-- Merge when a round has no Blocking findings. There is no round cap; the
+- Merge when a round has no Blocking findings. There is no limit on the number of review rounds; the
   criteria narrow what can block. The orchestrator adjudicates disputes and
   records the reason. Fixes must not add persisted state or new behaviour that
   no listed scenario needs.
 
 See [Issue format](issue-format.md#codex-scope-layout) for the scenario sections.
+
+### Reviews live on GitHub
+
+GitHub code review is a mandatory part of the contract, not an optional step.
+
+- Every review round is posted to the pull request as one GitHub code review
+  (event `COMMENT`, `commit_id` set to the exact head reviewed), including a
+  clean round, whose body states `No findings.`. Findings are never kept only in
+  terminal output or in a ticket comment.
+- Each finding is an inline comment on its changed line (`path`, `line`,
+  `side`), so each finding is its own thread. A finding with no changed line goes
+  in the review body. The reviewer therefore gives `file:line` for every finding
+  that has a location.
+- After an agent fixes an accepted finding, the gate passes and the fix is
+  pushed, the orchestrator replies on the finding's thread with
+  `Fixed in <sha>: <what changed>` and resolves the thread through GraphQL
+  `resolveReviewThread`. The implementing agent does not use `gh`; the
+  orchestrator does this, so no fixed finding leaves an open thread.
+- A rejected finding gets a reply with the reason, and the thread is resolved. A
+  deferred Non-blocking finding gets a reply `Deferred to #N` naming the
+  follow-up ticket, and the thread is resolved.
+- The pull request therefore shows the full history: findings per round, fixes
+  with commit SHAs, and declined items with reasons. Unresolved threads block the
+  merge guard.
+
+See [Post findings](#post-findings) for the procedure.
 
 ## Review agent
 
@@ -49,8 +75,8 @@ codex exec -s read-only -C <worktree> -o <file> - < prompt
 
 The prompt should tell the agent to review read-only, compare the PR diff with
 its base, and apply the [Review contract](#review-contract). Include the ticket
-scope with its In-scope and Out-of-scope scenarios, and earlier rejected and
-accepted findings. Do not ask for new tests or dependencies; do review the tests
+scope with its In-scope and Out-of-scope scenarios, and the rounds log of
+earlier accepted, rejected and deferred findings. Do not ask for new tests or dependencies; do review the tests
 in the diff. Return Blocking and Non-blocking lists. Each Blocking finding gives
 what goes wrong, the trigger, reproduction steps with inputs, the fix when clear,
 and `file:line`; each Non-blocking finding is one line. Keep findings tied to the
@@ -83,11 +109,11 @@ commits do not follow this format, squash them into one commit with that subject
 
 ## Post findings
 
-The orchestrator posts findings as one GitHub code review using
+The orchestrator posts every review round, including a clean one, as one GitHub code review using
 a REST POST to `repos/Folt-CLI/fugue/pulls/{n}/reviews` with a JSON input file. Set `commit_id`
 to the reviewed head commit and `event` to `COMMENT`. Agents act as the PR
 author and cannot approve their own pull request. Include a summary body with
-finding counts and categories with no findings. Add one inline comment per
+finding counts and categories with no findings, or `No findings.` for a clean round. Add one inline comment per
 finding on a changed line, with `path`, `line` and `side`. Put findings in the
 diff that cannot be attached to a changed line in the summary. The orchestrator
 records findings about something outside the pull request's diff as incidents
@@ -116,9 +142,11 @@ For example, `review.json` may contain:
 Use `gh pr review --repo Folt-CLI/fugue` for body-only reviews. Record requested changes on the
 ticket. An implementation agent fixes accepted findings on the same branch as
 further commits, and the review cycle repeats until a round has no Blocking findings.
-The orchestrator resolves fixed review threads. If the orchestrator rejects a
-finding, reply on its thread with the reason and do not fix it. Resolve threads
-through GraphQL `resolveReviewThread`. Give the review agent rejected and accepted findings
+Once a fix is pushed and the gate has passed, the orchestrator replies
+`Fixed in <sha>: <what changed>` on the finding's thread and resolves it through
+GraphQL `resolveReviewThread`. If the orchestrator rejects a finding, reply on
+its thread with the reason, resolve the thread and do not fix it. Reply
+`Deferred to #N` and resolve the thread for a deferred Non-blocking finding. Give the review agent the accepted, rejected and deferred findings
 and their reasons as context for the next round, such as in the prompt. It must
 not report them again; a rejected finding returns only when the agent can show
 that the reason does not hold.
