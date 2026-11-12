@@ -1,6 +1,8 @@
 """Execute the ticket-to-pull-request slice with durable operation intents."""
 
 import asyncio
+import hashlib
+import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -78,6 +80,11 @@ class Engine:
     async def _stage[T](self, run_id: int, stage: Stage, action: Callable[[], Awaitable[T]]) -> T:
         attempt = self.deps.store.begin_attempt(run_id, stage)
         try:
+            if (
+                stage == Stage.REPAIR
+                and attempt.attempt > self.deps.config.limits.max_repair_attempts
+            ):
+                raise _Stop(RunState.BLOCKED, ["Repair limit reached"])
             result = await action()
         except BaseException as error:
             status = "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
@@ -152,7 +159,8 @@ class Engine:
 
     async def _validate(self, run_id: int, ticket: Ticket) -> str:
         url = scope_url(ticket)
-        ref = self.deps.artifacts.open_ref(run_id, "scope.md")
+        name = f"scope-{hashlib.sha256(url.encode()).hexdigest()}.md" if url else None
+        ref = self.deps.artifacts.open_ref(run_id, name) if name else None
         problems: list[str] = []
         if ref is None and url is not None:
             try:
@@ -162,8 +170,9 @@ class Engine:
                         url, Path(directory) / "scope.md"
                     )
                     text = downloaded.read_text(encoding="utf-8")
-                self._artifact(run_id, "scope.md", text)
-                ref = self.deps.artifacts.open_ref(run_id, "scope.md")
+                assert name is not None
+                self._artifact(run_id, name, text)
+                ref = self.deps.artifacts.open_ref(run_id, name)
             except (OSError, UnicodeError, RuntimeError, ValueError) as error:
                 problems.append(f"Scope attachment could not be downloaded: {error}")
         problems.extend(
@@ -267,43 +276,56 @@ class Engine:
             limited = re.search(r"rate[ _-]?limit|too many requests|\b429\b", error, re.I)
             raise _Stop(RunState.PROVIDER_LIMITED if limited else RunState.FAILED, [error])
 
-    async def _verify(self, run_id: int, path: Path) -> None:
-        failures = len(
-            [
-                a
-                for a in self.deps.store.list_artifacts(run_id)
-                if a.name.startswith("gate-failure-")
-            ]
-        )
-        while True:
+    async def _pending_repair(self, run_id: int, path: Path) -> None:
+        # The intent is the pending-repair marker. It precedes the failure artifact
+        # so termination immediately after writing that artifact cannot lose work.
+        for operation in self.deps.store.pending_operations(run_id):
+            if operation.kind != "repair":
+                continue
+            failure = str(json.loads(operation.intent_json)["failure"])
+            self.deps.store.set_run_state(run_id, RunState.REPAIRING)
+            try:
+                await self._stage(
+                    run_id,
+                    Stage.REPAIR,
+                    partial(self._agent, run_id, path, repair_prompt(failure)),
+                )
+            except _Stop as stop:
+                if stop.state == RunState.BLOCKED:
+                    raise _Stop(stop.state, [failure, *stop.problems]) from stop
+                raise
+            self.deps.store.complete_operation(operation.id, {"repaired": True})
+            self.deps.store.set_run_state(run_id, RunState.RUNNING)
 
-            async def gate(index: int = failures) -> GateResult:
-                return await self.deps.gate_runner(
+    async def _verify(self, run_id: int, path: Path) -> None:
+        await self._pending_repair(run_id, path)
+        while True:
+            # Gate attempts and repair attempts have independent counters. The
+            # Store allocates each repair's ordinal through begin_attempt.
+            attempt = self.deps.store.begin_attempt(run_id, Stage.VERIFY)
+            try:
+                result = await self.deps.gate_runner(
                     self.deps.config.policy.gate_commands,
                     path,
-                    log_dir=self.deps.state_dir / f"run-{run_id}" / f"gate-{index}",
+                    log_dir=self.deps.state_dir / f"run-{run_id}" / f"gate-{attempt.attempt}",
                 )
-
-            result = await self._stage(run_id, Stage.VERIFY, gate)
+            except BaseException as error:
+                status = "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
+                self.deps.store.finish_attempt(attempt.id, status, str(error))
+                raise
             if result.passed:
+                self.deps.store.finish_attempt(attempt.id, "completed")
                 return
             failure = format_failure(result)
+            self.deps.store.finish_attempt(attempt.id, "failed", failure)
             full = "\n".join(
                 step.log_path.read_text(encoding="utf-8", errors="replace")
                 for step in result.steps
                 if step.log_path is not None
             )
-            self._artifact(run_id, f"gate-failure-{failures}.txt", failure + "\n\n" + full)
-            failures += 1
-            if failures > self.deps.config.limits.max_repair_attempts:
-                raise _Stop(RunState.BLOCKED, [failure])
-            self.deps.store.set_run_state(run_id, RunState.REPAIRING)
-            await self._stage(
-                run_id,
-                Stage.REPAIR,
-                partial(self._agent, run_id, path, repair_prompt(failure)),
-            )
-            self.deps.store.set_run_state(run_id, RunState.RUNNING)
+            self.deps.store.begin_operation(run_id, "repair", str(attempt.id), {"failure": failure})
+            self._artifact(run_id, f"gate-failure-{attempt.attempt}.txt", failure + "\n\n" + full)
+            await self._pending_repair(run_id, path)
 
     async def _deliver(
         self, run_id: int, ticket: Ticket, scope: str, path: Path
@@ -320,7 +342,33 @@ class Engine:
         if problems:
             raise _Stop(RunState.BLOCKED, problems)
 
+        operation = self.deps.store.begin_operation(run_id, "commit", branch, {})
+
         async def committed() -> dict[str, Any] | None:
+            head = await git.head_sha()
+            base = await git.resolve_ref(self.deps.base_branch)
+            changed = await git._run(
+                "diff",
+                "--name-status",
+                "--no-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-relative",
+                "--ignore-submodules=none",
+                "-z",
+                f"{base}..{head}",
+                "--",
+            )
+            paths = changed.removesuffix("\0").split("\0")[1::2] if changed else []
+            problems = [
+                f"Outside allowed files: {p}" for p in validate_staging(paths, allowed_files(scope))
+            ]
+            if operation.result_json is not None:
+                recorded = json.loads(operation.result_json)
+                if recorded.get("head_sha") != head:
+                    problems.append("Commit head SHA differs from the recorded operation result")
+            if problems:
+                raise _Stop(RunState.BLOCKED, problems)
             if await git.status_porcelain():
                 return None
             result = await run_command(["git", "log", "-1", "--format=%s"], cwd=path)

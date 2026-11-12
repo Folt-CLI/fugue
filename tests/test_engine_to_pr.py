@@ -350,3 +350,126 @@ def test_provider_failure(harness: Harness, error: str, state: RunState) -> None
     ]
     assert Path(errors[0].path).read_text() == error
     assert not harness.github.created
+
+
+@pytest.mark.parametrize(("recorded", "disallowed"), [(True, True), (False, True), (True, False)])
+def test_restart_rejects_amended_commit(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, recorded: bool, disallowed: bool
+) -> None:
+    async def interrupt_push(self: Git, branch: str, remote: str = "origin") -> None:
+        raise RuntimeError("stop before push")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Git, "push", interrupt_push)
+        if not recorded:
+            complete = harness.deps.store.complete_operation
+
+            def interrupt_record(id: int, result: dict[str, object]) -> None:
+                if "head_sha" in result:
+                    raise RuntimeError("stop before push")
+                complete(id, result)
+
+            patch.setattr(harness.deps.store, "complete_operation", interrupt_record)
+        with pytest.raises(RuntimeError, match="stop before push"):
+            harness.run()
+
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    name = "disallowed\tfile\n.txt" if disallowed else "allowed.txt"
+    (path / name).write_text("Amended content")
+
+    async def amend() -> str:
+        await git_command(path, "add", "--", name)
+        await git_command(path, "commit", "--amend", "--no-edit")
+        return await git_command(path, "log", "-1", "--format=%s")
+
+    assert asyncio.run(amend()) == "Feature[#33]: Add the engine"
+
+    async def unexpected_push(self: Git, branch: str, remote: str = "origin") -> None:
+        pytest.fail("A changed reconciled commit must not be pushed")
+
+    monkeypatch.setattr(Git, "push", unexpected_push)
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    if disallowed:
+        assert f"Outside allowed files: {name}" in outcome.problems
+    if recorded:
+        assert "Commit head SHA differs from the recorded operation result" in outcome.problems
+    assert not harness.github.created
+    assert "find_pr" not in harness.github.calls
+    assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
+
+
+def test_replaced_scope_attachment_is_downloaded(harness: Harness) -> None:
+    harness.github.scope = "No allowed paths"
+    first = harness.run()
+    assert first.state == RunState.BLOCKED
+    assert harness.github.calls.count("download") == 1
+    harness.github.scope = SCOPE
+    sections = dict(harness.github.ticket.body_sections)
+    sections["Solution"] = (
+        "[33-solution-1.md](https://github.com/user-attachments/files/replacement)"
+    )
+    harness.github.ticket = harness.github.ticket.model_copy(update={"body_sections": sections})
+    second = harness.run()
+    assert second.run_id == first.run_id
+    assert second.state == RunState.WAITING_FOR_CI
+    assert harness.github.calls.count("download") == 2
+    assert harness.adapter.requests[0].prompt.endswith(SCOPE)
+    scopes = [
+        a for a in harness.deps.store.list_artifacts(first.run_id) if a.name.startswith("scope-")
+    ]
+    assert len(scopes) == 2
+    assert scopes[0].sha256 != scopes[1].sha256
+    assert scopes[0].name != scopes[1].name
+    # An unchanged URL reuses the cached scope without another download.
+    assert harness.run().pr_number == second.pr_number
+    assert harness.github.calls.count("download") == 2
+
+
+def test_restart_performs_pending_repair(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness.deps.config.limits.max_repair_attempts = 1
+    harness.deps.config.policy.gate_commands = [
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
+        ]
+    ]
+
+    def broken(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("broken")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    write_artifact = Engine._artifact
+
+    def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> None:
+        write_artifact(self, run_id, name, text)
+        if name.startswith("gate-failure-"):
+            raise asyncio.CancelledError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Engine, "_artifact", interrupt_after_failure)
+        with pytest.raises(asyncio.CancelledError):
+            harness.run()
+    run = harness.deps.store.list_runs(33)[0]
+    assert run.state == RunState.INTERRUPTED
+    assert len(adapter.requests) == 1
+    assert any(op.kind == "repair" for op in harness.deps.store.pending_operations(run.id))
+    outcome = harness.run()
+    assert outcome.run_id == run.id
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert len(adapter.requests) == 2
+    assert adapter.requests[1].session_id == "session-1"
+    assert "Gate failed:" in adapter.requests[1].prompt
+    assert not harness.deps.store.pending_operations(run.id)
+    failures = [
+        a for a in harness.deps.store.list_artifacts(run.id) if a.name.startswith("gate-failure-")
+    ]
+    assert len(failures) == 1
