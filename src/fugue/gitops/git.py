@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Sequence
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from fugue.gitops.commit import CommitMessage
 from fugue.process import run_command
@@ -155,17 +155,21 @@ class Git:
         return output.removesuffix("\0").split("\0") if output else []
 
     async def stage(self, paths: Sequence[str]) -> None:
+        root = self.repo.resolve()
+        relative_paths: list[str] = []
         for path in paths:
-            parts = PurePosixPath(path).parts
             if (
-                not parts
+                not path
                 or path.startswith(("-", ":"))
-                or ".." in parts
                 or any(character in path for character in "*?[")
             ):
                 raise ValueError(f"An explicit path is required: {path!r}")
-        if paths:
-            await self._run("--literal-pathspecs", "add", "--", *paths)
+            resolved = (root / path).resolve()
+            if resolved == root or not resolved.is_relative_to(root):
+                raise ValueError(f"An explicit path inside the repository is required: {path!r}")
+            relative_paths.append(resolved.relative_to(root).as_posix())
+        if relative_paths:
+            await self._run("--literal-pathspecs", "add", "--", *relative_paths)
 
     async def diff(self, base: str, head: str) -> str:
         base_sha = await self.resolve_ref(base)

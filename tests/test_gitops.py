@@ -127,7 +127,9 @@ def test_stage_commit_diff_and_push(repo: Path) -> None:
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("path", [".", "./", "", "-A", "--all", "*", "*.py", ":(all)", "../"])
+@pytest.mark.parametrize(
+    "path", [".", "./", "", "-A", "--all", "*", "*.py", "file?.txt", "file[1].txt", ":(all)", "../"]
+)
 def test_stage_rejects_broad_inputs(repo: Path, path: str) -> None:
     (repo / "new.txt").write_text("untracked")
     with pytest.raises(ValueError, match="explicit path"):
@@ -563,3 +565,58 @@ def test_diff_disables_external_diff_and_textconv(repo: Path) -> None:
         assert "+changed content\n" in diff
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "absolute-root",
+        "dot",
+        "nested-parent",
+        "absolute-nested-parent",
+        "outside-absolute",
+        "outside-relative",
+        "sibling-prefix",
+        "root-symlink",
+        "outside-symlink",
+    ],
+)
+def test_stage_rejects_root_aliases_and_outside_paths(repo: Path, form: str) -> None:
+    (repo / "a").mkdir()
+    (repo / "new.txt").write_text("must remain untracked\n")
+    outside = repo.parent / "outside.txt"
+    outside.write_text("outside\n")
+    sibling = repo.with_name(repo.name + "-other")
+    sibling.mkdir()
+    (repo / "root-link").symlink_to(repo, target_is_directory=True)
+    (repo / "outside-link").symlink_to(outside)
+    paths = {
+        "absolute-root": str(repo.resolve()),
+        "dot": "./",
+        "nested-parent": "a/..",
+        "absolute-nested-parent": str(repo / "a" / ".."),
+        "outside-absolute": str(outside),
+        "outside-relative": "../outside.txt",
+        "sibling-prefix": str(sibling),
+        "root-symlink": "root-link",
+        "outside-symlink": "outside-link",
+    }
+    with pytest.raises(ValueError, match="explicit path"):
+        asyncio.run(Git(repo).stage(["new.txt", paths[form]]))
+    assert asyncio.run(Git(repo).staged_files()) == []
+
+
+@pytest.mark.parametrize("form", ["relative", "absolute", "normalised"])
+def test_stage_accepts_nested_file_inside_repository(repo: Path, form: str) -> None:
+    nested = repo / "nested"
+    nested.mkdir()
+    target = nested / "file.txt"
+    target.write_text("nested content\n")
+    (repo / "other.txt").write_text("must remain untracked\n")
+    paths = {
+        "relative": "nested/file.txt",
+        "absolute": str(target.resolve()),
+        "normalised": "nested/../nested/file.txt",
+    }
+    asyncio.run(Git(repo).stage([paths[form]]))
+    assert asyncio.run(Git(repo).staged_files()) == ["nested/file.txt"]
