@@ -1,0 +1,151 @@
+"""Pure string renderers for command output."""
+
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from fugue.config import FugueConfig
+from fugue.engine import RunOutcome
+from fugue.models import AuthenticationMode
+from fugue.store import Run
+
+
+@dataclass(frozen=True)
+class AttemptLine:
+    stage: str
+    attempt: int
+    status: str
+
+
+@dataclass(frozen=True)
+class OperationLine:
+    kind: str
+    key: str
+    status: str
+
+
+@dataclass(frozen=True)
+class ApprovalLine:
+    kind: str
+    subject: str
+    head_sha: str
+    decision: str
+    valid: bool
+
+
+@dataclass(frozen=True)
+class RunDetail:
+    run: Run
+    attempts: tuple[AttemptLine, ...]
+    operations: tuple[OperationLine, ...]
+    approvals: tuple[ApprovalLine, ...]
+    usage: Mapping[str, int | float | None]
+
+
+def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
+    grid = [list(header), *(list(row) for row in rows)]
+    widths = [max(len(row[column]) for row in grid) for column in range(len(header))]
+    return [
+        "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
+        for row in grid
+    ]
+
+
+def render_roles(config: FugueConfig) -> str:
+    rows = [
+        [str(role), role_config.provider, str(role_config.authentication_mode)]
+        for role, role_config in config.roles.items()
+    ]
+    lines = _table(["role", "provider", "authentication mode"], rows)
+    lines.extend(
+        f"warning: role {role} uses api_key authentication (metered)"
+        for role, role_config in config.roles.items()
+        if role_config.authentication_mode == AuthenticationMode.API_KEY
+    )
+    return "\n".join(lines)
+
+
+def render_outcome(outcome: RunOutcome) -> str:
+    lines = [f"run {outcome.run_id}: {outcome.state}"]
+    if outcome.pr_number is not None:
+        lines.append(f"pull request: #{outcome.pr_number}")
+    if outcome.head_sha is not None:
+        lines.append(f"head SHA: {outcome.head_sha}")
+    lines.extend(f"problem: {problem}" for problem in outcome.problems)
+    return "\n".join(lines)
+
+
+def render_runs(runs: Sequence[Run]) -> str:
+    if not runs:
+        return "No runs."
+    rows = [
+        [
+            str(run.id),
+            f"#{run.ticket_number}",
+            run.state,
+            run.updated_at.isoformat(timespec="seconds"),
+        ]
+        for run in runs
+    ]
+    return "\n".join(_table(["id", "ticket", "state", "updated"], rows))
+
+
+def _section(title: str, header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
+    if not rows:
+        return ["", f"{title}: none"]
+    return ["", f"{title}:", *_table(header, rows)]
+
+
+def _usage_value(value: int | float | None) -> str:
+    return "n/a" if value is None else str(value)
+
+
+def render_run_detail(detail: RunDetail) -> str:
+    run = detail.run
+    lines = [
+        f"run {run.id}: ticket #{run.ticket_number} in {run.repo}",
+        f"state: {run.state}",
+        f"updated: {run.updated_at.isoformat(timespec='seconds')}",
+    ]
+    lines += _section(
+        "stage attempts",
+        ["stage", "attempt", "status"],
+        [[a.stage, str(a.attempt), a.status] for a in detail.attempts],
+    )
+    lines += _section(
+        "operations",
+        ["kind", "key", "status"],
+        [[o.kind, o.key, o.status] for o in detail.operations],
+    )
+    lines += _section(
+        "approvals",
+        ["kind", "subject", "head SHA", "decision", "valid"],
+        [
+            [a.kind, a.subject, a.head_sha, a.decision, "yes" if a.valid else "no"]
+            for a in detail.approvals
+        ],
+    )
+    lines += ["", "usage (reported values, not a bill):"]
+    lines += [f"  {name}: {_usage_value(value)}" for name, value in detail.usage.items()]
+    return "\n".join(lines)
+
+
+def _toml_scalar(value: object) -> str:
+    return json.dumps(value) if not isinstance(value, bool) else str(value).lower()
+
+
+def _toml_lines(path: Sequence[str], table: Mapping[str, Any]) -> list[str]:
+    scalars = {key: value for key, value in table.items() if not isinstance(value, dict)}
+    tables = {key: value for key, value in table.items() if isinstance(value, dict)}
+    lines = [f"{key} = {_toml_scalar(value)}" for key, value in scalars.items()]
+    for key, value in tables.items():
+        child = [*path, key]
+        lines.extend(["", f"[{'.'.join(child)}]", *_toml_lines(child, value)])
+    return lines
+
+
+def render_config(config: FugueConfig) -> str:
+    """Render the effective configuration; it holds no secrets."""
+    data = config.model_dump(mode="json", exclude_none=True)
+    return "\n".join(_toml_lines([], data)).strip()

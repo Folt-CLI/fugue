@@ -245,3 +245,36 @@ def test_mutable_defaults_are_independent() -> None:
     assert second.policy.size_rules[Size.XS].max_components == 1
     assert second.policy.gate_commands[0] == ["uv", "run", "ruff", "format", "--check", "."]
     assert second.roles[Role.ANALYST].model is None
+
+
+def test_github_and_worktrees_defaults() -> None:
+    config = load_config(None)
+    assert config.github.repo is None
+    assert config.github.project_owner is None
+    assert config.github.project_number is None
+    assert config.worktrees_root is None
+
+
+def test_github_and_worktrees_from_toml(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        'worktrees_root = "/srv/trees"\n'
+        "[github]\n"
+        'repo = "owner/name"\n'
+        'project_owner = "owner"\n'
+        "project_number = 7\n",
+    )
+    config = load_config(path)
+    assert config.github.repo == "owner/name"
+    assert config.github.project_owner == "owner"
+    assert config.github.project_number == 7
+    assert config.worktrees_root == Path("/srv/trees")
+
+
+def test_github_rejects_unknown_key_and_bad_number(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as unknown:
+        load_config(write_config(tmp_path, "[github]\ntoken = 'x'\n"))
+    assert "github.token" in str(unknown.value)
+    with pytest.raises(ConfigError) as number:
+        load_config(write_config(tmp_path, "[github]\nproject_number = 0\n"))
+    assert "github.project_number" in str(number.value)

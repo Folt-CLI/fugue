@@ -63,6 +63,7 @@ class EngineDeps:
     base_branch: str = "develop"
     gate_runner: GateRunner = run_gate
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+    progress: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,7 @@ class Engine:
         detail: str | None = None,
     ) -> T:
         attempt = self.deps.store.begin_attempt(run_id, stage)
+        self._report(f"{stage}: started")
         token = self._attempt_id.set(attempt.id)
         try:
             result = await action()
@@ -222,14 +224,21 @@ class Engine:
             else:
                 status = "failed"
             self.deps.store.finish_attempt(attempt.id, status, str(error))
+            self._report(f"{stage}: {status}")
             raise
         finally:
             self._attempt_id.reset(token)
         if isinstance(result, GateResult) and not result.passed:
             self.deps.store.finish_attempt(attempt.id, "failed", format_failure(result))
+            self._report(f"{stage}: failed")
         else:
             self.deps.store.finish_attempt(attempt.id, "completed", detail)
+            self._report(f"{stage}: completed")
         return result
+
+    def _report(self, message: str) -> None:
+        if self.deps.progress is not None:
+            self.deps.progress(message)
 
     async def _operation(
         self, run_id: int, kind: str, intent: dict[str, Any], action: Callable[[], Awaitable[Any]]

@@ -80,12 +80,22 @@ def _default_roles() -> dict[Role, RoleConfig]:
     }
 
 
+class GitHubConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str | None = None
+    project_owner: str | None = None
+    project_number: int | None = Field(default=None, gt=0)
+
+
 class FugueConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     policy: RepoPolicy = Field(default_factory=RepoPolicy)
     limits: Limits = Field(default_factory=Limits)
     roles: dict[Role, RoleConfig] = Field(default_factory=_default_roles)
+    github: GitHubConfig = Field(default_factory=GitHubConfig)
+    worktrees_root: Path | None = None
     state_dir: Path | None = None
 
     @field_validator("roles", mode="before")
