@@ -64,46 +64,39 @@ class Git:
 
     async def create_worktree(self, path: Path, branch: str, base: str) -> None:
         await self._validate_branch(branch)
-        base_sha = await self._resolve_ref(base)
+        base_sha = await self.resolve_ref(base)
         await self._run("worktree", "add", "-b", branch, "--", str(path), base_sha)
 
     async def remove_worktree(self, path: Path, force: bool = False) -> None:
         options = ("--force",) if force else ()
         await self._run("worktree", "remove", *options, "--", str(path))
 
-    async def _resolve_ref(self, ref: str) -> str:
-        """Resolve to a commit ID; ambiguous short refs require a full ref name."""
-        root = re.split(r"[~^]|@\{", ref, maxsplit=1)[0]
-        suffix = ref[len(root) :]
-        if not root or root.startswith(("-", "+")):
-            raise ValueError("ref must name a commit")
-        if root == "HEAD" or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", root):
-            qualified = root
-        elif root.startswith("refs/"):
-            await self._run("check-ref-format", root)
-            qualified = root
+    async def resolve_ref(self, name: str) -> str:
+        """Resolve commit IDs, pseudo-refs, full refs, or local branch names."""
+        if re.fullmatch(r"[0-9a-f]{4,64}", name):
+            try:
+                return (
+                    await self._run(
+                        "rev-parse", "--verify", "--quiet", "--end-of-options", f"{name}^{{commit}}"
+                    )
+                ).strip()
+            except GitError:
+                # A hex-looking name may instead be a local branch.
+                pass
+        if name in {"HEAD", "FETCH_HEAD", "ORIG_HEAD"} or name.startswith(
+            ("HEAD~", "HEAD^", "refs/")
+        ):
+            qualified = name
         else:
-            await self._run("check-ref-format", f"refs/heads/{root}")
-            refs = (await self._run("for-each-ref", "--format=%(refname)")).splitlines()
-            candidates = {
-                f"refs/{root}",
-                f"refs/heads/{root}",
-                f"refs/tags/{root}",
-                f"refs/remotes/{root}",
-                f"refs/remotes/{root}/HEAD",
-            }
-            matches = [name for name in refs if name in candidates]
-            if len(matches) > 1:
-                raise ValueError(f"Ambiguous ref {root!r}; use a fully qualified ref")
-            qualified = matches[0] if matches else f"refs/heads/{root}"
+            root = re.split(r"[~^]|@\{", name, maxsplit=1)[0]
+            await self._validate_branch(root)
+            qualified = f"refs/heads/{name}"
         return (
-            await self._run(
-                "rev-parse", "--verify", "--end-of-options", f"{qualified}{suffix}^{{commit}}"
-            )
+            await self._run("rev-parse", "--verify", "--end-of-options", f"{qualified}^{{commit}}")
         ).strip()
 
     async def head_sha(self, ref: str = "HEAD") -> str:
-        return await self._resolve_ref(ref)
+        return await self.resolve_ref(ref)
 
     async def current_branch(self) -> str:
         ref = (await self._run("symbolic-ref", "-q", "HEAD")).strip()
@@ -131,8 +124,8 @@ class Git:
             await self._run("--literal-pathspecs", "add", "--", *paths)
 
     async def diff(self, base: str, head: str) -> str:
-        base_sha = await self._resolve_ref(base)
-        head_sha = await self._resolve_ref(head)
+        base_sha = await self.resolve_ref(base)
+        head_sha = await self.resolve_ref(head)
         return await self._run(
             "diff", "--no-ext-diff", "--no-color", "--no-renames", base_sha, head_sha, "--"
         )
