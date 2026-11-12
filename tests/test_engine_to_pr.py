@@ -19,7 +19,7 @@ from fugue.agents import (
     ScriptStep,
     UsageRecord,
 )
-from fugue.artifacts import ArtifactStore
+from fugue.artifacts import ArtifactRef, ArtifactStore
 from fugue.config import FugueConfig, RoleConfig
 from fugue.engine import Engine, EngineDeps, GitHubPort, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
@@ -36,7 +36,7 @@ from fugue.models import (
     Ticket,
 )
 from fugue.process import run_command
-from fugue.store import StageAttempt, Store
+from fugue.store import Artifact, StageAttempt, Store
 from fugue.workflow import RunState
 
 SCOPE = "You may touch only these files:\n- `allowed.txt`\n\nImplement the change."
@@ -466,10 +466,11 @@ def test_restart_performs_pending_repair(harness: Harness, monkeypatch: pytest.M
     harness.deps.registry.register("codex", lambda config: adapter)
     write_artifact = Engine._artifact
 
-    def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> None:
-        write_artifact(self, run_id, name, text)
+    def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> ArtifactRef:
+        ref = write_artifact(self, run_id, name, text)
         if name.startswith("gate-failure-"):
             raise asyncio.CancelledError
+        return ref
 
     with monkeypatch.context() as patch:
         patch.setattr(Engine, "_artifact", interrupt_after_failure)
@@ -610,10 +611,11 @@ def test_passing_gate_satisfies_pending_repair_without_attempt(
     else:
         write_artifact = Engine._artifact
 
-        def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> None:
-            write_artifact(self, run_id, name, text)
+        def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> ArtifactRef:
+            ref = write_artifact(self, run_id, name, text)
             if name.startswith("gate-failure-"):
                 raise asyncio.CancelledError
+            return ref
 
         with monkeypatch.context() as patch:
             patch.setattr(Engine, "_artifact", interrupt_after_failure)
@@ -1060,10 +1062,10 @@ def test_unexpected_stage_failure_blocks_before_propagating(
     elif stage == "checkpoint":
         write_artifact = Engine._artifact
 
-        def fail_checkpoint(self: Engine, run_id: int, name: str, text: str) -> None:
+        def fail_checkpoint(self: Engine, run_id: int, name: str, text: str) -> ArtifactRef:
             if name.startswith("implemented-"):
                 raise RuntimeError("Unexpected stage failure")
-            write_artifact(self, run_id, name, text)
+            return write_artifact(self, run_id, name, text)
 
         monkeypatch.setattr(Engine, "_artifact", fail_checkpoint)
     else:
@@ -1224,3 +1226,91 @@ def test_scope_revision_can_reuse_commit_recorded_for_an_earlier_scope(harness: 
     assert second.head_sha == first.head_sha
     assert len(adapter.requests) == 2
     assert len(harness.github.created) == 1
+
+
+@pytest.mark.parametrize("kind", ["agent", "session", "implemented"])
+def test_artifact_conflicts_pick_an_unused_suffix(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    begin_attempt = harness.deps.store.begin_attempt
+    orphan_names: list[str] = []
+
+    def seed_conflicts(run_id: int, stage: str) -> StageAttempt:
+        attempt = begin_attempt(run_id, stage)
+        if stage == "implement":
+            extension = {"agent": ".txt", "session": ".json", "implemented": ""}[kind]
+            call = 1 if kind == "implemented" else 0
+            name = f"{kind}-{attempt.id}-{call}{extension}"
+            for suffix in ("", "-1"):
+                candidate = f"{Path(name).stem}{suffix}{Path(name).suffix}"
+                harness.deps.artifacts.write(run_id, candidate, "Orphaned conflicting content")
+                orphan_names.append(candidate)
+        return attempt
+
+    monkeypatch.setattr(harness.deps.store, "begin_attempt", seed_conflicts)
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    artifacts = harness.deps.store.list_artifacts(outcome.run_id)
+    matching = [artifact for artifact in artifacts if artifact.name.startswith(f"{kind}-")]
+    assert len(matching) == 1
+    assert matching[0].name not in orphan_names
+    assert "-2" in matching[0].name
+    assert Path(matching[0].path).read_text() != "Orphaned conflicting content"
+    for name in orphan_names:
+        ref = harness.deps.artifacts.open_ref(outcome.run_id, name)
+        assert ref is not None
+        assert harness.deps.artifacts.read_text(ref) == "Orphaned conflicting content"
+        assert all(artifact.name != name for artifact in artifacts)
+
+
+@pytest.mark.parametrize("kind", ["agent", "session", "implemented"])
+def test_restart_uses_new_attempt_id_after_artifact_registration_crash(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=replace(result(), final_text="First result"), side_effect=write_allowed
+            ),
+            ScriptStep(
+                result=replace(result(), final_text="Retry result"), side_effect=write_allowed
+            ),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    register = harness.deps.store.register_artifact
+    orphan_paths: list[Path] = []
+
+    def interrupt_registration(
+        run_id: int, name: str, path: str, sha256: str, size_bytes: int
+    ) -> Artifact:
+        if name.startswith(f"{kind}-"):
+            orphan_paths.append(Path(path))
+            raise RuntimeError("Interrupted after artifact write")
+        return register(run_id, name, path, sha256, size_bytes)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(harness.deps.store, "register_artifact", interrupt_registration)
+        with pytest.raises(RuntimeError, match="Interrupted after artifact write"):
+            harness.run()
+    assert len(orphan_paths) == 1
+    orphan = orphan_paths[0]
+    assert orphan.exists()
+    original_content = orphan.read_bytes()
+    first_run = harness.deps.store.list_runs(33)[0]
+    assert first_run.state == RunState.BLOCKED
+    assert all(a.path != str(orphan) for a in harness.deps.store.list_artifacts(first_run.id))
+    resumed = harness.run()
+    assert resumed.state == RunState.WAITING_FOR_CI
+    assert resumed.run_id == first_run.id
+    assert len(adapter.requests) == 2
+    matching = [
+        a
+        for a in harness.deps.store.list_artifacts(resumed.run_id)
+        if a.name.startswith(f"{kind}-")
+    ]
+    assert len(matching) == 1
+    assert Path(matching[0].path) != orphan
+    assert matching[0].name.split("-")[1] != orphan.name.split("-")[1]
+    assert orphan.read_bytes() == original_content

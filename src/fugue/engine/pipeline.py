@@ -4,15 +4,17 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import partial
+from itertools import count
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 
 from fugue.agents import AccessMode, AdapterRegistry, AgentRequest
-from fugue.artifacts import ArtifactStore
+from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
 from fugue.config import FugueConfig
 from fugue.engine.facts import (
     allowed_files,
@@ -71,13 +73,32 @@ class _Stop(Exception):
 class Engine:
     def __init__(self, deps: EngineDeps) -> None:
         self.deps = deps
+        self._attempt_id: ContextVar[int | None] = ContextVar("engine_attempt_id", default=None)
+        self._artifact_calls = count()
 
-    def _artifact(self, run_id: int, name: str, text: str) -> None:
-        ref = self.deps.artifacts.write(run_id, name, text)
-        self.deps.store.register_artifact(run_id, name, str(ref.path), ref.sha256, ref.size_bytes)
+    def _call_id(self) -> str:
+        attempt_id = self._attempt_id.get()
+        if attempt_id is None:
+            raise RuntimeError("Agent artifacts require an active stage attempt")
+        return f"{attempt_id}-{next(self._artifact_calls)}"
+
+    def _artifact(self, run_id: int, name: str, text: str) -> ArtifactRef:
+        candidate = name
+        for suffix in count(1):
+            try:
+                ref = self.deps.artifacts.write(run_id, candidate, text)
+                break
+            except ArtifactConflict:
+                path = Path(name)
+                candidate = f"{path.stem}-{suffix}{path.suffix}"
+        self.deps.store.register_artifact(
+            run_id, ref.name, str(ref.path), ref.sha256, ref.size_bytes
+        )
+        return ref
 
     async def _stage[T](self, run_id: int, stage: Stage, action: Callable[[], Awaitable[T]]) -> T:
         attempt = self.deps.store.begin_attempt(run_id, stage)
+        token = self._attempt_id.set(attempt.id)
         try:
             if (
                 stage == Stage.REPAIR
@@ -99,6 +120,8 @@ class Engine:
             )
             self.deps.store.set_run_state(run_id, state)
             raise
+        finally:
+            self._attempt_id.reset(token)
         if isinstance(result, GateResult) and not result.passed:
             self.deps.store.finish_attempt(attempt.id, "failed", format_failure(result))
         else:
@@ -204,9 +227,8 @@ class Engine:
                 await self._stage(
                     run_id,
                     Stage.IMPLEMENT,
-                    lambda: self._agent(run_id, path, implementation_prompt(scope)),
+                    lambda: self._implement(run_id, path, scope, implementation_key),
                 )
-                self._artifact(run_id, f"implemented-{len(implementations)}", implementation_key)
             await self._verify(run_id, path)
             head, pr_number = await self._stage(
                 run_id, Stage.DELIVER, lambda: self._deliver(run_id, ticket, scope, path)
@@ -240,8 +262,7 @@ class Engine:
                     )
                     text = downloaded.read_text(encoding="utf-8")
                 assert name is not None
-                self._artifact(run_id, name, text)
-                ref = self.deps.artifacts.open_ref(run_id, name)
+                ref = self._artifact(run_id, name, text)
             except (OSError, UnicodeError, RuntimeError, ValueError) as error:
                 problems.append(f"Scope attachment could not be downloaded: {error}")
         problems.extend(
@@ -259,8 +280,9 @@ class Engine:
             problems.append("Scope must list allowed files")
         if problems:
             raise _Stop(RunState.BLOCKED, problems)
+        assert ref is not None
         current_scope = self.deps.store.begin_operation(run_id, "scope", "current", {})
-        self.deps.store.complete_operation(current_scope.id, {"name": name})
+        self.deps.store.complete_operation(current_scope.id, {"name": ref.name})
         return text
 
     async def _prepare(self, run_id: int, ticket: Ticket) -> Path:
@@ -346,6 +368,10 @@ class Engine:
         await self._operation(run_id, "status", str(ticket.number), {}, set_status, status_exists)
         return path
 
+    async def _implement(self, run_id: int, path: Path, scope: str, key: str) -> None:
+        await self._agent(run_id, path, implementation_prompt(scope))
+        self._artifact(run_id, f"implemented-{self._call_id()}", key)
+
     async def _agent(self, run_id: int, path: Path, prompt: str) -> None:
         role_config = self.deps.config.roles[Role.IMPLEMENTER]
         adapter = self.deps.registry.build(role_config)
@@ -386,9 +412,7 @@ class Engine:
                 timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
             )
         )
-        call = len(
-            [a for a in self.deps.store.list_artifacts(run_id) if a.name.startswith("agent-")]
-        )
+        call = self._call_id()
         self._artifact(run_id, f"agent-{call}.txt", result.final_text)
         if result.usage is not None:
             self.deps.store.record_usage(
