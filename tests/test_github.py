@@ -94,6 +94,7 @@ def fake(
         field_ids: ProjectFieldIds | None = None,
         project_owner: str = "example",
         max_output_bytes: int = 16 * 1024 * 1024,
+        project_field_limit: int = 200,
     ) -> tuple[GitHubClient, Callable[[], list[dict[str, Any]]]]:
         fixture.write_text(json.dumps({json.dumps(key): value for key, value in responses}))
         record.write_text("")
@@ -103,6 +104,7 @@ def fake(
             2,
             strip_tokens=strip_tokens,
             max_output_bytes=max_output_bytes,
+            project_field_limit=project_field_limit,
             field_ids=field_ids,
             gh_executable=[sys.executable, str(Path(__file__).with_name("fake_gh.py"))],
         )
@@ -164,14 +166,14 @@ def test_get_ticket(fake: Fake, blockers: list[dict[str, Any]]) -> None:
             (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
             (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([blockers])),
-            (["api", "graphql"], response(PROJECT_RESPONSE)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
         ]
     )
     ticket = asyncio.run(client.get_ticket(16))
     assert ticket == parse_ticket(ISSUE, VALUES, ITEM, blockers)
     assert len(calls()) == 4
     args = calls()[2]["argv"]
-    assert args[-6:] == ["-f", "o=example", "-f", "r=fugue", "-F", "n=16"]
+    assert args[-8:-2] == ["-f", "o=example", "-f", "r=fugue", "-F", "n=16"]
 
     assert calls()[3]["argv"] == [
         "api",
@@ -207,7 +209,7 @@ def test_project_fields_and_status_size_argv_cached(fake: Fake) -> None:
                     }
                 ),
             ),
-            (["api", "graphql"], response(PROJECT_RESPONSE)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
             (["project", "item-edit"], {}),
         ]
     )
@@ -218,7 +220,17 @@ def test_project_fields_and_status_size_argv_cached(fake: Fake) -> None:
 
     asyncio.run(scenario())
     args = [call["argv"] for call in calls()]
-    assert args[1] == ["project", "field-list", "2", "--owner", "example", "--format", "json"]
+    assert args[1] == [
+        "project",
+        "field-list",
+        "2",
+        "--owner",
+        "example",
+        "--format",
+        "json",
+        "--limit",
+        "200",
+    ]
     assert args[3] == [
         "project",
         "item-edit",
@@ -266,6 +278,8 @@ def test_find_pr(fake: Fake, present: bool) -> None:
         "open",
         "--json",
         "number,url",
+        "--limit",
+        "1",
     ]
 
 
@@ -364,7 +378,7 @@ def test_error_stderr_tail(fake: Fake) -> None:
     client, _ = fake([(["pr", "list"], {"exit_code": 7, "stderr": "x" * 2000 + "last error"})])
     with pytest.raises(GitHubError) as error:
         asyncio.run(client.find_pr("branch"))
-    assert error.value.argv[-2:] == ("--json", "number,url")
+    assert error.value.argv[-4:-2] == ("--json", "number,url")
     assert error.value.stderr_tail == ("x" * 2000 + "last error")[-1500:]
     assert str(error.value).endswith("last error")
 
@@ -435,7 +449,7 @@ def test_configured_project_ids_skip_discovery(fake: Fake) -> None:
     )
     client, calls = fake(
         [
-            (["api", "graphql"], response(PROJECT_RESPONSE)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
             (["project", "item-edit"], {}),
         ],
         field_ids=ids,
@@ -460,7 +474,7 @@ def test_missing_project_item_is_added_and_rechecked(fake: Fake) -> None:
     empty: dict[str, Any] = {"data": {"repository": {"issue": {"projectItems": {"nodes": []}}}}}
     client, calls = fake(
         [
-            (["api", "graphql"], response(empty)),
+            (["api", "graphql"], response([empty])),
             (["project", "item-add"], {}),
         ],
         field_ids=ProjectFieldIds(
@@ -509,7 +523,7 @@ def test_project_lookup_uses_owner_and_number(fake: Fake, project_owner: str) ->
             (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
             (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([BLOCKERS])),
-            (["api", "graphql"], response(project_response)),
+            (["api", "graphql"], response([project_response])),
             (["project", "item-edit"], {}),
         ],
         project_owner=project_owner,
@@ -562,7 +576,7 @@ def test_large_issue_json_respects_capture_limit(fake: Fake, cap: int) -> None:
             (["api", f"repos/{REPO}/issues/16"], response({**ISSUE, "body": body})),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
             (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([BLOCKERS])),
-            (["api", "graphql"], response(PROJECT_RESPONSE)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
         ],
         max_output_bytes=cap,
     )
@@ -635,7 +649,7 @@ def test_blockers_from_multiple_pages(fake: Fake, paged: bool) -> None:
         [
             (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
-            (["api", "graphql"], response(PROJECT_RESPONSE)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
             (
                 ["api", f"repos/{REPO}/issues/16/dependencies/blocked_by", "--paginate", "--slurp"],
                 response([[BLOCKERS[0]], [BLOCKERS[1]]] if paged else BLOCKERS),
@@ -662,3 +676,111 @@ def test_issue_field_discovery_flattens_pages(fake: Fake, paged: bool) -> None:
     assert json.loads(calls()[1]["stdin"]) == {
         "issue_field_values": [{"field_id": 1, "value": "High"}]
     }
+
+
+@pytest.mark.parametrize("limit", [200, 40])
+def test_project_field_discovery_beyond_default_limit(fake: Fake, limit: int) -> None:
+    fields: list[dict[str, Any]] = [{"id": f"field-{i}", "name": f"Field {i}"} for i in range(40)]
+    fields[34] = {
+        "id": "status-id",
+        "name": "Status",
+        "options": [{"id": "done-id", "name": Status.DONE.value}],
+    }
+    fields[35] = {
+        "id": "size-id",
+        "name": "Size",
+        "options": [{"id": "small-id", "name": Size.S.value}],
+    }
+    client, calls = fake(
+        [
+            (
+                [
+                    "project",
+                    "field-list",
+                    "2",
+                    "--owner",
+                    "example",
+                    "--format",
+                    "json",
+                    "--limit",
+                    str(limit),
+                ],
+                response({"fields": fields}),
+            ),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
+            (["project", "item-edit"], {}),
+        ],
+        project_field_limit=limit,
+        field_ids=ProjectFieldIds(project_id="project-id"),
+    )
+    if limit == 40:
+        with pytest.raises(GitHubError, match="possible truncation") as error:
+            asyncio.run(client.set_status(16, Status.DONE))
+        assert error.value.argv[-2:] == ("--limit", "40")
+        assert len(calls()) == 1
+        assert client.field_ids.status_field_id is None
+    else:
+        asyncio.run(client.set_status(16, Status.DONE))
+        assert client.field_ids.status_field_id == "status-id"
+        assert client.field_ids.size_field_id == "size-id"
+        assert calls()[-1]["argv"][-4:] == [
+            "--field-id",
+            "status-id",
+            "--single-select-option-id",
+            "done-id",
+        ]
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_invalid_project_field_limit(limit: int) -> None:
+    with pytest.raises(ValueError, match="project_field_limit"):
+        GitHubClient(REPO, "example", 2, project_field_limit=limit)
+
+
+@pytest.mark.parametrize("max_lines", [3, 200])
+@pytest.mark.parametrize("prefix", ["head\n", "head\n[... truncated 5 bytes ...]\n", "界\n"])
+def test_failed_log_returns_retained_tail_when_truncated(
+    fake: Fake, max_lines: int, prefix: str
+) -> None:
+    log = prefix * 40_000 + "".join(f"final-{i}\n" for i in range(10))
+    cap = 256
+    client, _ = fake([(["run", "view"], {"stdout": log})], max_output_bytes=cap)
+    result = asyncio.run(
+        client.failed_log_tail("https://github.com/example/fugue/actions/runs/123", max_lines)
+    )
+    tail = log.encode()[-(cap - cap // 2) :].decode(errors="replace")
+    assert result == "\n".join(tail.splitlines()[-max_lines:])
+    assert result.endswith("final-9")
+
+
+def test_paginated_project_items_and_issue_field_values(fake: Fake) -> None:
+    first_page = {
+        "data": {
+            "repository": {
+                "issue": {
+                    "projectItems": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "next"},
+                    }
+                }
+            }
+        }
+    }
+    client, calls = fake(
+        [
+            (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
+            (
+                ["api", f"repos/{REPO}/issues/16/issue-field-values", "--paginate", "--slurp"],
+                response([[VALUES[0]], [VALUES[1]]]),
+            ),
+            (["api", "graphql"], response([first_page, PROJECT_RESPONSE])),
+            (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([])),
+        ]
+    )
+    ticket = asyncio.run(client.get_ticket(16))
+    assert ticket.status == Status.IN_IMPLEMENTATION
+    assert ticket.components == [Component.SOURCE_CODE]
+    assert calls()[2]["argv"][-2:] == ["--paginate", "--slurp"]
+    assert "$endCursor:String" in calls()[2]["argv"][3]
+    assert "first:100,after:$endCursor" in calls()[2]["argv"][3]
+    assert "pageInfo{hasNextPage endCursor}" in calls()[2]["argv"][3]

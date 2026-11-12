@@ -74,8 +74,10 @@ class HeadChanged(RuntimeError):
 
 
 _ITEM_QUERY = (
-    "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){"
-    "projectItems(first:100){nodes{id project{number owner{"
+    "query($o:String!,$r:String!,$n:Int!,$endCursor:String){"
+    "repository(owner:$o,name:$r){issue(number:$n){"
+    "projectItems(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} "
+    "nodes{id project{number owner{"
     "... on Organization{login} ... on User{login}}} "
     'status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} '
     'size:fieldValueByName(name:"Size"){... on ProjectV2ItemFieldSingleSelectValue{name}}'
@@ -95,10 +97,14 @@ class GitHubClient:
         field_ids: ProjectFieldIds | None = None,
         gh_executable: Sequence[str] = ("gh",),
         max_output_bytes: int = 16 * 1024 * 1024,
+        project_field_limit: int = 200,
     ) -> None:
         if max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be positive")
         self.max_output_bytes = max_output_bytes
+        if project_field_limit <= 0:
+            raise ValueError("project_field_limit must be positive")
+        self.project_field_limit = project_field_limit
         self.repo = repo.strip()
         self.project_owner = project_owner.strip()
         self.project_number = project_number
@@ -111,7 +117,11 @@ class GitHubClient:
         self.owner, self.name = self.repo.split("/")
 
     async def _run(
-        self, *args: str, stdin: str | None = None, allowed_codes: Sequence[int] = (0,)
+        self,
+        *args: str,
+        stdin: str | None = None,
+        allowed_codes: Sequence[int] = (0,),
+        tail_on_truncation: bool = False,
     ) -> str:
         argv = (*self.gh_executable, *args)
         env = dict(os.environ)
@@ -128,19 +138,23 @@ class GitHubClient:
         if result.returncode not in allowed_codes or result.timed_out or result.cancelled:
             raise GitHubError(argv, result.stderr)
         if result.stdout_truncated:
+            if tail_on_truncation:
+                # run_command keeps the final ceil(cap / 2) bytes. Slice bytes
+                # so multibyte text cannot pull the prefix or marker into a tail.
+                tail_bytes = self.max_output_bytes - self.max_output_bytes // 2
+                return result.stdout.encode("utf-8")[-tail_bytes:].decode("utf-8", errors="replace")
             raise GitHubError(argv, result.stderr + "\noutput truncated")
         return result.stdout
 
     async def _json(self, *args: str) -> Any:
         return json.loads(await self._run(*args))
 
-    async def _paginated(self, endpoint: str) -> list[dict[str, Any]]:
-        pages = await self._json("api", endpoint, "--paginate", "--slurp")
+    async def _paginated(self, endpoint: str, *args: str) -> list[dict[str, Any]]:
+        pages = await self._json("api", endpoint, *args, "--paginate", "--slurp")
         return flatten_pages(pages)
 
     async def _item(self, number: int) -> dict[str, Any] | None:
-        response = await self._json(
-            "api",
+        responses = await self._paginated(
             "graphql",
             "-f",
             f"query={_ITEM_QUERY}",
@@ -154,6 +168,7 @@ class GitHubClient:
         return next(
             (
                 item
+                for response in responses
                 for item in project_items(response)
                 if item["project"]["number"] == self.project_number
                 and item["project"]["owner"]["login"].casefold() == self.project_owner.casefold()
@@ -163,7 +178,7 @@ class GitHubClient:
 
     async def get_ticket(self, number: int) -> Ticket:
         issue = await self._json("api", f"repos/{self.repo}/issues/{number}")
-        values = await self._json("api", f"repos/{self.repo}/issues/{number}/issue-field-values")
+        values = await self._paginated(f"repos/{self.repo}/issues/{number}/issue-field-values")
         item = await self._item(number)
         if item is None:
             raise ValueError(f"Issue {number} is absent from project {self.project_number}")
@@ -186,7 +201,7 @@ class GitHubClient:
             )
             ids.project_id = project["id"]
         if ids.status_field_id is None or ids.size_field_id is None:
-            response = await self._json(
+            args = (
                 "project",
                 "field-list",
                 str(self.project_number),
@@ -194,7 +209,16 @@ class GitHubClient:
                 self.project_owner,
                 "--format",
                 "json",
+                "--limit",
+                str(self.project_field_limit),
             )
+            response = await self._json(*args)
+            if len(response["fields"]) >= self.project_field_limit:
+                raise GitHubError(
+                    (*self.gh_executable, *args),
+                    f"project field-list reached limit {self.project_field_limit}; "
+                    "possible truncation; increase project_field_limit",
+                )
             for item in response["fields"]:
                 if item["name"] == "Status":
                     ids.status_field_id = item["id"]
@@ -293,6 +317,8 @@ class GitHubClient:
             "open",
             "--json",
             "number,url",
+            "--limit",
+            "1",
         )
         return PullRequest(**items[0]) if items else None
 
@@ -379,7 +405,15 @@ class GitHubClient:
         ):
             raise ValueError("Expected an Actions run link for the configured repository")
         run_id = path[4]
-        output = await self._run("run", "view", run_id, "--repo", self.repo, "--log-failed")
+        output = await self._run(
+            "run",
+            "view",
+            run_id,
+            "--repo",
+            self.repo,
+            "--log-failed",
+            tail_on_truncation=True,
+        )
         return "\n".join(output.splitlines()[-max_lines:]) if max_lines else ""
 
     async def post_review(
