@@ -513,58 +513,102 @@ class Engine:
         base_sha = prepared.get("base_sha")
         if not isinstance(base_sha, str):
             raise _Stop(RunState.BLOCKED, ["Preparation base SHA is missing"])
-        operation = self.deps.store.begin_operation(run_id, "commit", branch, {})
+        scope_sha = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        head = await git.head_sha()
+        changed = await git._run(
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--ignore-submodules=none",
+            "-z",
+            f"{base_sha}..{head}",
+            "--",
+        )
+        paths = changed.removesuffix("\0").split("\0")[1::2] if changed else []
+        violations = validate_staging(paths, allowed_files(scope))
+        problems = [f"Outside allowed files: {p}" for p in violations]
 
-        async def committed() -> dict[str, Any] | None:
-            head = await git.head_sha()
-            changed = await git._run(
-                "diff",
-                "--name-status",
-                "--no-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-relative",
-                "--ignore-submodules=none",
-                "-z",
-                f"{base_sha}..{head}",
-                "--",
-            )
-            paths = changed.removesuffix("\0").split("\0")[1::2] if changed else []
-            problems = [
-                f"Outside allowed files: {p}" for p in validate_staging(paths, allowed_files(scope))
-            ]
+        # Keep a durable index because the Store exposes pending operations but
+        # does not list completed ones. Update it before creating a commit.
+        index = self.deps.store.begin_operation(run_id, "commit-index", branch, {})
+        keys: list[str] = json.loads(index.result_json or "{}").get("keys", [])
+        operations = {
+            operation.key: operation
+            for operation in self.deps.store.pending_operations(run_id)
+            if operation.kind == "commit"
+        }
+        for key in keys:
+            operations[key] = self.deps.store.begin_operation(run_id, "commit", key, {})
+        parents = (await git._run("rev-list", "--parents", "-n", "1", head)).split()[1:]
+        matching = None
+        for operation in operations.values():
+            intent = json.loads(operation.intent_json)
+            if intent.get("parent_sha") not in parents:
+                continue
             if operation.result_json is not None:
-                recorded = json.loads(operation.result_json)
-                if recorded.get("head_sha") != head:
-                    problems.append("Commit head SHA differs from the recorded operation result")
-            if problems:
-                raise _Stop(RunState.BLOCKED, problems)
-            if await git.status_porcelain():
-                return None
-            result = await run_command(["git", "log", "-1", "--format=%s"], cwd=path)
-            if result.stdout.strip() == subject:
-                return {"head_sha": await git.head_sha()}
-            return None
+                if json.loads(operation.result_json).get("head_sha") == head:
+                    matching = operation
+                    break
+            elif len(parents) == 1 and intent.get("scope_sha256") == scope_sha:
+                # An intent with this parent can represent a commit created just
+                # before interruption. Its scope remains part of its identity.
+                actual_subject = (await git._run("log", "-1", "--format=%s")).strip()
+                if actual_subject == subject:
+                    matching = operation
+        if head != base_sha and matching is None:
+            problems.append("Commit head SHA differs from the recorded operation result")
+        if problems:
+            raise _Stop(RunState.BLOCKED, problems)
+        if matching is not None and matching.result_json is None:
+            self.deps.store.mark_reconciled(matching.id, {"head_sha": head})
 
-        async def commit() -> dict[str, Any]:
-            paths = [entry[3:] for entry in await git.status_porcelain()]
-            violations = validate_staging(paths, allowed_files(scope))
-            if violations:
-                raise _Stop(RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations])
-            for changed_path in paths:
-                try:
-                    await git.stage([changed_path])
-                except (ValueError, GitError) as error:
+        if await git.status_porcelain() or head == base_sha:
+            parent = head
+            key = f"{parent}:{scope_sha}"
+            intent = {"parent_sha": parent, "scope_sha256": scope_sha, "branch": branch}
+            operation = self.deps.store.begin_operation(run_id, "commit", key, intent)
+            if key not in keys:
+                keys.append(key)
+                self.deps.store.complete_operation(index.id, {"keys": keys})
+
+            async def committed() -> dict[str, Any] | None:
+                current = await git.head_sha()
+                if current == parent:
+                    return None
+                if operation.result_json is not None:
+                    recorded = json.loads(operation.result_json)
+                    if recorded.get("head_sha") == current:
+                        return {"head_sha": current}
+                raise _Stop(RunState.BLOCKED, ["Unknown commit head SHA during delivery"])
+
+            async def commit() -> dict[str, Any]:
+                paths = [entry[3:] for entry in await git.status_porcelain()]
+                violations = validate_staging(paths, allowed_files(scope))
+                if violations:
                     raise _Stop(
-                        RunState.BLOCKED, [f"Cannot stage path {changed_path!r}: {error}"]
-                    ) from error
-            violations = validate_staging(await git.staged_files(), allowed_files(scope))
-            if violations:
-                raise _Stop(RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations])
-            return {"head_sha": await git.commit(message)}
+                        RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations]
+                    )
+                for changed_path in paths:
+                    try:
+                        await git.stage([changed_path])
+                    except (ValueError, GitError) as error:
+                        raise _Stop(
+                            RunState.BLOCKED, [f"Cannot stage path {changed_path!r}: {error}"]
+                        ) from error
+                violations = validate_staging(await git.staged_files(), allowed_files(scope))
+                if violations:
+                    raise _Stop(
+                        RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations]
+                    )
+                return {"head_sha": await git.commit(message)}
 
-        committed_result = await self._operation(run_id, "commit", branch, {}, commit, committed)
-        head = str(committed_result["head_sha"])
+            committed_result = await self._operation(
+                run_id, "commit", key, intent, commit, committed
+            )
+            head = str(committed_result["head_sha"])
 
         async def pushed() -> dict[str, Any] | None:
             result = await run_command(

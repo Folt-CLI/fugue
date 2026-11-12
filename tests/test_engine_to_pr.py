@@ -1,6 +1,7 @@
 """Engine behaviour against local Git repositories and scripted providers."""
 
 import asyncio
+import hashlib
 import json
 import sys
 from collections.abc import Iterator, Sequence
@@ -1131,3 +1132,95 @@ def test_shared_worktrees_root_cannot_adopt_another_clones_worktree(
     assert asyncio.run(Git(second_root).head_sha()) == harness.initial_head
     assert harness.deps.store.get_run(first.run_id).state == RunState.PROVIDER_LIMITED
     assert harness.deps.store.get_run(second.run_id).state == RunState.BLOCKED
+
+
+def test_revised_scope_recovers_second_commit_after_result_recording_crash(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revised_scope = SCOPE + "\nRevise the allowed file."
+
+    def revise(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("revised")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=write_allowed),
+            ScriptStep(result=result(), side_effect=revise),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    first = harness.run()
+    assert first.state == RunState.WAITING_FOR_CI
+    assert first.head_sha is not None
+    parent = harness.initial_head
+    first_key = f"{parent}:{hashlib.sha256(SCOPE.encode()).hexdigest()}"
+    first_operation = harness.deps.store.begin_operation(first.run_id, "commit", first_key, {})
+    assert first_operation.result_json is not None
+    assert json.loads(first_operation.result_json)["head_sha"] == first.head_sha
+
+    harness.github.scope = revised_scope
+    sections = dict(harness.github.ticket.body_sections)
+    sections["Solution"] = "[33-solution-1.md](https://github.com/user-attachments/files/revised)"
+    harness.github.ticket = harness.github.ticket.model_copy(update={"body_sections": sections})
+    complete = harness.deps.store.complete_operation
+
+    def interrupt_record(id: int, result: dict[str, object]) -> None:
+        if "head_sha" in result:
+            raise RuntimeError("Interrupted before second commit result")
+        complete(id, result)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(harness.deps.store, "complete_operation", interrupt_record)
+        with pytest.raises(RuntimeError, match="Interrupted before second commit result"):
+            harness.run()
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    second_sha = asyncio.run(Git(path).head_sha())
+    assert second_sha != first.head_sha
+    assert asyncio.run(Git(path).head_sha("HEAD^")) == first.head_sha
+    second_key = f"{first.head_sha}:{hashlib.sha256(revised_scope.encode()).hexdigest()}"
+    pending = harness.deps.store.begin_operation(first.run_id, "commit", second_key, {})
+    assert pending.status == "intent"
+    assert pending.result_json is None
+    assert json.loads(pending.intent_json)["parent_sha"] == first.head_sha
+
+    resumed = harness.run()
+    assert resumed.state == RunState.WAITING_FOR_CI
+    assert resumed.run_id == first.run_id
+    assert resumed.head_sha == second_sha
+    assert len(adapter.requests) == 2
+    assert len(harness.github.created) == 1
+    assert resumed.pr_number == first.pr_number
+    assert (
+        asyncio.run(Git(harness.origin).head_sha(branch_name(harness.github.ticket))) == second_sha
+    )
+    assert asyncio.run(git_command(path, "rev-list", "--count", f"{parent}..HEAD")) == "2"
+    recovered = harness.deps.store.begin_operation(first.run_id, "commit", second_key, {})
+    assert recovered.status == "reconciled"
+    assert recovered.result_json is not None
+    assert json.loads(recovered.result_json)["head_sha"] == second_sha
+    original = harness.deps.store.begin_operation(first.run_id, "commit", first_key, {})
+    assert original.result_json == first_operation.result_json
+    assert not harness.deps.store.pending_operations(first.run_id)
+
+
+def test_scope_revision_can_reuse_commit_recorded_for_an_earlier_scope(harness: Harness) -> None:
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=write_allowed),
+            ScriptStep(result=result()),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    first = harness.run()
+    harness.github.scope = SCOPE + "\nVerify the existing implementation."
+    sections = dict(harness.github.ticket.body_sections)
+    sections["Solution"] = "[33-solution-1.md](https://github.com/user-attachments/files/recheck)"
+    harness.github.ticket = harness.github.ticket.model_copy(update={"body_sections": sections})
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id == first.run_id
+    assert second.head_sha == first.head_sha
+    assert len(adapter.requests) == 2
+    assert len(harness.github.created) == 1
