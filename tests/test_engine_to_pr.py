@@ -19,12 +19,21 @@ from fugue.agents import (
     UsageRecord,
 )
 from fugue.artifacts import ArtifactStore
-from fugue.config import FugueConfig
+from fugue.config import FugueConfig, RoleConfig
 from fugue.engine import Engine, EngineDeps, GitHubPort, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
 from fugue.github import PullRequest
 from fugue.gitops import Git
-from fugue.models import AuthenticationMode, Component, IssueType, Priority, Size, Status, Ticket
+from fugue.models import (
+    AuthenticationMode,
+    Component,
+    IssueType,
+    Priority,
+    Role,
+    Size,
+    Status,
+    Ticket,
+)
 from fugue.process import run_command
 from fugue.store import StageAttempt, Store
 from fugue.workflow import RunState
@@ -723,3 +732,49 @@ def test_invalid_title_does_not_persist_identity_and_can_be_corrected(
     assert identity.result_json is not None
     assert json.loads(identity.result_json)["subject"] == "Feature[#33]: Add the engine"
     assert len(harness.adapter.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("provider", "error", "flag"),
+    [
+        ("claude", "Claude provider-limited: rejected", True),
+        ("claude", "Capacity unavailable", True),
+        ("codex", None, True),
+        ("codex", "Usage limit reached", False),
+        ("claude", "Claude provider-limited: rejected", False),
+    ],
+)
+def test_provider_limited_run_resumes_session(
+    harness: Harness, provider: str, error: str | None, flag: bool
+) -> None:
+    harness.deps.config.roles[Role.IMPLEMENTER] = (
+        RoleConfig(provider="claude") if provider == "claude" else RoleConfig(provider="codex")
+    )
+    limited = replace(
+        result(),
+        ok=False,
+        provider=provider,
+        error=error,
+        provider_limited=flag,
+    )
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=limited),
+            ScriptStep(result=replace(result(), provider=provider), side_effect=write_allowed),
+        ],
+        name=provider,
+    )
+    harness.deps.registry.register(provider, lambda config: adapter)
+    first = harness.run()
+    assert first.state == RunState.PROVIDER_LIMITED
+    assert harness.deps.store.get_run(first.run_id).state == RunState.PROVIDER_LIMITED
+    assert len(adapter.requests) == 1
+    assert not harness.github.created
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id == first.run_id
+    assert len(harness.deps.store.list_runs(33)) == 1
+    assert len(adapter.requests) == 2
+    assert adapter.requests[1].session_id == "session-1"
+    assert adapter.requests[1].cwd == adapter.requests[0].cwd
+    assert harness.deps.store.usage_summary(first.run_id)["input_tokens"] == 20

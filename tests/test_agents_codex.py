@@ -365,3 +365,40 @@ def test_live_codex(tmp_path: Path) -> None:
         assert result.session_id
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Rate limit exceeded", True),
+        ("You've hit your usage limit", True),
+        ("USAGE_LIMIT reached", True),
+        ("rate-limited", True),
+        ("ratelimit reached", True),
+        ("Request rejected (429)", True),
+        ("Provider unavailable", False),
+        ("Rate limiter configuration missing", False),
+    ],
+)
+def test_explicit_provider_limit_flag(
+    request_data: AgentRequest, message: str, expected: bool
+) -> None:
+    stream = [
+        {"type": "thread.started", "thread_id": "limited-session"},
+        {"type": "error", "message": message},
+        {"type": "turn.failed", "error": {"message": "turn failed"}},
+    ]
+    script = (
+        "import sys; sys.stdin.read(); print("
+        + repr("\n".join(json.dumps(event) for event in stream))
+        + ")"
+    )
+    adapter = CodexAdapter(
+        executable=(sys.executable, "-c", script),
+        spool_dir=request_data.cwd / "logs",
+    )
+    result = asyncio.run(adapter.run(request_data))
+    assert not result.ok
+    assert result.provider_limited is expected
+    assert result.session_id == "limited-session"
+    assert result.error == "turn failed"

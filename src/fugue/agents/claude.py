@@ -48,6 +48,7 @@ class _Stream:
     session_id: str | None
     result: dict[str, Any] | None = None
     errors: list[str] = field(default_factory=list)
+    provider_limited: bool = False
 
     def parse(self, line: str) -> list[AgentEvent]:
         try:
@@ -55,6 +56,8 @@ class _Stream:
         except json.JSONDecodeError:
             self.errors.append("Invalid Claude stream-json event")
             return [AgentEvent("error", self.errors[-1])]
+        if item.get("api_error_status") == 429:
+            self.provider_limited = True
         kind = item.get("type")
         if kind == "system" and item.get("subtype") == "init":
             session_id = item.get("session_id")
@@ -90,6 +93,7 @@ class _Stream:
             info = _object(item.get("rate_limit_info"))
             status = info.get("status", item.get("status"))
             if status != "allowed":
+                self.provider_limited = True
                 self.errors.append(f"Claude provider-limited: {status}")
             return [AgentEvent("other", data={**item, "status": status})]
         if kind == "result":
@@ -204,7 +208,7 @@ class ClaudeAdapter:
             errors.append(f"Claude command exited with status {command.returncode}")
         if stream.result is None:
             errors.append("Claude stream ended without a result")
-        if result.get("is_error") is True:
+        if result.get("is_error") is True or result.get("api_error_status") == 429:
             errors.append(
                 f"Claude result error: {result.get('result', result.get('errors', ''))}; "
                 f"api_error_status={result.get('api_error_status')}"
@@ -214,7 +218,7 @@ class ClaudeAdapter:
             errors.append("Claude result is missing requested structured_output")
         final_text = result.get("result", "")
         return AgentResult(
-            ok=not errors,
+            ok=not errors and not stream.provider_limited,
             final_text=final_text if isinstance(final_text, str) else "",
             structured_output=structured if isinstance(structured, dict) else None,
             session_id=stream.session_id,
@@ -226,6 +230,7 @@ class ClaudeAdapter:
             cancelled=command.cancelled,
             log_path=log_path,
             unsupported=None,
+            provider_limited=stream.provider_limited,
         )
 
 

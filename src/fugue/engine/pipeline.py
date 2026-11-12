@@ -340,7 +340,11 @@ class Engine:
         if not result.ok:
             error = result.error or "Implementer failed"
             self._artifact(run_id, f"agent-error-{call}.txt", error)
-            limited = re.search(r"rate[ _-]?limit|too many requests|\b429\b", error, re.I)
+            limited = result.provider_limited or bool(
+                re.search(
+                    r"(?:rate|usage|provider)[ _-]?limit|too many requests|\b429\b", error, re.I
+                )
+            )
             raise _Stop(RunState.PROVIDER_LIMITED if limited else RunState.FAILED, [error])
 
     async def _pending_repair(self, run_id: int, path: Path, failure: str) -> None:

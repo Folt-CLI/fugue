@@ -68,6 +68,7 @@ class AgentResult:
     cancelled: bool
     log_path: Path | None
     unsupported: Capability | None
+    provider_limited: bool = False
 
 
 class ProviderAdapter(Protocol):
