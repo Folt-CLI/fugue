@@ -1,0 +1,63 @@
+name: Question
+description: "Record a decision for the developer to select; derived work becomes child tickets."
+type: Question
+assignees: ["Bojan-Ivanovski"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A Question is size L or smaller decision work; derived work becomes child tickets.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the decision, why it is open, and who benefits.
+      value: |
+        **The decision.**
+
+        **Why it is open.**
+
+        **Who benefits.**
+        - **How:**
+        - **Why:**
+        - **Impact on existing use:**
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Bound the change. Name adjacent work that is explicitly excluded.
+      value: |
+        **Affects:**
+
+        **In scope**
+        -
+
+        **Out of scope**
+        -
+    validations:
+      required: true
+
+  - type: textarea
+    id: analysis
+    attributes:
+      label: Analysis
+      description: For M and L, the orchestrator writes the options here and attaches each as a Codex scope; the developer chooses (see campaign exceptions in docs/dev/process.md).
+      value: _Not analyzed yet._
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solution
+      description: Fill after the developer chooses (see campaign exceptions in docs/dev/process.md). Summarize what changes, affected areas, and why this solution was chosen. Keep the detail in the attachment tagged [Selected Solution] under Analysis.
+      value: _Not selected yet._
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Fill after investigation. Link the code findings attachment and summarize the two to four facts the reader must not miss.
+      value: _Not investigated yet._
