@@ -306,12 +306,98 @@ def test_line_callback() -> None:
                 "sys.stderr.write('separate\\n')"
             ),
             max_output_bytes=10,
+            max_line_bytes=210_000,
             on_stdout_line=receive,
         )
     )
     assert lines == ["first\n", "\n", "\u2603" * 70_000 + "\n", "last"]
     assert result.stdout_truncated
     assert result.stderr == "separate\n"
+
+
+def test_callback_caps_unterminated_line(tmp_path: Path) -> None:
+    lines: list[str] = []
+
+    async def receive(line: str) -> None:
+        lines.append(line)
+
+    async def scenario() -> CommandResult:
+        return await asyncio.wait_for(
+            run_command(
+                _python("import sys; sys.stdout.write('x' * (5 * 1024 * 1024))"),
+                max_output_bytes=16,
+                max_line_bytes=1024,
+                spool_dir=tmp_path,
+                on_stdout_line=receive,
+            ),
+            timeout=5,
+        )
+
+    result = asyncio.run(scenario())
+    assert result.returncode == 0
+    assert lines == ["x" * 1024 + " [line truncated]"]
+    assert len(lines[0].encode()) <= 1024 + len(b" [line truncated]")
+    assert result.stdout == "xxxxxxxx\n[... truncated 5242864 bytes ...]\nxxxxxxxx"
+    assert result.stdout_truncated
+    assert result.full_output_path is not None
+    assert result.full_output_path.read_bytes() == b"x" * (5 * 1024 * 1024)
+
+
+@pytest.mark.parametrize("cap", [0, 1, 3, 4, 5])
+def test_callback_line_cap_boundaries(cap: int) -> None:
+    lines: list[str] = []
+
+    async def receive(line: str) -> None:
+        lines.append(line)
+
+    result = asyncio.run(
+        run_command(
+            _python("import sys; sys.stdout.write('abcd\\n\\nz\\nlast')"),
+            max_line_bytes=cap,
+            on_stdout_line=receive,
+        )
+    )
+    expected = []
+    for line in ["abcd\n", "\n", "z\n", "last"]:
+        content = line.removesuffix("\n")
+        suffix = " [line truncated]" if len(content) > cap else ""
+        expected.append(content[:cap] + suffix + ("\n" if line.endswith("\n") else ""))
+    assert lines == expected
+    assert result.stdout == "abcd\n\nz\nlast"
+    assert not result.stdout_truncated
+
+
+def test_callback_cap_resets_after_discarded_line() -> None:
+    lines: list[str] = []
+
+    async def receive(line: str) -> None:
+        lines.append(line)
+
+    asyncio.run(
+        run_command(
+            _python("import sys; sys.stdout.write('x' * 200000 + '\\nnext\\n')"),
+            max_line_bytes=4,
+            on_stdout_line=receive,
+        )
+    )
+    assert lines == ["xxxx [line truncated]\n", "next\n"]
+
+
+def test_callback_line_cap_inside_utf8_character() -> None:
+    lines: list[str] = []
+
+    async def receive(line: str) -> None:
+        lines.append(line)
+
+    asyncio.run(
+        run_command(
+            _python("import sys; sys.stdout.write('\\u2603' * 3)"),
+            max_line_bytes=4,
+            on_stdout_line=receive,
+        )
+    )
+    assert lines == ["\u2603 [line truncated]"]
+    assert len(lines[0].encode()) <= 4 + len(b" [line truncated]")
 
 
 def test_callback_failure_terminates_process() -> None:
@@ -392,3 +478,8 @@ def test_missing_executable(tmp_path: Path) -> None:
 def test_negative_output_cap() -> None:
     with pytest.raises(ValueError, match="max_output_bytes"):
         asyncio.run(run_command(_python("pass"), max_output_bytes=-1))
+
+
+def test_negative_line_cap() -> None:
+    with pytest.raises(ValueError, match="max_line_bytes"):
+        asyncio.run(run_command(_python("pass"), max_line_bytes=-1))
