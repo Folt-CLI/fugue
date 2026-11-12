@@ -41,18 +41,18 @@ Copied workflows:
 
 GitHub's native copy preserves workflow configuration, except auto-add workflows. The public API verified workflow names/enabled states; it does not expose their complete trigger/action configuration. No new workflow actions were invented.
 
-## Remaining parity gap: repository auto-add
+## Repository auto-add: enabled
 
 Folt has an enabled `Auto-add to project` workflow. GitHub explicitly excludes this workflow from Project copies, and the available public GraphQL API has no create/update workflow operation to configure it. No authenticated browser tool was available during setup.
 
-To finish exact functional parity, use GitHub's Project UI:
+The user completed the following GitHub UI setup on 2026-11-12:
 
 1. Inspect Folt Project #1's auto-add filter without changing it.
 2. Open Fugue Project #2, menu, Workflows, Auto-add to project.
 3. Select `Folt-CLI/fugue`, use the equivalent filter, and choose Save and turn on workflow.
-4. Verify a subsequently created or updated matching Fugue item appears in Project #2.
+4. Save and turn on the workflow.
 
-Until configured, explicitly add every Fugue issue and PR to Project #2. This keeps work tracked but does not mean the native auto-add rule exists. Do not claim exact parity until the rule is configured and verified.
+After the user's confirmation, a read-only GraphQL query verified that Fugue now has an enabled `Auto-add to project` workflow. All seven workflow names and enabled states match Folt. The repository selection and filter were configured by the user; those details are not exposed by the queried public API. End-to-end automatic addition has not yet been exercised. Verify membership on the next real matching issue or PR and add it explicitly if necessary.
 
 References:
 

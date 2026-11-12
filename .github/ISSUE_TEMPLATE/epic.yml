@@ -1,0 +1,13 @@
+name: Epic
+description: Describe the objective for a release.
+title: "<version> -- Fugue"
+type: Epic
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: Quick explanation of what we want from the release.
+      placeholder: Quick explanation of what we want from the release.
+    validations:
+      required: true
