@@ -12,6 +12,7 @@ from fugue.agents.base import (
     unsupported_result,
 )
 from fugue.agents.claude import ClaudeAdapter, register_claude
+from fugue.agents.codex import CodexAdapter, register_codex
 from fugue.agents.fake import ScriptedAdapter, ScriptStep
 from fugue.agents.registry import AdapterConfigError, AdapterRegistry, UnknownProvider
 
@@ -24,6 +25,7 @@ __all__ = [
     "AgentResult",
     "Capability",
     "ClaudeAdapter",
+    "CodexAdapter",
     "ProviderAdapter",
     "ScriptStep",
     "ScriptedAdapter",
@@ -31,5 +33,6 @@ __all__ = [
     "UsageRecord",
     "check_request",
     "register_claude",
+    "register_codex",
     "unsupported_result",
 ]
