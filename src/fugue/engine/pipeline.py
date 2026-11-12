@@ -96,15 +96,26 @@ class Engine:
         )
         return ref
 
+    def _executed_repairs(self, run_id: int) -> int:
+        # Store has no public attempt reader. Read the persisted completion facts
+        # rather than treating the next allocated attempt ordinal as usage.
+        row = self.deps.store._connection.execute(
+            "SELECT COUNT(*) FROM stage_attempts WHERE run_id = ? AND stage = ? "
+            "AND finished_at IS NOT NULL AND status NOT IN ('skipped', 'limit')",
+            (run_id, Stage.REPAIR),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
     async def _stage[T](self, run_id: int, stage: Stage, action: Callable[[], Awaitable[T]]) -> T:
+        if stage == Stage.REPAIR and (
+            self._executed_repairs(run_id) >= self.deps.config.limits.max_repair_attempts
+        ):
+            self.deps.store.set_run_state(run_id, RunState.BLOCKED)
+            raise _Stop(RunState.BLOCKED, ["Repair limit reached"])
         attempt = self.deps.store.begin_attempt(run_id, stage)
         token = self._attempt_id.set(attempt.id)
         try:
-            if (
-                stage == Stage.REPAIR
-                and attempt.attempt > self.deps.config.limits.max_repair_attempts
-            ):
-                raise _Stop(RunState.BLOCKED, ["Repair limit reached"])
             result = await action()
         except BaseException as error:
             status = "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"

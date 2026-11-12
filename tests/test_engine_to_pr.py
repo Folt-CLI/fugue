@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -1314,3 +1315,73 @@ def test_restart_uses_new_attempt_id_after_artifact_registration_crash(
     assert Path(matching[0].path) != orphan
     assert matching[0].name.split("-")[1] != orphan.name.split("-")[1]
     assert orphan.read_bytes() == original_content
+
+
+@pytest.mark.parametrize("seed_nonexecuted_attempts", [False, True])
+def test_repair_budget_counts_execution_without_allocating_rejected_attempts(
+    harness: Harness, tmp_path: Path, seed_nonexecuted_attempts: bool
+) -> None:
+    database = tmp_path / "repair-budget.sqlite"
+    harness.deps.config.limits.max_repair_attempts = 1
+    harness.deps.config.policy.gate_commands = [
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
+        ]
+    ]
+
+    def broken(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("broken")
+
+    def failed_repair(request: AgentRequest) -> None:
+        raise RuntimeError("Repair execution failed")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(side_effect=failed_repair),
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    with Store(database) as store, sqlite3.connect(database) as reader:
+        harness.deps.store = store
+        with pytest.raises(RuntimeError, match="Repair execution failed"):
+            harness.run()
+        run = store.list_runs(33)[0]
+        assert run.state == RunState.BLOCKED
+        if seed_nonexecuted_attempts:
+            for status in ("skipped", "limit"):
+                attempt = store.begin_attempt(run.id, "repair")
+                store.finish_attempt(attempt.id, status)
+
+        def repair_rows() -> list[tuple[int, str, str | None]]:
+            return reader.execute(
+                "SELECT id, status, finished_at FROM stage_attempts "
+                "WHERE run_id = ? AND stage = 'repair' ORDER BY id",
+                (run.id,),
+            ).fetchall()
+
+        before = repair_rows()
+        assert before[0][1] == "failed"
+        assert all(row[2] is not None for row in before)
+        assert len(adapter.requests) == 2
+        for _ in range(3):
+            blocked = harness.run()
+            assert blocked.run_id == run.id
+            assert blocked.state == RunState.BLOCKED
+            assert "Repair limit reached" in blocked.problems
+            assert repair_rows() == before
+            assert len(adapter.requests) == 2
+        harness.deps.config.limits.max_repair_attempts = 2
+        resumed = harness.run()
+        assert resumed.state == RunState.WAITING_FOR_CI
+        assert resumed.run_id == run.id
+        after = repair_rows()
+        assert after[:-1] == before
+        assert after[-1][1] == "completed"
+        assert len(adapter.requests) == 3
+        assert adapter.requests[-1].session_id == "session-1"
+        assert len(store.list_runs(33)) == 1
