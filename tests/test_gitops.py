@@ -577,8 +577,6 @@ def test_diff_disables_external_diff_and_textconv(repo: Path) -> None:
         "outside-absolute",
         "outside-relative",
         "sibling-prefix",
-        "root-symlink",
-        "outside-symlink",
     ],
 )
 def test_stage_rejects_root_aliases_and_outside_paths(repo: Path, form: str) -> None:
@@ -588,8 +586,6 @@ def test_stage_rejects_root_aliases_and_outside_paths(repo: Path, form: str) -> 
     outside.write_text("outside\n")
     sibling = repo.with_name(repo.name + "-other")
     sibling.mkdir()
-    (repo / "root-link").symlink_to(repo, target_is_directory=True)
-    (repo / "outside-link").symlink_to(outside)
     paths = {
         "absolute-root": str(repo.resolve()),
         "dot": "./",
@@ -598,8 +594,6 @@ def test_stage_rejects_root_aliases_and_outside_paths(repo: Path, form: str) -> 
         "outside-absolute": str(outside),
         "outside-relative": "../outside.txt",
         "sibling-prefix": str(sibling),
-        "root-symlink": "root-link",
-        "outside-symlink": "outside-link",
     }
     with pytest.raises(ValueError, match="explicit path"):
         asyncio.run(Git(repo).stage(["new.txt", paths[form]]))
@@ -620,3 +614,31 @@ def test_stage_accepts_nested_file_inside_repository(repo: Path, form: str) -> N
     }
     asyncio.run(Git(repo).stage([paths[form]]))
     assert asyncio.run(Git(repo).staged_files()) == ["nested/file.txt"]
+
+
+@pytest.mark.parametrize("target_kind", ["inside", "outside", "root", "missing"])
+@pytest.mark.parametrize("absolute", [False, True])
+def test_stage_preserves_final_symlink(repo: Path, target_kind: str, absolute: bool) -> None:
+    target = repo / "target.txt"
+    target.write_text("must remain untracked\n")
+    outside = repo.parent / "outside.txt"
+    outside.write_text("outside content\n")
+    targets = {"inside": target, "outside": outside, "root": repo, "missing": repo / "missing"}
+    link = repo / "link.txt"
+    link.symlink_to(targets[target_kind], target_is_directory=target_kind == "root")
+    asyncio.run(Git(repo).stage([str(link) if absolute else "link.txt"]))
+    assert asyncio.run(Git(repo).staged_files()) == ["link.txt"]
+    assert git_command(repo, "ls-files", "--stage").splitlines()[-1].startswith("120000 ")
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_stage_rejects_symlinked_parent_outside_repository(repo: Path, absolute: bool) -> None:
+    outside = repo.parent / "outside-directory"
+    outside.mkdir()
+    (outside / "file.txt").write_text("outside content\n")
+    (repo / "escape").symlink_to(outside, target_is_directory=True)
+    (repo / "new.txt").write_text("must remain untracked\n")
+    path = str(repo / "escape" / "file.txt") if absolute else "escape/file.txt"
+    with pytest.raises(ValueError, match="explicit path"):
+        asyncio.run(Git(repo).stage(["new.txt", path]))
+    assert asyncio.run(Git(repo).staged_files()) == []

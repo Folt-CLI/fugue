@@ -1,5 +1,6 @@
 """Async Git commands scoped to a repository."""
 
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -164,10 +165,14 @@ class Git:
                 or any(character in path for character in "*?[")
             ):
                 raise ValueError(f"An explicit path is required: {path!r}")
-            resolved = (root / path).resolve()
-            if resolved == root or not resolved.is_relative_to(root):
+            lexical = Path(os.path.normpath(root / path))
+            if (
+                lexical == root
+                or not lexical.is_relative_to(root)
+                or not lexical.parent.resolve().is_relative_to(root)
+            ):
                 raise ValueError(f"An explicit path inside the repository is required: {path!r}")
-            relative_paths.append(resolved.relative_to(root).as_posix())
+            relative_paths.append(lexical.relative_to(root).as_posix())
         if relative_paths:
             await self._run("--literal-pathspecs", "add", "--", *relative_paths)
 
