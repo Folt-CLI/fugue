@@ -44,6 +44,7 @@ SCOPE = "You may touch only these files:\n- `allowed.txt`\n\nImplement the chang
 class FakeGitHub:
     def __init__(self, ticket: Ticket) -> None:
         self.ticket = ticket
+        self.repo = "owner/repo"
         self.scope = SCOPE
         self.calls: list[str] = []
         self.pr: PullRequest | None = None
@@ -720,7 +721,7 @@ def test_invalid_title_does_not_persist_identity_and_can_be_corrected(
     assert "Explanation must be capitalised" in first.problems
     identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
     assert identity.result_json is None
-    assert identity.intent_json == "{}"
+    assert json.loads(identity.intent_json) == {"repo_root": str(harness.deps.repo_root.resolve())}
     assert not harness.deps.worktrees_root.exists()
     assert not harness.adapter.requests
     assert "status" not in harness.github.calls
@@ -778,3 +779,192 @@ def test_provider_limited_run_resumes_session(
     assert adapter.requests[1].session_id == "session-1"
     assert adapter.requests[1].cwd == adapter.requests[0].cwd
     assert harness.deps.store.usage_summary(first.run_id)["input_tokens"] == 20
+
+
+@pytest.mark.parametrize("separation", ["repository", "checkout", "both"])
+@pytest.mark.parametrize("blocked_before_prepare", [False, True])
+def test_shared_store_isolates_repository_and_checkout(
+    harness: Harness, tmp_path: Path, separation: str, blocked_before_prepare: bool
+) -> None:
+    first_adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=replace(result(), ok=False, provider_limited=True, error="Limited")),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: first_adapter)
+    if blocked_before_prepare:
+        harness.github.scope = "No allowed files"
+    first = harness.run()
+    assert first.state == (
+        RunState.BLOCKED if blocked_before_prepare else RunState.PROVIDER_LIMITED
+    )
+    assert harness.deps.store.get_run(first.run_id).repo == "owner/repo"
+    first_identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
+    first_saved = json.loads(first_identity.result_json or first_identity.intent_json)
+    assert first_saved["repo_root"] == str(harness.deps.repo_root.resolve())
+    first_state = harness.deps.store.get_run(first.run_id).state
+
+    if separation in ("repository", "both"):
+        harness.github.repo = "owner/another-repository"
+    if separation in ("checkout", "both"):
+        clone = tmp_path / "another-clone"
+        asyncio.run(git_command(tmp_path, "clone", str(harness.origin), str(clone)))
+        asyncio.run(git_command(clone, "config", "user.name", "Test Developer"))
+        asyncio.run(git_command(clone, "config", "user.email", "test@example.test"))
+        harness.deps.repo_root = clone
+    # Separate branches also allow the same checkout to be repointed to another
+    # GitHub repository without colliding with the old run's worktree.
+    harness.github.ticket = harness.github.ticket.model_copy(
+        update={"title": "Implement another task"}
+    )
+    harness.github.scope = SCOPE
+    harness.deps.worktrees_root = tmp_path / "another-worktrees"
+    second_adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: second_adapter)
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id != first.run_id
+    assert len(harness.deps.store.list_runs(33)) == 2
+    assert harness.deps.store.get_run(first.run_id).state == first_state
+    assert harness.deps.store.get_run(second.run_id).repo == harness.github.repo
+    assert second_adapter.requests[0].session_id is None
+    second_identity = harness.deps.store.begin_operation(second.run_id, "prepare", "identity", {})
+    assert second_identity.result_json is not None
+    assert json.loads(second_identity.result_json)["repo_root"] == str(
+        harness.deps.repo_root.resolve()
+    )
+
+
+def test_run_reuses_resolved_checkout_identity(harness: Harness, tmp_path: Path) -> None:
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=replace(result(), ok=False, provider_limited=True, error="Limited")),
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    first = harness.run()
+    alias = tmp_path / "clone-alias"
+    alias.symlink_to(harness.deps.repo_root, target_is_directory=True)
+    harness.deps.repo_root = alias
+    harness.github.repo = "OWNER/REPO"
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id == first.run_id
+    assert len(harness.deps.store.list_runs(33)) == 1
+    assert adapter.requests[1].session_id == "session-1"
+
+
+@pytest.mark.parametrize("change", ["provider", "authentication"])
+@pytest.mark.parametrize("stage", ["implement", "repair"])
+def test_session_reuse_requires_matching_provider_and_authentication(
+    harness: Harness, change: str, stage: str
+) -> None:
+    limited = replace(
+        result(),
+        ok=False,
+        error="Codex rate limit",
+        provider_limited=True,
+        session_id="codex-session",
+    )
+
+    def broken(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("broken")
+
+    steps = [ScriptStep(result=limited)]
+    if stage == "repair":
+        harness.deps.config.policy.gate_commands = [
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
+            ]
+        ]
+        steps.insert(0, ScriptStep(result=result(), side_effect=broken))
+    original = ScriptedAdapter(steps, name="codex")
+    harness.deps.registry.register("codex", lambda config: original)
+    first = harness.run()
+    assert first.state == RunState.PROVIDER_LIMITED
+    if change == "provider":
+        config = RoleConfig(provider="claude")
+    else:
+        config = RoleConfig.model_validate(
+            {"provider": "codex", "authentication_mode": "api_key"},
+            context={"from_toml": True},
+        )
+    harness.deps.config.roles[Role.IMPLEMENTER] = config
+    success = replace(
+        result(),
+        provider=config.provider,
+        authentication_mode=config.authentication_mode,
+        session_id="new-session",
+    )
+    replacement = ScriptedAdapter(
+        [
+            ScriptStep(result=success, side_effect=write_allowed),
+        ],
+        name=config.provider,
+        authentication_mode=config.authentication_mode,
+    )
+    harness.deps.registry.register(config.provider, lambda role_config: replacement)
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id == first.run_id
+    assert len(replacement.requests) == 1
+    assert replacement.requests[0].session_id is None
+    assert SCOPE in replacement.requests[0].prompt
+    if stage == "repair":
+        assert "Gate failed:" in replacement.requests[0].prompt
+    assert len(harness.deps.store.list_runs(33)) == 1
+
+
+def test_switching_back_reuses_latest_compatible_session(harness: Harness) -> None:
+    codex = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=replace(
+                    result(),
+                    ok=False,
+                    provider_limited=True,
+                    error="Limited",
+                    session_id="codex-session",
+                )
+            ),
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    claude = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=replace(
+                    result(),
+                    ok=False,
+                    provider="claude",
+                    provider_limited=True,
+                    error="Limited",
+                    session_id="claude-session",
+                )
+            ),
+        ],
+        name="claude",
+    )
+    harness.deps.registry.register("codex", lambda config: codex)
+    harness.deps.registry.register("claude", lambda config: claude)
+    first = harness.run()
+    assert first.state == RunState.PROVIDER_LIMITED
+    harness.deps.config.roles[Role.IMPLEMENTER] = RoleConfig(provider="claude")
+    assert harness.run().state == RunState.PROVIDER_LIMITED
+    assert claude.requests[0].session_id is None
+    harness.deps.config.roles[Role.IMPLEMENTER] = RoleConfig(provider="codex")
+    last = harness.run()
+    assert last.state == RunState.WAITING_FOR_CI
+    assert last.run_id == first.run_id
+    assert codex.requests[-1].session_id == "codex-session"

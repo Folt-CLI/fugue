@@ -28,7 +28,7 @@ from fugue.gate import GateResult, format_failure, run_gate
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
 from fugue.models import IssueType, Role, Status, Ticket
 from fugue.process import run_command
-from fugue.store import Store
+from fugue.store import Run, Store
 from fugue.workflow import RunState, Stage, ready_for_implementation
 
 
@@ -119,7 +119,9 @@ class Engine:
     def _identity(self, run_id: int, ticket: Ticket) -> dict[str, Any]:
         # A constant operation key lets resumes recover identity without deriving
         # a new branch, path or subject from mutable ticket fields.
-        operation = self.deps.store.begin_operation(run_id, "prepare", "identity", {})
+        operation = self.deps.store.begin_operation(
+            run_id, "prepare", "identity", {"repo_root": str(self.deps.repo_root.resolve())}
+        )
         if operation.result_json is not None:
             identity: dict[str, Any] = json.loads(operation.result_json)
             return identity
@@ -130,6 +132,7 @@ class Engine:
         if problems:
             raise _Stop(RunState.BLOCKED, problems)
         identity = {
+            "repo_root": str(self.deps.repo_root.resolve()),
             "branch": branch_name(ticket),
             "path": str(worktree_path(self.deps.worktrees_root, ticket).resolve()),
             "issue_type": message.issue_type,
@@ -141,13 +144,24 @@ class Engine:
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         store = self.deps.store
-        runs = store.list_runs(ticket_number)
-        run = next(
-            (r for r in reversed(runs) if r.state not in (RunState.COMPLETED, RunState.FAILED)),
-            None,
-        )
+        repo = self.deps.github.repo.strip()
+        repo_root = str(self.deps.repo_root.resolve())
+        run: Run | None = None
+        for candidate in reversed(store.list_runs(ticket_number)):
+            if candidate.state in (RunState.COMPLETED, RunState.FAILED):
+                continue
+            if candidate.repo.casefold() != repo.casefold():
+                continue
+            candidate_identity = store.begin_operation(candidate.id, "prepare", "identity", {})
+            saved = json.loads(candidate_identity.result_json or candidate_identity.intent_json)
+            if saved.get("repo_root") == repo_root:
+                run = candidate
+                break
         if run is None:
-            run = store.create_run(ticket_number, str(self.deps.repo_root.resolve()))
+            run = store.create_run(ticket_number, repo)
+            # Record the checkout before the first await, including runs that
+            # block before preparation can produce a complete identity.
+            store.begin_operation(run.id, "prepare", "identity", {"repo_root": repo_root})
         run_id = run.id
         head: str | None = None
         store.set_run_state(run_id, RunState.RUNNING)
@@ -233,6 +247,8 @@ class Engine:
             problems.append("Scope must list allowed files")
         if problems:
             raise _Stop(RunState.BLOCKED, problems)
+        current_scope = self.deps.store.begin_operation(run_id, "scope", "current", {})
+        self.deps.store.complete_operation(current_scope.id, {"name": name})
         return text
 
     async def _prepare(self, run_id: int, ticket: Ticket) -> Path:
@@ -302,9 +318,31 @@ class Engine:
         role_config = self.deps.config.roles[Role.IMPLEMENTER]
         adapter = self.deps.registry.build(role_config)
         sessions = [
-            a for a in self.deps.store.list_artifacts(run_id) if a.name.startswith("session-")
+            a
+            for a in self.deps.store.list_artifacts(run_id)
+            if a.name.startswith("session-") and a.name.endswith(".json")
         ]
-        session = Path(sessions[-1].path).read_text() if sessions else None
+        session: str | None = None
+        for artifact in reversed(sessions):
+            saved = json.loads(Path(artifact.path).read_text(encoding="utf-8"))
+            if (
+                saved.get("provider") == adapter.name
+                and saved.get("authentication_mode") == adapter.authentication_mode
+                and isinstance(saved.get("session_id"), str)
+            ):
+                session = saved["session_id"]
+                break
+        if session is None:
+            # New provider conversations need the scope even when this call is
+            # repairing a gate failure rather than starting implementation.
+            current_scope = self.deps.store.begin_operation(run_id, "scope", "current", {})
+            scope_name = json.loads(current_scope.result_json or "{}").get("name")
+            ref = self.deps.artifacts.open_ref(run_id, scope_name) if scope_name else None
+            if ref is None:
+                raise _Stop(RunState.BLOCKED, ["Current scope artifact is missing"])
+            scope = self.deps.artifacts.read_text(ref)
+            if scope not in prompt:
+                prompt = implementation_prompt(scope) + "\n\n" + prompt
         result = await adapter.run(
             AgentRequest(
                 role=Role.IMPLEMENTER,
@@ -336,7 +374,17 @@ class Engine:
                 result.authentication_mode,
                 result.session_id,
             )
-            self._artifact(run_id, f"session-{call}.txt", result.session_id)
+            self._artifact(
+                run_id,
+                f"session-{call}.json",
+                json.dumps(
+                    {
+                        "session_id": result.session_id,
+                        "provider": result.provider,
+                        "authentication_mode": result.authentication_mode,
+                    }
+                ),
+            )
         if not result.ok:
             error = result.error or "Implementer failed"
             self._artifact(run_id, f"agent-error-{call}.txt", error)

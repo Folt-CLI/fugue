@@ -8,6 +8,8 @@ from fugue.models import Status, Ticket
 
 
 class GitHubPort(Protocol):
+    repo: str
+
     async def get_ticket(self, number: int) -> Ticket: ...
 
     async def set_status(self, number: int, status: Status) -> None: ...
