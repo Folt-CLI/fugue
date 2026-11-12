@@ -139,7 +139,13 @@ def test_git_error_details(repo: Path) -> None:
     with pytest.raises(GitError) as exc_info:
         asyncio.run(Git(repo).head_sha("missing-ref"))
     error = exc_info.value
-    assert error.argv == ("git", "rev-parse", "--verify", "--end-of-options", "missing-ref")
+    assert error.argv == (
+        "git",
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        "refs/heads/missing-ref^{commit}",
+    )
     assert error.returncode == 128
     assert "fatal:" in error.stderr
     assert error.stderr in str(error)
@@ -311,5 +317,129 @@ def test_push_and_create_worktree_validate_branch_format(repo: Path, branch: str
             await git.create_worktree(path, branch, "HEAD")
         assert worktree_error.value.argv[1] == "check-ref-format"
         assert not path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_fast_forward_ignores_colliding_tags(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        git_command(repo, "tag", "origin/develop", original)
+        git_command(repo, "tag", "develop", original)
+        peer = repo.parent / "peer"
+        git_command(repo.parent, "clone", str(repo.parent / "origin"), str(peer))
+        (peer / "remote.txt").write_text("remote update\n")
+        git_command(peer, "add", "remote.txt")
+        git_command(peer, "commit", "-m", "Advance remote")
+        git_command(peer, "push", "origin", "refs/heads/develop:refs/heads/develop")
+        expected = git_command(peer, "rev-parse", "HEAD").strip()
+        await git.fetch()
+        await git.fast_forward("develop")
+        assert await git.head_sha() == expected
+        assert await git.current_branch() == "develop"
+        assert await git.head_sha("refs/heads/develop") == expected
+        assert await git.head_sha("refs/tags/origin/develop") == original
+        assert await git.head_sha("refs/tags/develop") == original
+
+    asyncio.run(scenario())
+
+
+def test_current_branch_ignores_colliding_tag(repo: Path) -> None:
+    git_command(repo, "checkout", "-b", "release")
+    git_command(repo, "tag", "release")
+    assert asyncio.run(Git(repo).current_branch()) == "release"
+
+
+def test_general_refs_reject_ambiguity_and_accept_explicit_refs(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        git_command(repo, "tag", "release", original)
+        (repo / "new.txt").write_text("branch content\n")
+        await git.stage(["new.txt"])
+        head = await git.commit(message())
+        git_command(repo, "branch", "release", head)
+        assert await git.head_sha("refs/heads/release") == head
+        assert await git.head_sha("refs/tags/release") == original
+        assert await git.head_sha("refs/heads/release~1") == original
+        assert await git.head_sha("HEAD~1") == original
+        with pytest.raises(ValueError, match="Ambiguous ref"):
+            await git.head_sha("release")
+        with pytest.raises(ValueError, match="Ambiguous ref"):
+            await git.head_sha("release~1")
+        with pytest.raises(ValueError, match="Ambiguous ref"):
+            await git.diff("release", "HEAD")
+        with pytest.raises(ValueError, match="Ambiguous ref"):
+            await git.diff("HEAD", "release")
+        diff = await git.diff("refs/tags/release", "refs/heads/release")
+        assert "+branch content" in diff
+        path = repo.parent / "new-worktree"
+        with pytest.raises(ValueError, match="Ambiguous ref"):
+            await git.create_worktree(path, "feature/ambiguous", "release")
+        assert not path.exists()
+        git_command(repo, "tag", "feature/explicit", original)
+        await git.create_worktree(path, "feature/explicit", "refs/heads/release")
+        assert await Git(path).head_sha() == head
+        await git.remove_worktree(path)
+
+    asyncio.run(scenario())
+
+
+def test_short_refs_resolve_only_when_unambiguous(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        head = await git.head_sha()
+        git_command(repo, "tag", "unique-tag")
+        assert await git.head_sha("unique-tag") == head
+        assert await git.head_sha("origin/develop") == head
+        git_command(repo, "tag", "origin/develop")
+        with pytest.raises(ValueError, match="Ambiguous ref"):
+            await git.head_sha("origin/develop")
+        assert await git.head_sha("refs/remotes/origin/develop") == head
+
+    asyncio.run(scenario())
+
+
+def test_fetch_and_push_remote_names_ignore_tags(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        git_command(repo, "tag", "origin")
+        await git.fetch()
+        await git.push("develop")
+        assert await git.head_sha("refs/remotes/origin/develop") == await git.head_sha()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("remote", ["", "-origin", "+origin", "origin:develop", "missing"])
+def test_remote_names_validated_before_mutation(repo: Path, remote: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        before = await git.head_sha()
+        for action in (git.fetch(remote), git.push("develop", remote)):
+            with pytest.raises((GitError, ValueError)):
+                await action
+        with pytest.raises((GitError, ValueError)):
+            await git.fast_forward("develop", remote)
+        assert await git.head_sha() == before
+        assert await git.current_branch() == "develop"
+
+    asyncio.run(scenario())
+
+
+def test_head_and_full_commit_ids_ignore_colliding_tags(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        (repo / "new.txt").write_text("new commit\n")
+        await git.stage(["new.txt"])
+        head = await git.commit(message())
+        git_command(repo, "update-ref", "refs/tags/HEAD", original)
+        git_command(repo, "update-ref", f"refs/tags/{original}", head)
+        assert await git.head_sha() == head
+        assert await git.head_sha(original) == original
+        assert await git.head_sha("refs/tags/HEAD") == original
+        assert await git.head_sha(f"refs/tags/{original}") == head
 
     asyncio.run(scenario())

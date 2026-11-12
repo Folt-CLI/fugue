@@ -1,5 +1,6 @@
 """Async Git commands scoped to a repository."""
 
+import re
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
@@ -38,14 +39,23 @@ class Git:
             raise GitError(result.argv, result.returncode, result.stderr)
         return "".join(output)
 
+    async def _validate_remote(self, remote: str) -> None:
+        if not remote or remote.startswith(("-", "+")):
+            raise ValueError("remote must be a configured remote name")
+        await self._run("check-ref-format", f"refs/remotes/{remote}/branch")
+        await self._run("remote", "get-url", "--", remote)
+
     async def fetch(self, remote: str = "origin") -> None:
+        await self._validate_remote(remote)
         await self._run("fetch", "--", remote)
 
     async def fast_forward(self, branch: str, remote: str = "origin") -> None:
-        if branch.startswith("-"):
-            raise ValueError("branch must not be an option")
-        await self._run("checkout", "--no-guess", branch, "--")
-        await self._run("merge", "--ff-only", "--", f"{remote}/{branch}")
+        await self._validate_branch(branch)
+        await self._validate_remote(remote)
+        await self._run("show-ref", "--verify", f"refs/heads/{branch}")
+        # switch requires a local branch, even when a tag has the same name.
+        await self._run("switch", "--no-guess", "--", branch)
+        await self._run("merge", "--ff-only", "--", f"refs/remotes/{remote}/{branch}")
 
     async def _validate_branch(self, branch: str) -> None:
         if branch.startswith(("-", "+")):
@@ -54,17 +64,50 @@ class Git:
 
     async def create_worktree(self, path: Path, branch: str, base: str) -> None:
         await self._validate_branch(branch)
-        await self._run("worktree", "add", "-b", branch, "--", str(path), base)
+        base_sha = await self._resolve_ref(base)
+        await self._run("worktree", "add", "-b", branch, "--", str(path), base_sha)
 
     async def remove_worktree(self, path: Path, force: bool = False) -> None:
         options = ("--force",) if force else ()
         await self._run("worktree", "remove", *options, "--", str(path))
 
+    async def _resolve_ref(self, ref: str) -> str:
+        """Resolve to a commit ID; ambiguous short refs require a full ref name."""
+        root = re.split(r"[~^]|@\{", ref, maxsplit=1)[0]
+        suffix = ref[len(root) :]
+        if not root or root.startswith(("-", "+")):
+            raise ValueError("ref must name a commit")
+        if root == "HEAD" or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", root):
+            qualified = root
+        elif root.startswith("refs/"):
+            await self._run("check-ref-format", root)
+            qualified = root
+        else:
+            await self._run("check-ref-format", f"refs/heads/{root}")
+            refs = (await self._run("for-each-ref", "--format=%(refname)")).splitlines()
+            candidates = {
+                f"refs/{root}",
+                f"refs/heads/{root}",
+                f"refs/tags/{root}",
+                f"refs/remotes/{root}",
+                f"refs/remotes/{root}/HEAD",
+            }
+            matches = [name for name in refs if name in candidates]
+            if len(matches) > 1:
+                raise ValueError(f"Ambiguous ref {root!r}; use a fully qualified ref")
+            qualified = matches[0] if matches else f"refs/heads/{root}"
+        return (
+            await self._run(
+                "rev-parse", "--verify", "--end-of-options", f"{qualified}{suffix}^{{commit}}"
+            )
+        ).strip()
+
     async def head_sha(self, ref: str = "HEAD") -> str:
-        return (await self._run("rev-parse", "--verify", "--end-of-options", ref)).strip()
+        return await self._resolve_ref(ref)
 
     async def current_branch(self) -> str:
-        return (await self._run("symbolic-ref", "--short", "HEAD")).strip()
+        ref = (await self._run("symbolic-ref", "-q", "HEAD")).strip()
+        return ref.removeprefix("refs/heads/")
 
     async def status_porcelain(self) -> list[str]:
         output = await self._run("status", "--porcelain=v1", "--no-renames")
@@ -88,8 +131,10 @@ class Git:
             await self._run("--literal-pathspecs", "add", "--", *paths)
 
     async def diff(self, base: str, head: str) -> str:
+        base_sha = await self._resolve_ref(base)
+        head_sha = await self._resolve_ref(head)
         return await self._run(
-            "diff", "--no-ext-diff", "--no-color", "--no-renames", base, head, "--"
+            "diff", "--no-ext-diff", "--no-color", "--no-renames", base_sha, head_sha, "--"
         )
 
     async def commit(self, message: CommitMessage) -> str:
@@ -98,4 +143,5 @@ class Git:
 
     async def push(self, branch: str, remote: str = "origin") -> None:
         await self._validate_branch(branch)
+        await self._validate_remote(remote)
         await self._run("push", "--", remote, f"refs/heads/{branch}:refs/heads/{branch}")
