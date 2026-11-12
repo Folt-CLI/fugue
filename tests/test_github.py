@@ -42,7 +42,7 @@ VALUES: list[dict[str, Any]] = [
 ]
 ITEM = {
     "id": "item-16",
-    "project": {"number": 2},
+    "project": {"number": 2, "owner": {"login": "example"}},
     "status": {"name": "S4: In Implementation"},
     "size": {"name": "S"},
 }
@@ -77,12 +77,13 @@ def fake(
         *,
         strip_tokens: bool = True,
         field_ids: ProjectFieldIds | None = None,
+        project_owner: str = "example",
     ) -> tuple[GitHubClient, Callable[[], list[dict[str, Any]]]]:
         fixture.write_text(json.dumps({json.dumps(key): value for key, value in responses}))
         record.write_text("")
         client = GitHubClient(
             REPO,
-            "example",
+            project_owner,
             2,
             strip_tokens=strip_tokens,
             field_ids=field_ids,
@@ -455,3 +456,71 @@ def test_missing_project_item_is_added_and_rechecked(fake: Fake) -> None:
     ]
     assert len(calls()) == 3
     assert calls()[0]["argv"] == calls()[2]["argv"]
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\r", "\n"])
+def test_body_sections_normalize_newlines_and_heading_whitespace(newline: str) -> None:
+    body = newline.join(["## Summary \t", "Text", "", "## \t Scope\t ", "More"])
+    assert parse_body_sections(body) == {"Summary": "Text", "Scope": "More"}
+    ticket = parse_ticket({**ISSUE, "body": body}, VALUES, ITEM)
+    assert ticket.body_sections == {"Summary": "Text", "Scope": "More"}
+
+
+@pytest.mark.parametrize("project_owner", ["example", " ExAmPlE "])
+def test_project_lookup_uses_owner_and_number(fake: Fake, project_owner: str) -> None:
+    wrong_item = {
+        **ITEM,
+        "id": "wrong-item",
+        "size": {"name": "L"},
+        "project": {"number": 2, "owner": {"login": "another-owner"}},
+    }
+    project_response = {
+        "data": {"repository": {"issue": {"projectItems": {"nodes": [wrong_item, ITEM]}}}}
+    }
+    client, calls = fake(
+        [
+            (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
+            (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", "graphql"], response(project_response)),
+            (["project", "item-edit"], {}),
+        ],
+        project_owner=project_owner,
+        field_ids=ProjectFieldIds(
+            project_id="project-id",
+            status_field_id="status-id",
+            size_field_id="size-id",
+            status_options={Status.DONE.value: "done-id"},
+        ),
+    )
+
+    async def scenario() -> None:
+        assert (await client.get_ticket(16)).size == Size.S
+        await client.set_status(16, Status.DONE)
+
+    asyncio.run(scenario())
+    assert "project{number owner{" in calls()[2]["argv"][3]
+    assert "... on Organization{login}" in calls()[2]["argv"][3]
+    assert "... on User{login}" in calls()[2]["argv"][3]
+    assert calls()[-1]["argv"][3] == "item-16"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/another-owner/fugue/actions/runs/123",
+        "https://github.com/example/another-repo/actions/runs/123",
+        "https://github.com/example/fugue/runs/123",
+    ],
+)
+def test_log_lookup_rejects_ambiguous_repository_or_path(fake: Fake, link: str) -> None:
+    client, calls = fake([(["run", "view"], {"stdout": "wrong log"})])
+    with pytest.raises(ValueError, match="Actions run link"):
+        asyncio.run(client.failed_log_tail(link))
+    assert calls() == []
+
+
+def test_log_lookup_accepts_repository_case_and_outer_whitespace(fake: Fake) -> None:
+    client, calls = fake([(["run", "view"], {"stdout": "log"})])
+    link = " https://github.com/ExAmPlE/Fugue/actions/runs/123/job/456 \n"
+    assert asyncio.run(client.failed_log_tail(link)) == "log"
+    assert calls()[0]["argv"] == ["run", "view", "123", "--repo", REPO, "--log-failed"]

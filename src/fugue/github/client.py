@@ -70,7 +70,8 @@ class HeadChanged(RuntimeError):
 
 _ITEM_QUERY = (
     "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){"
-    "projectItems(first:100){nodes{id project{number} "
+    "projectItems(first:100){nodes{id project{number owner{"
+    "... on Organization{login} ... on User{login}}} "
     'status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} '
     'size:fieldValueByName(name:"Size"){... on ProjectV2ItemFieldSingleSelectValue{name}}'
     "}}}}}"
@@ -89,8 +90,8 @@ class GitHubClient:
         field_ids: ProjectFieldIds | None = None,
         gh_executable: Sequence[str] = ("gh",),
     ) -> None:
-        self.repo = repo
-        self.project_owner = project_owner
+        self.repo = repo.strip()
+        self.project_owner = project_owner.strip()
         self.project_number = project_number
         self.runner = runner
         self.strip_tokens = strip_tokens
@@ -98,7 +99,7 @@ class GitHubClient:
         self.gh_executable = tuple(gh_executable)
         if not self.gh_executable:
             raise ValueError("gh_executable must not be empty")
-        self.owner, self.name = repo.split("/")
+        self.owner, self.name = self.repo.split("/")
 
     async def _run(
         self, *args: str, stdin: str | None = None, allowed_codes: Sequence[int] = (0,)
@@ -138,6 +139,7 @@ class GitHubClient:
                 item
                 for item in project_items(response)
                 if item["project"]["number"] == self.project_number
+                and item["project"]["owner"]["login"].casefold() == self.project_owner.casefold()
             ),
             None,
         )
@@ -344,13 +346,19 @@ class GitHubClient:
     async def failed_log_tail(self, run_link: str, max_lines: int = 200) -> str:
         if max_lines < 0:
             raise ValueError("max_lines must not be negative")
-        path = urlparse(run_link).path.split("/")
-        try:
-            run_id = path[path.index("runs") + 1]
-            if not run_id.isdecimal():
-                raise ValueError
-        except (ValueError, IndexError) as exc:
-            raise ValueError("Expected an Actions run link") from exc
+        link = urlparse(run_link.strip())
+        path = link.path.strip("/").split("/")
+        if (
+            link.scheme not in ("http", "https")
+            or not link.netloc
+            or len(path) < 5
+            or "/".join(path[:2]).casefold() != self.repo.casefold()
+            or path[2:4] != ["actions", "runs"]
+            or not path[4].isascii()
+            or not path[4].isdecimal()
+        ):
+            raise ValueError("Expected an Actions run link for the configured repository")
+        run_id = path[4]
         output = await self._run("run", "view", run_id, "--repo", self.repo, "--log-failed")
         return "\n".join(output.splitlines()[-max_lines:]) if max_lines else ""
 

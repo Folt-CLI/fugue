@@ -8,9 +8,10 @@ from fugue.models import Ticket
 
 
 def parse_body_sections(body: str) -> dict[str, str]:
-    """Keep Markdown level-two sections, including their original contents."""
+    """Parse Markdown level-two sections with normalized newlines and headings."""
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     parts = re.split(r"^##[ \t]+(.+?)[ \t]*$", body, flags=re.MULTILINE)
-    return {parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)}
+    return {parts[i].strip(): parts[i + 1].strip() for i in range(1, len(parts), 2)}
 
 
 def project_items(response: Mapping[str, Any]) -> list[dict[str, Any]]:
