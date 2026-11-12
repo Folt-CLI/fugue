@@ -287,7 +287,9 @@ def test_live_claude(tmp_path: Path) -> None:
     [
         ("rejected", True, None, True),
         ("rejected", False, None, True),
-        ("allowed_warning", True, None, True),
+        ("allowed_warning", True, None, False),
+        ("allowed_warning", False, None, False),
+        ("surprising_status", True, None, True),
         ("allowed", True, None, False),
         (None, False, 429, True),
         ("allowed", True, 429, True),

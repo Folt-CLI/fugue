@@ -92,7 +92,7 @@ class _Stream:
         if kind == "rate_limit_event":
             info = _object(item.get("rate_limit_info"))
             status = info.get("status", item.get("status"))
-            if status != "allowed":
+            if status not in {"allowed", "allowed_warning"}:
                 self.provider_limited = True
                 self.errors.append(f"Claude provider-limited: {status}")
             return [AgentEvent("other", data={**item, "status": status})]
