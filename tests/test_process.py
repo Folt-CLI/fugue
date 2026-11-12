@@ -154,6 +154,78 @@ def test_cancellation() -> None:
     asyncio.run(scenario())
 
 
+def test_cancellation_with_blocked_stdin() -> None:
+    async def scenario() -> None:
+        ready = asyncio.Event()
+        pids: list[int] = []
+
+        async def receive(line: str) -> None:
+            pids.append(int(line))
+            ready.set()
+
+        task = asyncio.create_task(
+            run_command(
+                _python("import os, time; print(os.getpid(), flush=True); time.sleep(60)"),
+                stdin="x" * (1024 * 1024),
+                on_stdout_line=receive,
+            )
+        )
+        try:
+            await asyncio.wait_for(ready.wait(), 3)
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=3)
+            assert task in done, "cancellation blocked on unread stdin"
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not _is_running(pids[0])
+        finally:
+            for pid in pids:
+                if _is_running(pid):
+                    os.kill(pid, signal.SIGKILL)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_timeout_with_blocked_callback() -> None:
+    async def scenario() -> None:
+        ready = asyncio.Event()
+        blocked = asyncio.Event()
+        pids: list[int] = []
+
+        async def receive(line: str) -> None:
+            pids.append(int(line))
+            ready.set()
+            await blocked.wait()
+
+        task = asyncio.create_task(
+            run_command(
+                _python("import os, time; print(os.getpid(), flush=True); time.sleep(60)"),
+                timeout=0.5,
+                on_stdout_line=receive,
+            )
+        )
+        try:
+            await asyncio.wait_for(ready.wait(), 3)
+            done, _ = await asyncio.wait({task}, timeout=3)
+            assert task in done, "timeout blocked on the stdout callback"
+            result = await task
+            assert result.timed_out
+            assert result.returncode == -signal.SIGTERM
+            assert result.stdout == f"{pids[0]}\n"
+            assert not _is_running(pids[0])
+        finally:
+            blocked.set()
+            for pid in pids:
+                if _is_running(pid):
+                    os.kill(pid, signal.SIGKILL)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 def test_truncated_output_and_spool(tmp_path: Path) -> None:
     stdout = "HEAD" + "x" * 100_000 + "TAIL"
     stderr = "START" + "y" * 100_000 + "END"

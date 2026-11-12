@@ -94,7 +94,6 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        await process.wait()
         return
 
     deadline = asyncio.get_running_loop().time() + 2.0
@@ -107,7 +106,6 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     else:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-    await process.wait()
 
 
 async def _read_stream(
@@ -139,6 +137,10 @@ async def _write_stdin(stream: asyncio.StreamWriter, stdin: str | None) -> None:
             await stream.drain()
     except (BrokenPipeError, ConnectionResetError):
         pass
+    except asyncio.CancelledError:
+        if not stream.is_closing():
+            stream.transport.abort()
+        raise
     finally:
         stream.close()
         with suppress(BrokenPipeError, ConnectionResetError):
@@ -197,32 +199,42 @@ async def run_command(
         asyncio.create_task(_write_stdin(stdin_stream, stdin)),
     ]
     completion = asyncio.gather(*tasks, process.wait())
+    cleanup_task: asyncio.Task[None] | None = None
+
+    async def cleanup(*, discard_output: bool) -> None:
+        # Signal and stop the group before awaiting any blocked I/O. Reaping is
+        # deferred until readers resume, since paused pipes can delay wait().
+        await _terminate_process_group(process)
+        if not stdin_stream.is_closing() or stdin_stream.transport.get_write_buffer_size():
+            stdin_stream.transport.abort()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if discard_output:
+            readers = [
+                _discard_stream(stdout_stream),
+                _discard_stream(stderr_stream),
+            ]
+        else:
+            # Resume capture without invoking callbacks that may be blocked.
+            readers = [
+                _read_stream(stdout_stream, stdout, spool),
+                _read_stream(stderr_stream, stderr, spool),
+            ]
+        await asyncio.gather(*readers, completion, process.wait(), return_exceptions=True)
+
     timed_out = False
     try:
         try:
             await asyncio.wait_for(asyncio.shield(completion), timeout)
         except TimeoutError:
             timed_out = True
-            await _terminate_process_group(process)
-            await completion
+            cleanup_task = asyncio.create_task(cleanup(discard_output=False))
+            await asyncio.shield(cleanup_task)
     except BaseException:
         # Shield cleanup so repeated cancellation cannot strand the process group.
-        async def cleanup() -> None:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            # Keep draining after callback/write failures so paused pipe transports
-            # cannot prevent process.wait() from finishing during termination.
-            drains = [
-                asyncio.create_task(_discard_stream(stdout_stream)),
-                asyncio.create_task(_discard_stream(stderr_stream)),
-            ]
-            try:
-                await _terminate_process_group(process)
-            finally:
-                await asyncio.gather(*drains, completion, return_exceptions=True)
-
-        cleanup_task = asyncio.create_task(cleanup())
+        if cleanup_task is None:
+            cleanup_task = asyncio.create_task(cleanup(discard_output=True))
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
