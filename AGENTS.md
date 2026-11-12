@@ -60,6 +60,8 @@ For ordinary developer decisions and merge rules below, apply the
   Codex scope `<N>-solution-<k>.md` using gh-attach. Verify uploads and use real
   attachment links. Analyses and scopes use `GLOSSARY.md` terms exactly and no
   emojis.
+- Reviews follow the [review contract](docs/dev/review.md#review-contract): only
+  Blocking findings block a merge, judged against the scope's scenarios.
 - Parents wait for closed children; see [closing rules](docs/dev/working/README.md#shared-steps).
 - Set ticket and PR metadata; see [ticket planning](docs/dev/ticket-planning.md#at-issue-creation) and [PRs](docs/dev/workflow.md#pull-requests).
 - Ticket work in its repository; see [repository rules](docs/dev/working/README.md#shared-steps).
