@@ -74,15 +74,33 @@ class Git:
     async def resolve_ref(self, name: str) -> str:
         """Resolve commit IDs, pseudo-refs, full refs, or local branch names."""
         if re.fullmatch(r"[0-9a-f]{4,64}", name):
-            try:
-                return (
-                    await self._run(
-                        "rev-parse", "--verify", "--quiet", "--end-of-options", f"{name}^{{commit}}"
-                    )
-                ).strip()
-            except GitError:
-                # A hex-looking name may instead be a local branch.
-                pass
+            refs = (
+                await self._run(
+                    "for-each-ref", "--format=%(refname)", "refs/tags", "refs/heads", "refs/remotes"
+                )
+            ).splitlines()
+            if any(
+                ref in {f"refs/tags/{name}", f"refs/heads/{name}"}
+                or (ref.startswith("refs/remotes/") and ref.endswith(f"/{name}"))
+                for ref in refs
+            ):
+                raise GitError(
+                    (
+                        "git",
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        "--end-of-options",
+                        f"{name}^{{commit}}",
+                    ),
+                    128,
+                    f"ambiguous revision: {name}",
+                )
+            return (
+                await self._run(
+                    "rev-parse", "--verify", "--quiet", "--end-of-options", f"{name}^{{commit}}"
+                )
+            ).strip()
         if name in {"HEAD", "FETCH_HEAD", "ORIG_HEAD"} or name.startswith(
             ("HEAD~", "HEAD^", "refs/")
         ):

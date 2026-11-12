@@ -427,7 +427,7 @@ def test_remote_names_validated_before_mutation(repo: Path, remote: str) -> None
     asyncio.run(scenario())
 
 
-def test_head_and_full_commit_ids_ignore_colliding_tags(repo: Path) -> None:
+def test_head_ignores_tag_and_full_commit_id_collision_is_rejected(repo: Path) -> None:
     async def scenario() -> None:
         git = Git(repo)
         original = await git.head_sha()
@@ -437,7 +437,8 @@ def test_head_and_full_commit_ids_ignore_colliding_tags(repo: Path) -> None:
         git_command(repo, "update-ref", "refs/tags/HEAD", original)
         git_command(repo, "update-ref", f"refs/tags/{original}", head)
         assert await git.head_sha() == head
-        assert await git.head_sha(original) == original
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.head_sha(original)
         assert await git.head_sha("refs/tags/HEAD") == original
         assert await git.head_sha(f"refs/tags/{original}") == head
 
@@ -487,5 +488,35 @@ def test_pseudo_refs_and_head_revisions(repo: Path) -> None:
         await git.create_worktree(path, "feature/pseudo", "HEAD^")
         assert await Git(path).head_sha() == original
         await git.remove_worktree(path)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "namespace", ["refs/tags", "refs/heads", "refs/remotes/origin", "refs/remotes/team/upstream"]
+)
+def test_hex_revision_collisions_rejected_across_helpers(repo: Path, namespace: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        prefix = git_command(repo, "rev-parse", "--short=7", original).strip()
+        (repo / "revision.txt").write_text("different commit\n")
+        await git.stage(["revision.txt"])
+        head = await git.commit(message())
+        git_command(repo, "update-ref", f"{namespace}/{prefix}-suffix", head)
+        assert await git.head_sha(prefix) == original
+        git_command(repo, "update-ref", f"{namespace}/{prefix}", head)
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.head_sha(prefix)
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.diff(prefix, "HEAD")
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.diff("HEAD", prefix)
+        path = repo.parent / "ambiguous-worktree"
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.create_worktree(path, "feature/ambiguous-hex", prefix)
+        assert not path.exists()
+        assert await git.head_sha(f"{namespace}/{prefix}") == head
+        assert await git.head_sha(original) == original
 
     asyncio.run(scenario())
