@@ -266,3 +266,50 @@ def test_rename_preserves_source_for_validation(repo: Path) -> None:
         assert "+++ b/allowed/private.txt" in diff
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("branch", ["+release", "-release"])
+def test_push_and_create_worktree_reject_branch_prefixes(repo: Path, branch: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        before = git_command(repo.parent / "origin", "show-ref")
+        with pytest.raises(ValueError, match="branch"):
+            await git.push(branch)
+        path = repo.parent / "invalid-worktree"
+        with pytest.raises(ValueError, match="branch"):
+            await git.create_worktree(path, branch, "HEAD")
+        assert not path.exists()
+        assert git_command(repo.parent / "origin", "show-ref") == before
+
+    asyncio.run(scenario())
+
+
+def test_push_uses_qualified_branch_ref(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        git_command(repo, "tag", "release")
+        git_command(repo, "checkout", "-b", "release")
+        (repo / "release.txt").write_text("release\n")
+        await git.stage(["release.txt"])
+        head = await git.commit(message())
+        await git.push("release")
+        remote_head = git_command(repo.parent / "origin", "rev-parse", "refs/heads/release")
+        assert remote_head.strip() == head
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("branch", ["", "release:other", "release*", "../release"])
+def test_push_and_create_worktree_validate_branch_format(repo: Path, branch: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        with pytest.raises(GitError) as push_error:
+            await git.push(branch)
+        assert push_error.value.argv[1] == "check-ref-format"
+        path = repo.parent / "invalid-worktree"
+        with pytest.raises(GitError) as worktree_error:
+            await git.create_worktree(path, branch, "HEAD")
+        assert worktree_error.value.argv[1] == "check-ref-format"
+        assert not path.exists()
+
+    asyncio.run(scenario())

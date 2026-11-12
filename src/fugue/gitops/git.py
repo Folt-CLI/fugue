@@ -47,7 +47,13 @@ class Git:
         await self._run("checkout", "--no-guess", branch, "--")
         await self._run("merge", "--ff-only", "--", f"{remote}/{branch}")
 
+    async def _validate_branch(self, branch: str) -> None:
+        if branch.startswith(("-", "+")):
+            raise ValueError("branch must not begin with '-' or '+'")
+        await self._run("check-ref-format", f"refs/heads/{branch}")
+
     async def create_worktree(self, path: Path, branch: str, base: str) -> None:
+        await self._validate_branch(branch)
         await self._run("worktree", "add", "-b", branch, "--", str(path), base)
 
     async def remove_worktree(self, path: Path, force: bool = False) -> None:
@@ -91,4 +97,5 @@ class Git:
         return await self.head_sha()
 
     async def push(self, branch: str, remote: str = "origin") -> None:
-        await self._run("push", "--", remote, f"{branch}:refs/heads/{branch}")
+        await self._validate_branch(branch)
+        await self._run("push", "--", remote, f"refs/heads/{branch}:refs/heads/{branch}")
