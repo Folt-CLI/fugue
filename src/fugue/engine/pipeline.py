@@ -274,6 +274,26 @@ class Engine:
         async def existing() -> dict[str, Any] | None:
             if path.exists():
                 try:
+                    repo_common = (
+                        self.deps.repo_root
+                        / (await git._run("rev-parse", "--git-common-dir")).strip()
+                    ).resolve()
+                    worktree_common = (
+                        path / (await Git(path)._run("rev-parse", "--git-common-dir")).strip()
+                    ).resolve()
+                except GitError as error:
+                    raise _Stop(
+                        RunState.BLOCKED, [f"Cannot verify existing worktree {path}: {error}"]
+                    ) from error
+                if repo_common != worktree_common:
+                    raise _Stop(
+                        RunState.BLOCKED,
+                        [
+                            f"Worktree {path} belongs to a different repository: "
+                            f"Git common directory {worktree_common} differs from {repo_common}"
+                        ],
+                    )
+                try:
                     await git.resolve_ref(branch)
                     if await Git(path).current_branch() == branch:
                         saved = json.loads(operation.result_json) if operation.result_json else {}

@@ -1078,3 +1078,56 @@ def test_unexpected_stage_failure_blocks_before_propagating(
     run = harness.deps.store.list_runs(33)[0]
     assert harness.deps.store.get_run(run.id).state == RunState.BLOCKED
     assert not harness.github.created
+
+
+@pytest.mark.parametrize("matching_local_branch", [False, True])
+def test_shared_worktrees_root_cannot_adopt_another_clones_worktree(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, matching_local_branch: bool
+) -> None:
+    original_adapter = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=replace(result(), ok=False, provider_limited=True, error="Limited"),
+                side_effect=write_allowed,
+            ),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: original_adapter)
+    first = harness.run()
+    assert first.state == RunState.PROVIDER_LIMITED
+    branch = branch_name(harness.github.ticket)
+    shared_path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    before_status = asyncio.run(Git(shared_path).status_porcelain())
+    before_content = (shared_path / "allowed.txt").read_bytes()
+    second_root = tmp_path / "second-clone"
+    asyncio.run(git_command(tmp_path, "clone", str(harness.origin), str(second_root)))
+    if matching_local_branch:
+        asyncio.run(git_command(second_root, "branch", branch, "develop"))
+    github = FakeGitHub(harness.github.ticket.model_copy(update={"status": Status.TO_DO}))
+    adapter = ScriptedAdapter([], name="codex")
+    registry = AdapterRegistry()
+    registry.register("codex", lambda config: adapter)
+    deps = replace(harness.deps, repo_root=second_root, github=github, registry=registry)
+
+    async def unexpected_mutation(*args: object, **kwargs: object) -> None:
+        pytest.fail("A foreign worktree must block before external mutations")
+
+    for method in ("fetch", "fast_forward", "create_worktree", "stage", "commit", "push"):
+        monkeypatch.setattr(Git, method, unexpected_mutation)
+    monkeypatch.setattr(github, "set_status", unexpected_mutation)
+    monkeypatch.setattr(github, "create_pr", unexpected_mutation)
+    second = asyncio.run(Engine(deps).run_to_pr(33))
+    assert second.state == RunState.BLOCKED
+    assert second.run_id != first.run_id
+    assert "belongs to a different repository" in second.problems[0]
+    assert str(shared_path) in second.problems[0]
+    assert str((second_root / ".git").resolve()) in second.problems[0]
+    assert not adapter.requests
+    assert github.calls == ["download"]
+    assert asyncio.run(Git(shared_path).head_sha()) == harness.initial_head
+    assert asyncio.run(Git(shared_path).status_porcelain()) == before_status
+    assert (shared_path / "allowed.txt").read_bytes() == before_content
+    assert asyncio.run(Git(second_root).head_sha()) == harness.initial_head
+    assert harness.deps.store.get_run(first.run_id).state == RunState.PROVIDER_LIMITED
+    assert harness.deps.store.get_run(second.run_id).state == RunState.BLOCKED
