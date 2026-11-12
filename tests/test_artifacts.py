@@ -1,4 +1,5 @@
 import hashlib
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -70,15 +71,15 @@ def test_verify_detects_tampering_and_missing_file(tmp_path: Path) -> None:
     assert not store.verify(ref)
 
 
-def test_failed_replace_leaves_no_partial_file(
+def test_failed_publish_leaves_no_partial_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_replace(src: Path, dst: Path) -> None:
+    def fail_link(src: Path, dst: Path) -> None:
         assert src.read_bytes() == b"content"
         assert not dst.exists()
-        raise OSError("replace failed")
+        raise OSError("link failed")
 
-    monkeypatch.setattr("fugue.artifacts.store.os.replace", fail_replace)
+    monkeypatch.setattr("fugue.artifacts.store.os.link", fail_link)
     store = ArtifactStore(tmp_path)
     with pytest.raises(ArtifactError, match="Cannot write artifact") as exc_info:
         store.write(1, "log.txt", "content")
@@ -86,6 +87,38 @@ def test_failed_replace_leaves_no_partial_file(
     assert isinstance(exc_info.value.__cause__, OSError)
     assert list((tmp_path / "run-1").iterdir()) == []
     assert store.open_ref(1, "log.txt") is None
+
+
+@pytest.mark.parametrize("existing", [b"original", b"content"])
+def test_concurrent_publish_preserves_existing_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bytes
+) -> None:
+    link = os.link
+    existing_inode: int | None = None
+
+    def race_link(src: Path, dst: Path) -> None:
+        nonlocal existing_inode
+        assert src.read_bytes() == b"content"
+        assert not dst.exists()
+        dst.write_bytes(existing)
+        existing_inode = dst.stat().st_ino
+        link(src, dst)
+
+    monkeypatch.setattr("fugue.artifacts.store.os.link", race_link)
+    store = ArtifactStore(tmp_path)
+    if existing == b"content":
+        ref = store.write(1, "log.txt", b"content")
+        assert ref == store.open_ref(1, "log.txt")
+        assert ref.sha256 == hashlib.sha256(existing).hexdigest()
+        assert ref.size_bytes == len(existing)
+    else:
+        with pytest.raises(ArtifactConflict):
+            store.write(1, "log.txt", b"content")
+
+    path = tmp_path / "run-1" / "log.txt"
+    assert path.read_bytes() == existing
+    assert path.stat().st_ino == existing_inode
+    assert list(path.parent.iterdir()) == [path]
 
 
 def test_text_is_utf8(tmp_path: Path) -> None:

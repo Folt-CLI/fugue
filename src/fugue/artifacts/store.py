@@ -61,7 +61,23 @@ class ArtifactStore:
             with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
                 temporary = Path(stream.name)
                 stream.write(content)
-            os.replace(temporary, path)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                existing = path.read_bytes()
+                if existing != content:
+                    raise ArtifactConflict(
+                        f"Artifact already exists with different content: {path}"
+                    ) from None
+            temporary.unlink()
+            temporary = None
+            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except OSError as exc:
             raise ArtifactError(f"Cannot write artifact: {path}") from exc
         finally:
