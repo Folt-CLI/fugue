@@ -1,28 +1,42 @@
 # Fugue glossary
 
-Read this file first. Use defined process terms exactly as written. Product
-meanings remain unresolved until a Question defines them; do not infer them
-from proposals.
+Read this file first. Use defined terms exactly as written. Product meanings
+remain unresolved until a Question defines them; do not infer them from proposals.
 
 ## A-Z index
 
+- [adapter](#provider-adapter)
+- [approval](#approval)
+- [artifact](#artifact)
+- [authentication mode](#authentication-mode)
 - [autonomy exceptions](#autonomy-exceptions)
 - [campaign](#campaign)
+- [capability](#capability)
 - [child](#child)
 - [Component](#component)
 - [Disposition](#disposition)
 - [Epic](#epic)
 - [gate](#gate)
+- [handoff](#handoff)
 - [incident](#incident)
 - [issue type](#issue-type)
 - [milestone](#milestone)
+- [operation](#operation)
 - [orchestrator](#orchestrator)
 - [parent](#parent)
+- [provider adapter](#provider-adapter)
 - [Question](#question)
+- [reconcile](#reconcile)
+- [repair limit](#repair-limit)
+- [role](#role)
+- [run](#run)
 - [scope](#scope)
+- [session](#session)
 - [Size](#size)
 - [stack](#stack)
+- [stage](#stage)
 - [Status](#status)
+- [usage record](#usage-record)
 - [work item](#work-item)
 - [worktree](#worktree)
 
@@ -142,24 +156,90 @@ A dedicated Git working directory for an issue branch. Concurrent implementation
 
 Status: decided.
 
-## Open terms
+## Product terms
 
-These are unresolved product terms, without product definitions. Ordinary
-phrases such as workflow stages or running a command do not define them.
+### approval
 
-### adapter
+a recorded decision bound to the exact head commit SHA of a pull request; invalid when the head differs.
 
-Status: open. A Question must define this product term.
+Status: decided.
+
+### artifact
+
+a file produced or consumed by a run (findings, scope, diff, log, structured output), stored with a SHA-256 checksum.
+
+Status: decided.
+
+### authentication mode
+
+how a provider call is authenticated and billed; one of `subscription_login` (the user's own sign-in to the unmodified provider CLI) or `api_key` (explicitly configured, metered).
+
+Status: decided.
+
+### capability
+
+a feature a provider adapter declares (streaming_events, structured_output, session_resume, cancellation, read_only_mode, workspace_write_mode, usage_tokens, usage_cost_estimate).
+
+Status: decided.
 
 ### handoff
 
-Status: open. A Question must define this product term.
+the schema-validated structured input or output passed between roles at a stage boundary.
+
+Status: decided.
+
+### operation
+
+one external mutation (GitHub, Git, filesystem outside the run store) recorded with an intent before and a result after, so a restart can reconcile.
+
+Status: decided.
+
+### provider adapter
+
+the module that drives one provider's unmodified command-line tool as a child process and normalises its events, sessions and usage.
+
+Also called adapter.
+
+Status: decided.
+
+### reconcile
+
+compare recorded operation intents with the live external state after an interruption and reuse or complete existing objects instead of repeating them.
+
+Status: decided.
+
+### repair limit
+
+the configured maximum number of repair attempts for one stage before a run stops for intervention.
+
+Status: decided.
+
+### role
+
+a named job for an agent in a run: analyst, implementer or reviewer.
+
+Status: decided.
 
 ### run
 
-Status: open. A Question must define this product term.
+one execution of the workflow for one ticket, recorded in the run store with an id.
+
+Status: decided.
+
+### session
+
+the provider-side conversation identifier a provider adapter retains so work can be resumed.
+
+Status: decided.
 
 ### stage
 
-Status: open. A Question must define this product term.
+a named step of a run (load, validate, analyse, select, prepare, implement, verify, deliver, monitor, review, repair, merge, close).
 
+Status: decided.
+
+### usage record
+
+tokens, elapsed time and, where the provider reports it, a cost estimate for one agent call; never presented as a bill.
+
+Status: decided.
