@@ -2,7 +2,11 @@
 name = "fugue"
 version = "0.1.0.dev0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.3",
+    "rich>=15.0.0",
+    "typer>=0.29.1",
+]
 
 [build-system]
 requires = ["hatchling"]
