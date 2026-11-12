@@ -23,4 +23,4 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked mypy
       - run: uv run --locked pytest
-      - run: uv build --locked
+      - run: uv build
