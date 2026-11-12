@@ -82,6 +82,7 @@ def test_unsupported_result() -> None:
     assert result.log_path is None
     assert not result.timed_out
     assert not result.cancelled
+    assert not result.provider_limited
 
 
 @pytest.mark.parametrize("mode", list(AuthenticationMode))

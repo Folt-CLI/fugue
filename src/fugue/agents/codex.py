@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -85,10 +86,11 @@ class CodexAdapter:
         session_id = request.session_id
         last_message = ""
         error: str | None = None
+        provider_limited = False
         usage_data: Mapping[str, Any] | None = None
 
         async def receive(line: str) -> None:
-            nonlocal session_id, last_message, error, usage_data
+            nonlocal session_id, last_message, error, usage_data, provider_limited
             try:
                 raw = json.loads(line)
             except json.JSONDecodeError:
@@ -102,6 +104,9 @@ class CodexAdapter:
                 last_message = event.text
             elif event.kind == "error":
                 error = event.text
+                provider_limited = provider_limited or bool(
+                    re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error, re.I)
+                )
             elif event.kind == "usage":
                 usage_data = event.data
             if on_event is not None:
@@ -184,6 +189,10 @@ class CodexAdapter:
             cancelled=result.cancelled,
             log_path=log_path,
             unsupported=None,
+            provider_limited=provider_limited
+            or bool(
+                re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error or "", re.I)
+            ),
         )
 
 

@@ -280,3 +280,62 @@ def test_live_claude(tmp_path: Path) -> None:
     )
     assert result.ok, result.error
     assert result.session_id
+
+
+@pytest.mark.parametrize(
+    ("status", "nested", "api_status", "expected"),
+    [
+        ("rejected", True, None, True),
+        ("rejected", False, None, True),
+        ("allowed_warning", True, None, False),
+        ("allowed_warning", False, None, False),
+        ("surprising_status", True, None, True),
+        ("allowed", True, None, False),
+        (None, False, 429, True),
+        ("allowed", True, 429, True),
+        (None, False, 503, False),
+    ],
+)
+def test_explicit_provider_limit_flag(
+    request_data: AgentRequest,
+    status: str | None,
+    nested: bool,
+    api_status: int | None,
+    expected: bool,
+) -> None:
+    stream: list[dict[str, Any]] = [
+        {"type": "system", "subtype": "init", "session_id": "limited-session"},
+    ]
+    if status is not None:
+        stream.append(
+            {
+                "type": "rate_limit_event",
+                **({"rate_limit_info": {"status": status}} if nested else {"status": status}),
+            }
+        )
+        # A later allowed event must not erase an earlier rejection.
+        stream.append({"type": "rate_limit_event", "status": "allowed"})
+    stream.append(
+        {
+            "type": "result",
+            "result": "response",
+            "is_error": api_status is not None and api_status != 429,
+            "api_error_status": api_status,
+        }
+    )
+    script = (
+        "import sys; sys.stdin.read(); print("
+        + repr("\n".join(json.dumps(event) for event in stream))
+        + ")"
+    )
+    adapter = ClaudeAdapter(
+        executable=(sys.executable, "-c", script),
+        spool_dir=request_data.cwd / "logs",
+    )
+    result = asyncio.run(adapter.run(request_data))
+    assert result.provider_limited is expected
+    assert result.session_id == "limited-session"
+    if expected:
+        assert not result.ok
+    if status == "rejected":
+        assert result.error == "Claude provider-limited: rejected"
