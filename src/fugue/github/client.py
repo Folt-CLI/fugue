@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from fugue.github.parse import parse_ticket, project_items
+from fugue.github.parse import flatten_pages, parse_ticket, project_items
 from fugue.models import Component, Disposition, Priority, Size, Status, Ticket
 from fugue.process import CommandResult, run_command
 
@@ -134,6 +134,10 @@ class GitHubClient:
     async def _json(self, *args: str) -> Any:
         return json.loads(await self._run(*args))
 
+    async def _paginated(self, endpoint: str) -> list[dict[str, Any]]:
+        pages = await self._json("api", endpoint, "--paginate", "--slurp")
+        return flatten_pages(pages)
+
     async def _item(self, number: int) -> dict[str, Any] | None:
         response = await self._json(
             "api",
@@ -163,15 +167,9 @@ class GitHubClient:
         item = await self._item(number)
         if item is None:
             raise ValueError(f"Issue {number} is absent from project {self.project_number}")
-        # Slurp retains page boundaries as one JSON document; flatten the native
-        # issue lists before handing them to the pure parser.
-        blocker_pages = await self._json(
-            "api",
-            f"repos/{self.repo}/issues/{number}/dependencies/blocked_by",
-            "--paginate",
-            "--slurp",
+        blockers = await self._paginated(
+            f"repos/{self.repo}/issues/{number}/dependencies/blocked_by"
         )
-        blockers = [blocker for page in blocker_pages for blocker in page]
         return parse_ticket(issue, values, item, blockers)
 
     async def _project_fields(self) -> None:
@@ -253,7 +251,7 @@ class GitHubClient:
         }[name]
         fid = getattr(self.field_ids, attribute)
         if fid is None:
-            fields = await self._json("api", f"orgs/{self.owner}/issue-fields", "--paginate")
+            fields = await self._paginated(f"orgs/{self.owner}/issue-fields")
             for item in fields:
                 if item["name"] == name:
                     fid = item["id"]

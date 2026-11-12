@@ -629,16 +629,36 @@ def test_parser_uses_separate_native_blockers() -> None:
     assert parse_ticket(issue, VALUES, ITEM, []).blocked_by == []
 
 
-def test_blockers_from_multiple_pages(fake: Fake) -> None:
-    client, _ = fake(
+@pytest.mark.parametrize("paged", [False, True])
+def test_blockers_from_multiple_pages(fake: Fake, paged: bool) -> None:
+    client, calls = fake(
         [
             (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
             (["api", "graphql"], response(PROJECT_RESPONSE)),
             (
-                ["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"],
-                response([[BLOCKERS[0]], [BLOCKERS[1]]]),
+                ["api", f"repos/{REPO}/issues/16/dependencies/blocked_by", "--paginate", "--slurp"],
+                response([[BLOCKERS[0]], [BLOCKERS[1]]] if paged else BLOCKERS),
             ),
         ]
     )
     assert asyncio.run(client.get_ticket(16)).blocked_by == [11, 10]
+    assert calls()[-1]["argv"][-2:] == ["--paginate", "--slurp"]
+
+
+@pytest.mark.parametrize("paged", [False, True])
+def test_issue_field_discovery_flattens_pages(fake: Fake, paged: bool) -> None:
+    first_page = [{"id": 2, "name": "Component"}]
+    second_page = [{"id": 1, "name": "Priority"}]
+    payload = [first_page, second_page] if paged else first_page + second_page
+    client, calls = fake(
+        [
+            (["api", "orgs/example/issue-fields", "--paginate", "--slurp"], response(payload)),
+            (["api", "-X", "POST"], {}),
+        ]
+    )
+    asyncio.run(client.set_priority(16, Priority.HIGH))
+    assert calls()[0]["argv"] == ["api", "orgs/example/issue-fields", "--paginate", "--slurp"]
+    assert json.loads(calls()[1]["stdin"]) == {
+        "issue_field_values": [{"field_id": 1, "value": "High"}]
+    }

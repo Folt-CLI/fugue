@@ -7,6 +7,19 @@ from typing import Any
 from fugue.models import Ticket
 
 
+def flatten_pages(
+    pages: Sequence[dict[str, Any] | Sequence[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Flatten slurped list pages, also accepting a single non-paged array."""
+    items: list[dict[str, Any]] = []
+    for page in pages:
+        if isinstance(page, dict):
+            items.append(page)
+        else:
+            items.extend(page)
+    return items
+
+
 def parse_body_sections(body: str) -> dict[str, str]:
     """Parse Markdown level-two sections with normalized newlines and headings."""
     body = body.replace("\r\n", "\n").replace("\r", "\n")
