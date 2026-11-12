@@ -33,8 +33,8 @@ uv run pytest
 uv build
 ```
 
-These commands become runnable when the scaffold ticket lands. CI will mirror
-them. Every PR runs the full required CI check; there is no PR-build skip
+These commands exist and are mirrored by the `CI` workflow job.
+Every PR runs the full required CI check; there is no PR-build skip
 mechanism. This document records policy, not evidence of an executed check.
 
 Commit and push only when all commands pass. Return failures and their output
