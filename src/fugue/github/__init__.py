@@ -1,5 +1,10 @@
 """GitHub operations and response parsers."""
 
+from fugue.github.attachments import (
+    AttachmentUnavailable,
+    AttachmentVerificationError,
+    UploadedAttachment,
+)
 from fugue.github.client import (
     CheckResult,
     GitHubClient,
@@ -11,6 +16,8 @@ from fugue.github.client import (
 )
 
 __all__ = [
+    "AttachmentUnavailable",
+    "AttachmentVerificationError",
     "CheckResult",
     "GitHubClient",
     "GitHubError",
@@ -18,4 +25,5 @@ __all__ = [
     "ProjectFieldIds",
     "PullRequest",
     "ReviewComment",
+    "UploadedAttachment",
 ]

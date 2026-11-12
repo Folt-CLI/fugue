@@ -1,15 +1,21 @@
 """Async GitHub CLI operations with explicit repository and head checks."""
 
+from __future__ import annotations
+
 import json
 import os
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from fugue.github.parse import flatten_pages, parse_ticket, project_items
 from fugue.models import Component, Disposition, Priority, Size, Status, Ticket
 from fugue.process import CommandResult, run_command
+
+if TYPE_CHECKING:
+    from fugue.github.attachments import UploadedAttachment
 
 
 class Runner(Protocol):
@@ -148,6 +154,16 @@ class GitHubClient:
 
     async def _json(self, *args: str) -> Any:
         return json.loads(await self._run(*args))
+
+    async def download_attachment(self, url: str, dest: Path) -> Path:
+        from fugue.github.attachments import download_attachment
+
+        return await download_attachment(self, url, dest)
+
+    async def upload_attachments(self, paths: Sequence[Path]) -> list[UploadedAttachment]:
+        from fugue.github.attachments import upload_attachments
+
+        return await upload_attachments(self, paths)
 
     async def _paginated(self, endpoint: str, *args: str) -> list[dict[str, Any]]:
         pages = await self._json("api", endpoint, *args, "--paginate", "--slurp")
