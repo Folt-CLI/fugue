@@ -1,0 +1,231 @@
+# Work workflow
+
+For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](process.md#autonomous-development-campaign-exceptions) for the campaign.
+
+Use GitHub Issues as the durable record of a change. Keep the issue body current
+as the work becomes clearer; use comments for short decisions and handoffs, and
+link substantial design notes or evidence instead of copying long material into
+comments.
+
+## Stages
+
+Terms are defined in [GLOSSARY.md](../../GLOSSARY.md).
+
+Sizes decide which stages apply; see [working templates](working/README.md).
+XS skips analysis and review, S skips analysis, M and L need both, and XL needs
+neither. XS and S tickets go straight to implementation with their solution
+already in the ticket. An [XL Epic](working/xl-epic.md) only groups work and has
+no implementation.
+
+1. **Propose.** Create a work item or epic from its issue form. Agree on the
+   outcome and scope before implementation starts.
+2. **Analyse and discuss.** For M and L, the orchestrator inspects the code
+   and records factual findings, constraints, and compatibility concerns. Each
+   possible solution is a complete Codex scope attachment. The orchestrator
+   writes Analysis inline as if the developer had already asked for context,
+   comparison and the next step, following
+   [Issue format](issue-format.md#analysis-and-solution-selection). The
+   orchestrator explains the trade-offs and may recommend an option; the
+   developer chooses. Leave the Solution section pending until that choice is
+   made. Then mark the chosen attachment **[Selected Solution]** and fill
+   Solution with the changes, affected areas, and reason for choosing it. Split
+   work that cannot be reviewed as one bounded change into linked issues.
+3. **Implement.** All agents implement in a dedicated Git worktree for the
+   issue branch, never in the primary checkout. Use one worktree per ticket and
+   do not share a worktree between concurrent implementation work. Dependent
+   tickets may use a [stacked pull request](stacked-prs.md), with each upper
+   branch based on the lower branch. Keep changes within the agreed scope.
+   Implementation agents implement and fix only, following the roles and
+   standard prompt in [Testing](testing.md). Update the issue when a decision
+   changes the plan or scope.
+4. **Review.** Follow the size's review rule in
+   [working templates](working/README.md).
+   The orchestrator runs the gate in [Testing](testing.md), then commits in the
+   issue's commit format, pushes and opens the pull request without a further
+   request. Follow the [review workflow](review.md) and link the issue
+   (for example, `Closes #2`). Only the developer merges; an agent merges only when the developer
+   tells it to for that pull request. Record requested changes on the ticket
+   and address them on the same branch before merging.
+5. **Complete.** Record the delivered change and verification in the pull request.
+   Link follow-up work where needed. A linked closing keyword may close the work
+   item when its pull request merges.
+
+## Branches and commits
+
+The first repository commit is the one exception to the issue-branch workflow:
+it establishes the project scaffold and its development process. Stage the
+intended files explicitly, inspect the staged changes, and use a title in this
+format:
+
+```text
+Initial[#1]: <short explanation>
+```
+
+Always include a body with a `**Summary**` heading and a short explanation of
+why the change was made; the initial commit may use the Summary only. The first
+commit uses the active release epic's number. For example:
+
+```markdown
+**Summary**
+
+Establish the initial Fugue scaffold and development workflow so release work can
+proceed from a consistent, documented baseline.
+```
+
+After the initial commit, each work item gets its own branch and dedicated Git
+worktree. Before creating the worktree, fetch and fast-forward its base so the
+branch starts from the current remote state. For an independent ticket, the
+base is `develop`; for a dependent ticket in an open stack, use the lower
+branch. All implementation agents use that worktree; the primary checkout is
+not an implementation workspace. The bottom pull request targets `develop`;
+upper pull requests target the preceding stack branch. See [Stacked pull
+requests](stacked-prs.md). Use `<type>/<issue-number>-<short-slug>` (for example,
+`feature/2-schema-migrations`). Keep one issue's work on its branch and use focused
+commits with this format:
+
+```text
+<Issue Type>[#<issue-number>]: <short explanation>
+```
+
+`<Issue Type>` must exactly match the issue type, including capitalization and
+wording. For example, Feature uses `Feature[#2]: ...`, Bug uses `Bug[#3]: ...`,
+and Documentation uses `Documentation[#4]: ...`.
+
+Dependabot PRs use `Dependabot[#0]: <Dependabot's description>`. `Dependabot` is
+the only subject type that is not an issue type. `#0` means there is no ticket
+and none is needed: no epic or issue. Dependabot sets the subject through
+`commit-message.prefix` in `.github/dependabot.yml`.
+If a Dependabot PR's commits do not follow this format, squash them into one
+commit with that subject. Always run the read-only Codex
+[Dependabot review](review.md#dependabot-prs) before merging.
+
+### Commit size
+
+Keep commits small and focused. When a ticket covers several distinct changes,
+group them into separate commits (for example code, CI and documentation)
+instead of one large commit. Where practical, each commit should build on its
+own.
+
+### Commit body
+
+Every commit body has a `**Summary**` heading followed by one to three sentences
+on why the commit exists. When a commit touches more than one thing, or the
+reason is not obvious from the diff, add a `**Changes**` heading with one bullet
+per notable change in the form "what changed: why it changed". Each bullet gives
+the reason, not the lines changed. A one-line fix may use the Summary only. Do
+not repeat the issue number (the subject has it) and do not add attribution
+lines. The subject is imperative and capitalised, has no trailing period, and
+stays at about 72 characters or fewer.
+
+```text
+Documentation[#3]: Add the Fugue development process
+
+**Summary**
+
+Establish consistent ticket planning and delivery rules.
+
+**Changes**
+- Add process guides: make implementation and review responsibilities explicit.
+- Add issue forms: keep the work record consistent.
+```
+
+Stage only files belonging to the change and review the staged diff before
+committing. When implementation finishes, follow the size's review rule in
+[working templates](working/README.md). The orchestrator runs the gate in
+[Testing](testing.md), then commits, pushes and opens or
+updates the pull request without a further request. After pushing a commit, do
+not rewrite it except for unmerged branches of a stack: rebase separately, run
+the local suite gate in [Testing](testing.md) on every affected branch, then
+push with `--force-with-lease` only when all pass. Stop and report if the local and
+remote stacks have diverged. Only the developer merges; an agent merges only
+when the developer instructs it to for that pull request.
+
+## Issue types, fields and the Fugue project
+
+Follow [Ticket planning](ticket-planning.md) for assignment, relationships,
+Priority, milestones. Follow [working templates](working/README.md)
+for issue types, required fields, sizes, statuses and closing rules.
+
+## Dependencies and grouped work
+
+Place work tickets under an existing delivery group or Question where
+applicable; independent work defaults to epic #1 unless the developer specifies
+another parent. Pass the chosen parent with `--parent` when creating or editing
+a ticket. Do not repeat the parent in the description.
+
+A Question is the parent of tickets derived from its answer, including
+implementation, documentation and sub-decisions. See the
+[L Question template](working/l-question.md). A parent cannot be closed until
+all its children are closed. It may be set to `S5: Done` with its Disposition
+before then, for example an answered Question whose children remain open. Do
+not rely on the project workflow "Auto-close issue" for parents.
+Follow the [superseded-child rule](working/README.md#shared-steps) when a child
+ticket is superseded.
+
+A parent groups tickets and does not order them. Add native blocked-by links
+for real prerequisites, including a sub-decision that needs its parent's answer.
+Keep nesting shallow. Preserve existing analysis and selected solutions when
+regrouping. Analysis and UI exploration may proceed alongside dependency work.
+Keep optional enhancements from blocking the first usable slice merely because
+they share a parent.
+
+## Pull requests
+
+Give every pull request a milestone, an assignee and the Fugue project.
+See [ticket planning](ticket-planning.md#at-issue-creation) for ticket metadata.
+
+When implementation finishes, follow the size's review rule in
+[working templates](working/README.md). The orchestrator runs the gate in
+[Testing](testing.md), then commits in the issue format, pushes and
+opens or updates the pull request without a further request. Follow
+[Review](review.md) for read-only agent review, posting findings, recording
+requested changes on the ticket and fixing accepted findings on the same
+branch. Where review applies, repeat it until a review has no findings. Only
+the developer merges; an agent merges only when the developer tells it to for
+that pull request.
+
+For a stacked pull request, state its position in the stack and identify the
+pull request below it. Where the [size requires review](working/README.md),
+review the pull request using [Review](review.md).
+
+The title uses the commit subject format,
+`<Issue Type>[#<issue-number>]: <short explanation>`. The description follows
+[the pull request template](../../.github/PULL_REQUEST_TEMPLATE.md), in this
+order:
+
+1. **Summary:** why the pull request exists, in one to three sentences.
+2. **Changes:** one bullet per notable change as "what changed: why it changed",
+   grouped by commit when there are several.
+3. **Related work:** the owning issue, with `Closes #N` only when the pull
+   request completes it. Use a full link for another repository.
+4. **Verification:** record suites and CI results as defined in
+   [Testing](testing.md#verification-in-the-pr).
+5. **Risks and follow-up:** material compatibility, configuration or migration
+   implications, and links to remaining work.
+
+Do not add attribution lines.
+
+- Use a focused title and explain the change, rationale, and verification.
+- Link the work issue with a closing keyword when merging should close it.
+- Keep unrelated changes out of the pull request; create another issue when
+  needed.
+- Do not claim verification that was not run. List relevant checks and manual
+  review plainly.
+- Merge only when the developer merges or instructs the agent to merge, and after
+  the required checks and review are complete. The instruction covers the pull
+  request as the developer last saw it.
+  If the Git branch changes afterwards, including conflict resolution or new
+  Git commits, the instruction lapses: stop when checks are green and ask again.
+  Never chain cleanup after a merge command that may have failed.
+
+## Blocked work
+
+When work is blocked, update the issue with what is blocked, why, and the
+specific next action or decision needed. Link the dependency or related issue.
+Resume by updating the status and issue plan.
+
+## Issue-specific developer instructions
+
+Explicit developer instructions override the default workflow for that work.
+Record any such override and its limits in the issue and the pull request. An
+instruction for one issue does not authorize merges.
