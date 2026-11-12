@@ -331,6 +331,32 @@ def test_callback_failure_terminates_process() -> None:
     assert not _is_running(pids[0])
 
 
+@pytest.mark.parametrize("timeout", [None, 30.0])
+def test_callback_timeout_error_propagates(timeout: float | None) -> None:
+    async def scenario() -> None:
+        pids: list[int] = []
+        callback_error = TimeoutError("callback deadline expired")
+
+        async def receive(line: str) -> None:
+            pids.append(int(line))
+            raise callback_error
+
+        with pytest.raises(TimeoutError) as exc_info:
+            await asyncio.wait_for(
+                run_command(
+                    _python("import os, time; print(os.getpid(), flush=True); time.sleep(60)"),
+                    timeout=timeout,
+                    on_stdout_line=receive,
+                ),
+                timeout=3,
+            )
+        assert exc_info.value is callback_error
+        assert len(pids) == 1
+        assert not _is_running(pids[0])
+
+    asyncio.run(scenario())
+
+
 def test_callback_failure_with_full_pipe() -> None:
     async def scenario() -> None:
         async def receive(line: str) -> None:

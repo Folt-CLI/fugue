@@ -224,10 +224,14 @@ async def run_command(
         await asyncio.gather(*readers, completion, process.wait(), return_exceptions=True)
 
     timed_out = False
+    deadline = asyncio.timeout(timeout)
     try:
         try:
-            await asyncio.wait_for(asyncio.shield(completion), timeout)
+            async with deadline:
+                await asyncio.shield(completion)
         except TimeoutError:
+            if not deadline.expired():
+                raise
             timed_out = True
             cleanup_task = asyncio.create_task(cleanup(discard_output=False))
             await asyncio.shield(cleanup_task)
