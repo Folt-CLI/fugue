@@ -32,10 +32,25 @@ ISSUE: dict[str, Any] = {
     "milestone": {"title": "0.1.0"},
     "assignees": [{"login": "developer"}],
     "parent_issue_url": "https://api.github.com/repos/example/fugue/issues/1",
-    "blocked_by": [{"number": 11}],
     "body": "## Summary\nGitHub operations\n\n## Scope\nClient\n\n## Analysis\n\n"
     "## Solution\nSelected\n\n## Details\nReference",
 }
+BLOCKERS: list[dict[str, Any]] = [
+    {
+        "id": 1011,
+        "number": 11,
+        "title": "Add models",
+        "state": "open",
+        "url": "https://api.github.com/repos/example/fugue/issues/11",
+    },
+    {
+        "id": 1010,
+        "number": 10,
+        "title": "Add process runner",
+        "state": "closed",
+        "url": "https://api.github.com/repos/example/fugue/issues/10",
+    },
+]
 VALUES: list[dict[str, Any]] = [
     {"issue_field_name": "Priority", "single_select_option": {"name": "High"}},
     {"issue_field_name": "Component", "value": ["Source Code"]},
@@ -108,7 +123,7 @@ def response(value: object, code: int = 0) -> dict[str, Any]:
 
 
 def test_parse_ticket() -> None:
-    ticket = parse_ticket(ISSUE, VALUES, ITEM)
+    ticket = parse_ticket(ISSUE, VALUES, ITEM, BLOCKERS)
     assert ticket.number == 16
     assert ticket.title == ISSUE["title"]
     assert ticket.issue_type.value == "Feature"
@@ -119,7 +134,7 @@ def test_parse_ticket() -> None:
     assert ticket.milestone == "0.1.0"
     assert ticket.assignees == ["developer"]
     assert ticket.parent == 1
-    assert ticket.blocked_by == [11]
+    assert ticket.blocked_by == [11, 10]
     assert ticket.body_sections == {
         "Summary": "GitHub operations",
         "Scope": "Client",
@@ -133,7 +148,6 @@ def test_parse_ticket() -> None:
         "body": None,
         "assignees": [],
         "parent_issue_url": None,
-        "blocked_by": [],
     }
     assert parse_ticket(minimal, VALUES[:1], ITEM).components == []
     with pytest.raises(ValidationError):
@@ -143,18 +157,29 @@ def test_parse_ticket() -> None:
     }
 
 
-def test_get_ticket(fake: Fake) -> None:
+@pytest.mark.parametrize("blockers", [BLOCKERS, []])
+def test_get_ticket(fake: Fake, blockers: list[dict[str, Any]]) -> None:
     client, calls = fake(
         [
             (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([blockers])),
             (["api", "graphql"], response(PROJECT_RESPONSE)),
         ]
     )
-    assert asyncio.run(client.get_ticket(16)) == parse_ticket(ISSUE, VALUES, ITEM)
-    assert len(calls()) == 3
+    ticket = asyncio.run(client.get_ticket(16))
+    assert ticket == parse_ticket(ISSUE, VALUES, ITEM, blockers)
+    assert len(calls()) == 4
     args = calls()[2]["argv"]
     assert args[-6:] == ["-f", "o=example", "-f", "r=fugue", "-F", "n=16"]
+
+    assert calls()[3]["argv"] == [
+        "api",
+        f"repos/{REPO}/issues/16/dependencies/blocked_by",
+        "--paginate",
+        "--slurp",
+    ]
+    assert ticket.blocked_by == [item["number"] for item in blockers]
 
 
 def test_project_fields_and_status_size_argv_cached(fake: Fake) -> None:
@@ -483,6 +508,7 @@ def test_project_lookup_uses_owner_and_number(fake: Fake, project_owner: str) ->
         [
             (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([BLOCKERS])),
             (["api", "graphql"], response(project_response)),
             (["project", "item-edit"], {}),
         ],
@@ -535,6 +561,7 @@ def test_large_issue_json_respects_capture_limit(fake: Fake, cap: int) -> None:
         [
             (["api", f"repos/{REPO}/issues/16"], response({**ISSUE, "body": body})),
             (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([BLOCKERS])),
             (["api", "graphql"], response(PROJECT_RESPONSE)),
         ],
         max_output_bytes=cap,
@@ -594,3 +621,24 @@ def test_invalid_closing_fence_keeps_section_open(fence: str, false_close: str) 
 
 def test_fenced_preamble_does_not_create_sections() -> None:
     assert parse_body_sections("```\n## Scope\nexample\n```\n## Details\nEnd") == {"Details": "End"}
+
+
+def test_parser_uses_separate_native_blockers() -> None:
+    issue = {**ISSUE, "blocked_by": [{"number": 999}]}
+    assert parse_ticket(issue, VALUES, ITEM, BLOCKERS).blocked_by == [11, 10]
+    assert parse_ticket(issue, VALUES, ITEM, []).blocked_by == []
+
+
+def test_blockers_from_multiple_pages(fake: Fake) -> None:
+    client, _ = fake(
+        [
+            (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
+            (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", "graphql"], response(PROJECT_RESPONSE)),
+            (
+                ["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"],
+                response([[BLOCKERS[0]], [BLOCKERS[1]]]),
+            ),
+        ]
+    )
+    assert asyncio.run(client.get_ticket(16)).blocked_by == [11, 10]

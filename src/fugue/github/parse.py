@@ -51,8 +51,9 @@ def parse_ticket(
     issue: Mapping[str, Any],
     field_values: Sequence[Mapping[str, Any]],
     project_item: Mapping[str, Any],
+    blockers: Sequence[Mapping[str, Any]] = (),
 ) -> Ticket:
-    """Combine the REST issue, native issue fields and selected project item."""
+    """Combine the REST issue, issue fields, project item and native blockers."""
     fields = {
         entry["issue_field_name"]: (entry.get("single_select_option") or {}).get(
             "name", entry.get("value")
@@ -75,7 +76,7 @@ def parse_ticket(
             "milestone": (issue.get("milestone") or {}).get("title"),
             "assignees": [entry["login"] for entry in issue.get("assignees", [])],
             "parent": int(parent_url.rstrip("/").rsplit("/", 1)[1]) if parent_url else None,
-            "blocked_by": [entry["number"] for entry in issue.get("blocked_by", [])],
+            "blocked_by": [entry["number"] for entry in blockers],
             "components": components,
             "body_sections": parse_body_sections(issue.get("body") or ""),
         }

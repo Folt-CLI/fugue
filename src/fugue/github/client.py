@@ -163,7 +163,16 @@ class GitHubClient:
         item = await self._item(number)
         if item is None:
             raise ValueError(f"Issue {number} is absent from project {self.project_number}")
-        return parse_ticket(issue, values, item)
+        # Slurp retains page boundaries as one JSON document; flatten the native
+        # issue lists before handing them to the pure parser.
+        blocker_pages = await self._json(
+            "api",
+            f"repos/{self.repo}/issues/{number}/dependencies/blocked_by",
+            "--paginate",
+            "--slurp",
+        )
+        blockers = [blocker for page in blocker_pages for blocker in page]
+        return parse_ticket(issue, values, item, blockers)
 
     async def _project_fields(self) -> None:
         ids = self.field_ids
