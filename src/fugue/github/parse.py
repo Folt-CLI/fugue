@@ -10,8 +10,36 @@ from fugue.models import Ticket
 def parse_body_sections(body: str) -> dict[str, str]:
     """Parse Markdown level-two sections with normalized newlines and headings."""
     body = body.replace("\r\n", "\n").replace("\r", "\n")
-    parts = re.split(r"^##[ \t]+(.+?)[ \t]*$", body, flags=re.MULTILINE)
-    return {parts[i].strip(): parts[i + 1].strip() for i in range(1, len(parts), 2)}
+    sections: dict[str, str] = {}
+    heading: str | None = None
+    contents: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+    for line in body.splitlines(keepends=True):
+        text = line.removesuffix("\n")
+        if fence_character is not None:
+            if re.fullmatch(
+                r" {0,3}" + re.escape(fence_character) + r"{" + str(fence_length) + r",}[ \t]*",
+                text,
+            ):
+                fence_character = None
+        else:
+            fence = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", text)
+            if fence and (fence[1][0] != "`" or "`" not in fence[2]):
+                fence_character = fence[1][0]
+                fence_length = len(fence[1])
+            else:
+                match = re.fullmatch(r"##[ \t]+(.+?)[ \t]*", text)
+                if match:
+                    if heading is not None:
+                        sections[heading] = "".join(contents).strip()
+                    heading = match[1].strip()
+                    contents = []
+                    continue
+        contents.append(line)
+    if heading is not None:
+        sections[heading] = "".join(contents).strip()
+    return sections
 
 
 def project_items(response: Mapping[str, Any]) -> list[dict[str, Any]]:

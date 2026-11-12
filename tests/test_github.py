@@ -78,6 +78,7 @@ def fake(
         strip_tokens: bool = True,
         field_ids: ProjectFieldIds | None = None,
         project_owner: str = "example",
+        max_output_bytes: int = 16 * 1024 * 1024,
     ) -> tuple[GitHubClient, Callable[[], list[dict[str, Any]]]]:
         fixture.write_text(json.dumps({json.dumps(key): value for key, value in responses}))
         record.write_text("")
@@ -86,6 +87,7 @@ def fake(
             project_owner,
             2,
             strip_tokens=strip_tokens,
+            max_output_bytes=max_output_bytes,
             field_ids=field_ids,
             gh_executable=[sys.executable, str(Path(__file__).with_name("fake_gh.py"))],
         )
@@ -524,3 +526,71 @@ def test_log_lookup_accepts_repository_case_and_outer_whitespace(fake: Fake) -> 
     link = " https://github.com/ExAmPlE/Fugue/actions/runs/123/job/456 \n"
     assert asyncio.run(client.failed_log_tail(link)) == "log"
     assert calls()[0]["argv"] == ["run", "view", "123", "--repo", REPO, "--log-failed"]
+
+
+@pytest.mark.parametrize("cap", [16 * 1024 * 1024, 128 * 1024])
+def test_large_issue_json_respects_capture_limit(fake: Fake, cap: int) -> None:
+    body = "## Scope\n" + "x" * 200_000
+    client, calls = fake(
+        [
+            (["api", f"repos/{REPO}/issues/16"], response({**ISSUE, "body": body})),
+            (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", "graphql"], response(PROJECT_RESPONSE)),
+        ],
+        max_output_bytes=cap,
+    )
+    if cap < len(body):
+        with pytest.raises(GitHubError, match="output truncated") as error:
+            asyncio.run(client.get_ticket(16))
+        assert error.value.argv[-1] == f"repos/{REPO}/issues/16"
+        assert len(calls()) == 1
+    else:
+        assert asyncio.run(client.get_ticket(16)).body_sections == {"Scope": "x" * 200_000}
+
+
+@pytest.mark.parametrize("extra_byte", [False, True])
+def test_checks_json_capture_boundary(fake: Fake, extra_byte: bool) -> None:
+    checks = [{"name": "x" * 200_000, "bucket": "pending", "link": "link"}]
+    output = json.dumps(checks)
+    client, _ = fake(
+        [(["pr", "checks"], {"stdout": output, "exit_code": 8})],
+        max_output_bytes=len(output.encode()) - int(extra_byte),
+    )
+    if extra_byte:
+        with pytest.raises(GitHubError, match="output truncated"):
+            asyncio.run(client.checks(PR))
+    else:
+        assert asyncio.run(client.checks(PR)) == [CheckResult(**checks[0])]
+
+
+@pytest.mark.parametrize("cap", [0, -1])
+def test_invalid_output_limit(cap: int) -> None:
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        GitHubClient(REPO, "example", 2, max_output_bytes=cap)
+
+
+@pytest.mark.parametrize(
+    "opening,closing",
+    [
+        ("```markdown", "```"),
+        ("~~~markdown", "~~~"),
+        ("````", "`````"),
+        ("  ~~~~ example", "   ~~~~  "),
+    ],
+)
+def test_section_headings_inside_fences_are_preserved(opening: str, closing: str) -> None:
+    scope = f"Example:\n{opening}\n## Scope\nexample text\n{closing}\nAfter example."
+    body = f"## Summary\nIntro\n## Scope\n{scope}\n## Details\nEnd"
+    assert parse_body_sections(body) == {"Summary": "Intro", "Scope": scope, "Details": "End"}
+
+
+@pytest.mark.parametrize(
+    "fence,false_close", [("````", "```"), ("~~~", "```"), ("```", "``` trailing")]
+)
+def test_invalid_closing_fence_keeps_section_open(fence: str, false_close: str) -> None:
+    scope = f"{fence}\n{false_close}\n## Scope\nexample"
+    assert parse_body_sections(f"## Scope\n{scope}") == {"Scope": scope}
+
+
+def test_fenced_preamble_does_not_create_sections() -> None:
+    assert parse_body_sections("```\n## Scope\nexample\n```\n## Details\nEnd") == {"Details": "End"}

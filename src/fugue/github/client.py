@@ -14,7 +14,12 @@ from fugue.process import CommandResult, run_command
 
 class Runner(Protocol):
     def __call__(
-        self, argv: Sequence[str], *, env: Mapping[str, str], stdin: str | None = None
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        stdin: str | None = None,
+        max_output_bytes: int = 65536,
     ) -> Awaitable[CommandResult]:
         """Return an awaitable CommandResult."""
 
@@ -89,7 +94,11 @@ class GitHubClient:
         strip_tokens: bool = True,
         field_ids: ProjectFieldIds | None = None,
         gh_executable: Sequence[str] = ("gh",),
+        max_output_bytes: int = 16 * 1024 * 1024,
     ) -> None:
+        if max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be positive")
+        self.max_output_bytes = max_output_bytes
         self.repo = repo.strip()
         self.project_owner = project_owner.strip()
         self.project_number = project_number
@@ -113,9 +122,13 @@ class GitHubClient:
             # run_command overlays env onto the parent environment. Remove tokens
             # in the launched process too, without mutating global os.environ.
             command = ("env", "-u", "GITHUB_TOKEN", "-u", "GH_TOKEN", *argv)
-        result: CommandResult = await self.runner(command, env=env, stdin=stdin)
+        result: CommandResult = await self.runner(
+            command, env=env, stdin=stdin, max_output_bytes=self.max_output_bytes
+        )
         if result.returncode not in allowed_codes or result.timed_out or result.cancelled:
             raise GitHubError(argv, result.stderr)
+        if result.stdout_truncated:
+            raise GitHubError(argv, result.stderr + "\noutput truncated")
         return result.stdout
 
     async def _json(self, *args: str) -> Any:
