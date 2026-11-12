@@ -64,6 +64,13 @@ class RepoPolicy(BaseModel):
     gate_commands: list[list[str]] = Field(default_factory=_default_gate_commands)
     autonomy_profile: Literal["human", "campaign"] = "human"
 
+    @field_validator("size_rules", mode="before")
+    @classmethod
+    def merge_default_size_rules(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {**_default_size_rules(), **value}
+        return value
+
 
 def _default_roles() -> dict[Role, RoleConfig]:
     return {
@@ -80,3 +87,10 @@ class FugueConfig(BaseModel):
     limits: Limits = Field(default_factory=Limits)
     roles: dict[Role, RoleConfig] = Field(default_factory=_default_roles)
     state_dir: Path | None = None
+
+    @field_validator("roles", mode="before")
+    @classmethod
+    def merge_default_roles(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {**_default_roles(), **value}
+        return value

@@ -90,6 +90,51 @@ model = "chosen-model"
     assert config.roles[Role.ANALYST].authentication_mode is AuthenticationMode.SUBSCRIPTION_LOGIN
 
 
+def test_reviewer_override_keeps_other_role_defaults(tmp_path: Path) -> None:
+    config = load_config(
+        write_config(tmp_path, '[roles.reviewer]\nprovider = "claude"\nmodel = "review-model"')
+    )
+    defaults = load_config(None)
+    assert set(config.roles) == set(Role)
+    assert config.roles[Role.REVIEWER].provider == "claude"
+    assert config.roles[Role.REVIEWER].model == "review-model"
+    for role in (Role.ANALYST, Role.IMPLEMENTER):
+        assert config.roles[role] == defaults.roles[role]
+
+
+def test_size_rule_override_keeps_other_size_defaults(tmp_path: Path) -> None:
+    config = load_config(
+        write_config(
+            tmp_path,
+            "[policy.size_rules.S]\nanalysis = true\nreview = false\nmax_components = 3",
+        )
+    )
+    defaults = load_config(None)
+    assert set(config.policy.size_rules) == set(Size)
+    assert config.policy.size_rules[Size.S].model_dump() == {
+        "analysis": True,
+        "review": False,
+        "max_components": 3,
+    }
+    for size in (Size.XS, Size.M, Size.L, Size.XL):
+        assert config.policy.size_rules[size] == defaults.policy.size_rules[size]
+
+
+@pytest.mark.parametrize(
+    ("content", "key"),
+    [
+        ('[roles.reviewer]\nmodel = "review-model"', "roles.reviewer.provider"),
+        ("[policy.size_rules.S]\nanalysis = true", "policy.size_rules.S.review"),
+    ],
+)
+def test_overridden_entries_replace_the_entire_entry(
+    tmp_path: Path, content: str, key: str
+) -> None:
+    with pytest.raises(ConfigError) as error:
+        load_config(write_config(tmp_path, content))
+    assert key in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("content", "key"),
     [
@@ -175,6 +220,15 @@ def test_invalid_toml(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as error:
         load_config(path)
     assert str(path) in str(error.value)
+
+
+def test_invalid_utf8_is_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-utf8.toml"
+    path.write_bytes(b' state_dir = "\xff"')
+    with pytest.raises(ConfigError) as error:
+        load_config(path)
+    assert str(path) in str(error.value)
+    assert isinstance(error.value.__cause__, UnicodeDecodeError)
 
 
 def test_directory_is_not_a_config_file(tmp_path: Path) -> None:

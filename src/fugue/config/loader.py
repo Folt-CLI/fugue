@@ -19,7 +19,7 @@ def load_config(path: Path | None) -> FugueConfig:
     try:
         with path.open("rb") as config_file:
             data = tomllib.load(config_file)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
         raise ConfigError(f"{path}: {error}") from error
 
     try:
