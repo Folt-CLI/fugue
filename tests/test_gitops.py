@@ -1,0 +1,644 @@
+import asyncio
+import subprocess
+from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
+
+import pytest
+
+from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
+
+
+def git_command(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    for key, value in {
+        "GIT_AUTHOR_NAME": "Fugue Test",
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Fugue Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "commit.gpgsign",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "core.hooksPath",
+        "GIT_CONFIG_VALUE_1": "/dev/null",
+    }.items():
+        monkeypatch.setenv(key, value)
+    git_command(tmp_path, "init", "--bare", "--initial-branch=develop", "origin")
+    git_command(tmp_path, "clone", str(tmp_path / "origin"), "clone")
+    clone = tmp_path / "clone"
+    (clone / "initial.txt").write_text("initial\n")
+    git_command(clone, "add", "initial.txt")
+    git_command(clone, "commit", "-m", "Initial fixture")
+    git_command(clone, "push", "origin", "develop")
+    return clone
+
+
+def message() -> CommitMessage:
+    return CommitMessage("Feature", 14, "Add Git operations", "Support repository changes.")
+
+
+def test_worktree_create_remove(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        path = repo.parent / "worktree with spaces"
+        await git.create_worktree(path, "feature/worktree", "HEAD")
+        assert (path / "initial.txt").read_text() == "initial\n"
+        assert await Git(path).current_branch() == "feature/worktree"
+        assert await Git(path).head_sha() == await git.head_sha()
+        (path / "untracked").write_text("dirty")
+        with pytest.raises(GitError):
+            await git.remove_worktree(path)
+        await git.remove_worktree(path, force=True)
+        assert not path.exists()
+        await git.create_worktree(path, "feature/clean", "develop")
+        await git.remove_worktree(path)
+        assert not path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_fetch_fast_forward_and_divergence(repo: Path) -> None:
+    peer = repo.parent / "peer"
+    git_command(repo.parent, "clone", str(repo.parent / "origin"), str(peer))
+
+    def advance_peer(filename: str) -> str:
+        (peer / filename).write_text(filename)
+        git_command(peer, "add", filename)
+        git_command(peer, "commit", "-m", "Advance remote")
+        git_command(peer, "push", "origin", "develop")
+        return git_command(peer, "rev-parse", "HEAD").strip()
+
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        remote_head = advance_peer("remote.txt")
+        await git.fetch()
+        assert await git.head_sha() == original
+        await git.fast_forward("develop")
+        assert await git.head_sha() == remote_head
+        (repo / "local.txt").write_text("local")
+        await git.stage(["local.txt"])
+        local_head = await git.commit(message())
+        advance_peer("other.txt")
+        await git.fetch()
+        with pytest.raises(GitError) as exc_info:
+            await git.fast_forward("develop")
+        assert "--ff-only" in exc_info.value.argv
+        assert await git.head_sha() == local_head
+        assert await git.status_porcelain() == []
+
+    asyncio.run(scenario())
+
+
+def test_stage_commit_diff_and_push(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        base = await git.head_sha("develop")
+        assert await git.current_branch() == "develop"
+        assert await git.status_porcelain() == []
+        assert await git.staged_files() == []
+        await git.stage([])
+        names = ["space name.txt", "line\nbreak.txt", "unicode-雪.txt", "-option.txt"]
+        for name in names:
+            (repo / name).write_text("new content\n")
+        assert set(await git.status_porcelain()) == {f"?? {name}" for name in names}
+        await git.stage([*names[:-1], "./-option.txt"])
+        assert set(await git.staged_files()) == set(names)
+        commit_message = replace(message(), changes=("Add commands: support Git", "Add tests"))
+        sha = await git.commit(commit_message)
+        assert len(sha) == 40
+        assert sha == await git.head_sha()
+        assert git_command(repo, "log", "-1", "--format=%B") == commit_message.render() + "\n"
+        assert await git.staged_files() == []
+        assert await git.status_porcelain() == []
+        diff = await git.diff(base, sha)
+        assert "+new content" in diff
+        assert "space name.txt" in diff
+        await git.push("develop")
+        assert git_command(repo.parent / "origin", "rev-parse", "develop").strip() == sha
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "path", [".", "./", "", "-A", "--all", "*", "*.py", "file?.txt", "file[1].txt", ":(all)", "../"]
+)
+def test_stage_rejects_broad_inputs(repo: Path, path: str) -> None:
+    (repo / "new.txt").write_text("untracked")
+    with pytest.raises(ValueError, match="explicit path"):
+        asyncio.run(Git(repo).stage(["new.txt", path]))
+    assert asyncio.run(Git(repo).staged_files()) == []
+
+
+def test_git_error_details(repo: Path) -> None:
+    with pytest.raises(GitError) as exc_info:
+        asyncio.run(Git(repo).head_sha("missing-ref"))
+    error = exc_info.value
+    assert error.argv == (
+        "git",
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        "refs/heads/missing-ref^{commit}",
+    )
+    assert error.returncode == 128
+    assert "fatal:" in error.stderr
+    assert error.stderr in str(error)
+    assert "128" in str(error)
+    bounded = GitError(("git", "fetch"), 1, "x" * 5000 + "tail")
+    assert len(bounded.stderr) == 4096
+    assert bounded.stderr.endswith("tail")
+
+
+def test_commit_failure(repo: Path) -> None:
+    before = asyncio.run(Git(repo).head_sha())
+    with pytest.raises(GitError):
+        asyncio.run(Git(repo).commit(message()))
+    assert asyncio.run(Git(repo).head_sha()) == before
+
+
+def test_push_does_not_force(repo: Path) -> None:
+    git_command(repo, "push", "origin", "develop:refs/heads/unrelated")
+    git_command(repo, "checkout", "--orphan", "unrelated")
+    git_command(repo, "commit", "-m", "Unrelated history")
+    with pytest.raises(GitError) as exc_info:
+        asyncio.run(Git(repo).push("unrelated", "origin"))
+    assert "--force" not in exc_info.value.argv
+
+
+def test_message_render_and_immutable() -> None:
+    m = message()
+    assert m.render() == (
+        "Feature[#14]: Add Git operations\n\n**Summary**\nSupport repository changes."
+    )
+    assert replace(m, changes=("First change", "Second change")).render() == (
+        m.render() + "\n\n**Changes**\n- First change\n- Second change"
+    )
+    with pytest.raises(FrozenInstanceError):
+        m.number = 1  # type: ignore[misc]
+    assert validate_message(m, {"Feature"}) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "problem"),
+    [
+        ("issue_type", "Unknown", "issue type"),
+        ("explanation", "A" * 72, "exceeds"),
+        ("explanation", "lowercase", "capitalised"),
+        ("explanation", "", "capitalised"),
+        ("explanation", "Trailing period.", "end with"),
+        ("summary", " \n", "empty"),
+        ("summary", "Co-Authored-By: Someone", "Attribution"),
+        ("explanation", "Generated With tool", "Attribution"),
+        ("issue_type", "Signed-Off-By", "Attribution"),
+    ],
+)
+def test_message_validation(field: str, value: str, problem: str) -> None:
+    m = message()
+    if field == "issue_type":
+        m = replace(m, issue_type=value)
+    elif field == "explanation":
+        m = replace(m, explanation=value)
+    else:
+        m = replace(m, summary=value)
+    assert any(problem in error for error in validate_message(m, {"Feature"}))
+
+
+def test_message_validation_changes_and_subject_boundary() -> None:
+    m = replace(message(), changes=("Fine", "sIgNeD-oFf-By: Someone"))
+    assert any("Attribution" in error for error in validate_message(m, {"Feature"}))
+    length = len(message().render().splitlines()[0])
+    assert validate_message(message(), {"Feature"}, max_subject=length) == []
+    assert validate_message(message(), {"Feature"}, max_subject=length - 1) == [
+        f"Subject exceeds {length - 1} characters"
+    ]
+    errors = validate_message(CommitMessage("Bad", 1, "bad.", ""), {"Feature"}, max_subject=1)
+    assert len(errors) == 5
+
+
+def test_staging_validation() -> None:
+    assert validate_staging([], []) == []
+    assert validate_staging(["src/a.py"], []) == ["src/a.py"]
+    assert validate_staging(
+        ["src/a.py", "src/nested/b.py", "docs/readme.md", "exact.txt", "src2/a.py", "other"],
+        ["src/*.py", "docs/", "exact.txt"],
+    ) == ["src2/a.py", "other"]
+    assert validate_staging(["docs", "docs/a/b", "docs-other/file"], ["docs/"]) == [
+        "docs",
+        "docs-other/file",
+    ]
+    assert validate_staging(["A.py", "a.py"], ["a.py"]) == ["A.py"]
+
+
+def test_diff_preserves_large_output(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        base = await git.head_sha()
+        content = "x" * 100_000 + "tail"
+        (repo / "large.txt").write_text(content + "\n")
+        await git.stage(["large.txt"])
+        head = await git.commit(message())
+        assert "+" + content + "\n" in await git.diff(base, head)
+
+    asyncio.run(scenario())
+
+
+def test_rename_preserves_source_for_validation(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        (repo / "private.txt").write_text("private content\n")
+        await git.stage(["private.txt"])
+        base = await git.commit(message())
+        (repo / "allowed").mkdir()
+        git_command(repo, "config", "diff.renames", "true")
+        git_command(repo, "config", "status.renames", "true")
+        git_command(repo, "mv", "private.txt", "allowed/private.txt")
+
+        staged = await git.staged_files()
+        assert set(staged) == {"private.txt", "allowed/private.txt"}
+        assert validate_staging(staged, ["allowed/"]) == ["private.txt"]
+        assert set(await git.status_porcelain()) == {"D  private.txt", "A  allowed/private.txt"}
+
+        head = await git.commit(message())
+        diff = await git.diff(base, head)
+        assert "deleted file mode" in diff
+        assert "new file mode" in diff
+        assert "--- a/private.txt" in diff
+        assert "+++ b/allowed/private.txt" in diff
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("branch", ["+release", "-release"])
+def test_push_and_create_worktree_reject_branch_prefixes(repo: Path, branch: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        before = git_command(repo.parent / "origin", "show-ref")
+        with pytest.raises(ValueError, match="branch"):
+            await git.push(branch)
+        path = repo.parent / "invalid-worktree"
+        with pytest.raises(ValueError, match="branch"):
+            await git.create_worktree(path, branch, "HEAD")
+        assert not path.exists()
+        assert git_command(repo.parent / "origin", "show-ref") == before
+
+    asyncio.run(scenario())
+
+
+def test_push_uses_qualified_branch_ref(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        git_command(repo, "tag", "release")
+        git_command(repo, "checkout", "-b", "release")
+        (repo / "release.txt").write_text("release\n")
+        await git.stage(["release.txt"])
+        head = await git.commit(message())
+        await git.push("release")
+        remote_head = git_command(repo.parent / "origin", "rev-parse", "refs/heads/release")
+        assert remote_head.strip() == head
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("branch", ["", "release:other", "release*", "../release"])
+def test_push_and_create_worktree_validate_branch_format(repo: Path, branch: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        with pytest.raises(GitError) as push_error:
+            await git.push(branch)
+        assert push_error.value.argv[1] == "check-ref-format"
+        path = repo.parent / "invalid-worktree"
+        with pytest.raises(GitError) as worktree_error:
+            await git.create_worktree(path, branch, "HEAD")
+        assert worktree_error.value.argv[1] == "check-ref-format"
+        assert not path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_fast_forward_ignores_colliding_tags(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        git_command(repo, "tag", "origin/develop", original)
+        git_command(repo, "tag", "develop", original)
+        peer = repo.parent / "peer"
+        git_command(repo.parent, "clone", str(repo.parent / "origin"), str(peer))
+        (peer / "remote.txt").write_text("remote update\n")
+        git_command(peer, "add", "remote.txt")
+        git_command(peer, "commit", "-m", "Advance remote")
+        git_command(peer, "push", "origin", "refs/heads/develop:refs/heads/develop")
+        expected = git_command(peer, "rev-parse", "HEAD").strip()
+        await git.fetch()
+        await git.fast_forward("develop")
+        assert await git.head_sha() == expected
+        assert await git.current_branch() == "develop"
+        assert await git.head_sha("refs/heads/develop") == expected
+        assert await git.head_sha("refs/tags/origin/develop") == original
+        assert await git.head_sha("refs/tags/develop") == original
+
+    asyncio.run(scenario())
+
+
+def test_current_branch_ignores_colliding_tag(repo: Path) -> None:
+    git_command(repo, "checkout", "-b", "release")
+    git_command(repo, "tag", "release")
+    assert asyncio.run(Git(repo).current_branch()) == "release"
+
+
+def test_branch_refs_ignore_tags_and_accept_explicit_refs(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        git_command(repo, "tag", "release", original)
+        (repo / "new.txt").write_text("branch content\n")
+        await git.stage(["new.txt"])
+        head = await git.commit(message())
+        git_command(repo, "branch", "release", head)
+        assert await git.head_sha("refs/heads/release") == head
+        assert await git.head_sha("refs/tags/release") == original
+        assert await git.head_sha("refs/heads/release~1") == original
+        assert await git.head_sha("HEAD~1") == original
+        assert await git.head_sha("release") == head
+        assert await git.head_sha("release~1") == original
+        assert await git.diff("release", "HEAD") == ""
+        assert await git.diff("HEAD", "release") == ""
+        diff = await git.diff("refs/tags/release", "refs/heads/release")
+        assert "+branch content" in diff
+        path = repo.parent / "new-worktree"
+        await git.create_worktree(path, "feature/short", "release")
+        assert await Git(path).head_sha() == head
+        await git.remove_worktree(path)
+        git_command(repo, "tag", "feature/explicit", original)
+        await git.create_worktree(path, "feature/explicit", "refs/heads/release")
+        assert await Git(path).head_sha() == head
+        await git.remove_worktree(path)
+
+    asyncio.run(scenario())
+
+
+def test_tags_and_remote_branches_require_full_refs(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        head = await git.head_sha()
+        git_command(repo, "tag", "unique-tag")
+        with pytest.raises(GitError):
+            await git.head_sha("unique-tag")
+        assert await git.head_sha("refs/tags/unique-tag") == head
+        git_command(repo, "tag", "origin/develop")
+        with pytest.raises(GitError):
+            await git.head_sha("origin/develop")
+        assert await git.head_sha("refs/remotes/origin/develop") == head
+        git_command(repo, "branch", "origin/develop")
+        assert await git.head_sha("origin/develop") == head
+
+    asyncio.run(scenario())
+
+
+def test_fetch_and_push_remote_names_ignore_tags(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        git_command(repo, "tag", "origin")
+        await git.fetch()
+        await git.push("develop")
+        assert await git.head_sha("refs/remotes/origin/develop") == await git.head_sha()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("remote", ["", "-origin", "+origin", "origin:develop", "missing"])
+def test_remote_names_validated_before_mutation(repo: Path, remote: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        before = await git.head_sha()
+        for action in (git.fetch(remote), git.push("develop", remote)):
+            with pytest.raises((GitError, ValueError)):
+                await action
+        with pytest.raises((GitError, ValueError)):
+            await git.fast_forward("develop", remote)
+        assert await git.head_sha() == before
+        assert await git.current_branch() == "develop"
+
+    asyncio.run(scenario())
+
+
+def test_head_ignores_tag_and_full_commit_id_collision_is_rejected(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        (repo / "new.txt").write_text("new commit\n")
+        await git.stage(["new.txt"])
+        head = await git.commit(message())
+        git_command(repo, "update-ref", "refs/tags/HEAD", original)
+        git_command(repo, "update-ref", f"refs/tags/{original}", head)
+        assert await git.head_sha() == head
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.head_sha(original)
+        assert await git.head_sha("refs/tags/HEAD") == original
+        assert await git.head_sha(f"refs/tags/{original}") == head
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("length", [4, 7, 40])
+def test_commit_ids_work_across_ref_helpers(repo: Path, length: int) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        (repo / "revision.txt").write_text("revision content\n")
+        await git.stage(["revision.txt"])
+        head = await git.commit(message())
+        base_ref = git_command(repo, "rev-parse", f"--short={length}", original).strip()
+        head_ref = git_command(repo, "rev-parse", f"--short={length}", head).strip()
+        assert await git.head_sha(base_ref) == original
+        assert await git.head_sha(head_ref) == head
+        assert "+revision content" in await git.diff(base_ref, head_ref)
+        path = repo.parent / "revision-worktree"
+        await git.create_worktree(path, "feature/revision", base_ref)
+        assert await Git(path).head_sha() == original
+        await git.remove_worktree(path)
+
+    asyncio.run(scenario())
+
+
+def test_pseudo_refs_and_head_revisions(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        (repo / "revision.txt").write_text("revision content\n")
+        await git.stage(["revision.txt"])
+        head = await git.commit(message())
+        await git.fetch()
+        git_command(repo, "update-ref", "ORIG_HEAD", original)
+        for ref, expected in (
+            ("HEAD", head),
+            ("HEAD~1", original),
+            ("HEAD^", original),
+            ("FETCH_HEAD", original),
+            ("ORIG_HEAD", original),
+        ):
+            assert await git.head_sha(ref) == expected
+        assert "+revision content" in await git.diff("HEAD~1", "HEAD")
+        path = repo.parent / "pseudo-worktree"
+        await git.create_worktree(path, "feature/pseudo", "HEAD^")
+        assert await Git(path).head_sha() == original
+        await git.remove_worktree(path)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "namespace", ["refs/tags", "refs/heads", "refs/remotes/origin", "refs/remotes/team/upstream"]
+)
+def test_hex_revision_collisions_rejected_across_helpers(repo: Path, namespace: str) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        original = await git.head_sha()
+        prefix = git_command(repo, "rev-parse", "--short=7", original).strip()
+        (repo / "revision.txt").write_text("different commit\n")
+        await git.stage(["revision.txt"])
+        head = await git.commit(message())
+        git_command(repo, "update-ref", f"{namespace}/{prefix}-suffix", head)
+        assert await git.head_sha(prefix) == original
+        git_command(repo, "update-ref", f"{namespace}/{prefix}", head)
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.head_sha(prefix)
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.diff(prefix, "HEAD")
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.diff("HEAD", prefix)
+        path = repo.parent / "ambiguous-worktree"
+        with pytest.raises(GitError, match="ambiguous revision"):
+            await git.create_worktree(path, "feature/ambiguous-hex", prefix)
+        assert not path.exists()
+        assert await git.head_sha(f"{namespace}/{prefix}") == head
+        assert await git.head_sha(original) == original
+
+    asyncio.run(scenario())
+
+
+def test_validation_output_ignores_submodule_and_display_config(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        base = await git.head_sha()
+        git_command(repo, "config", "diff.ignoreSubmodules", "all")
+        git_command(repo, "config", "diff.noprefix", "true")
+        git_command(repo, "config", "diff.mnemonicPrefix", "true")
+        git_command(repo, "config", "diff.srcPrefix", "custom-source/")
+        git_command(repo, "config", "diff.dstPrefix", "custom-destination/")
+        git_command(repo, "config", "status.showUntrackedFiles", "no")
+        git_command(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},sub")
+        assert "sub" in await git.staged_files()
+        assert validate_staging(await git.staged_files(), ["allowed/"]) == ["sub"]
+        assert any(line[3:] == "sub" for line in await git.status_porcelain())
+        head = await git.commit(message())
+        diff = await git.diff(base, head)
+        assert "diff --git a/sub b/sub" in diff
+        assert "new file mode 160000" in diff
+        assert f"+Subproject commit {base}" in diff
+        (repo / "untracked 雪\nfile.txt").write_text("untracked\n")
+        assert "?? untracked 雪\nfile.txt" in await git.status_porcelain()
+
+    asyncio.run(scenario())
+
+
+def test_diff_disables_external_diff_and_textconv(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        base = await git.head_sha()
+        git_command(repo, "config", "diff.external", "false")
+        git_command(repo, "config", "diff.blocked.textconv", "false")
+        (repo / ".git" / "info" / "attributes").write_text("*.txt diff=blocked\n")
+        (repo / "initial.txt").write_text("changed content\n")
+        await git.stage(["initial.txt"])
+        assert await git.staged_files() == ["initial.txt"]
+        head = await git.commit(message())
+        diff = await git.diff(base, head)
+        assert "-initial\n" in diff
+        assert "+changed content\n" in diff
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "absolute-root",
+        "dot",
+        "nested-parent",
+        "absolute-nested-parent",
+        "outside-absolute",
+        "outside-relative",
+        "sibling-prefix",
+    ],
+)
+def test_stage_rejects_root_aliases_and_outside_paths(repo: Path, form: str) -> None:
+    (repo / "a").mkdir()
+    (repo / "new.txt").write_text("must remain untracked\n")
+    outside = repo.parent / "outside.txt"
+    outside.write_text("outside\n")
+    sibling = repo.with_name(repo.name + "-other")
+    sibling.mkdir()
+    paths = {
+        "absolute-root": str(repo.resolve()),
+        "dot": "./",
+        "nested-parent": "a/..",
+        "absolute-nested-parent": str(repo / "a" / ".."),
+        "outside-absolute": str(outside),
+        "outside-relative": "../outside.txt",
+        "sibling-prefix": str(sibling),
+    }
+    with pytest.raises(ValueError, match="explicit path"):
+        asyncio.run(Git(repo).stage(["new.txt", paths[form]]))
+    assert asyncio.run(Git(repo).staged_files()) == []
+
+
+@pytest.mark.parametrize("form", ["relative", "absolute", "normalised"])
+def test_stage_accepts_nested_file_inside_repository(repo: Path, form: str) -> None:
+    nested = repo / "nested"
+    nested.mkdir()
+    target = nested / "file.txt"
+    target.write_text("nested content\n")
+    (repo / "other.txt").write_text("must remain untracked\n")
+    paths = {
+        "relative": "nested/file.txt",
+        "absolute": str(target.resolve()),
+        "normalised": "nested/../nested/file.txt",
+    }
+    asyncio.run(Git(repo).stage([paths[form]]))
+    assert asyncio.run(Git(repo).staged_files()) == ["nested/file.txt"]
+
+
+@pytest.mark.parametrize("target_kind", ["inside", "outside", "root", "missing"])
+@pytest.mark.parametrize("absolute", [False, True])
+def test_stage_preserves_final_symlink(repo: Path, target_kind: str, absolute: bool) -> None:
+    target = repo / "target.txt"
+    target.write_text("must remain untracked\n")
+    outside = repo.parent / "outside.txt"
+    outside.write_text("outside content\n")
+    targets = {"inside": target, "outside": outside, "root": repo, "missing": repo / "missing"}
+    link = repo / "link.txt"
+    link.symlink_to(targets[target_kind], target_is_directory=target_kind == "root")
+    asyncio.run(Git(repo).stage([str(link) if absolute else "link.txt"]))
+    assert asyncio.run(Git(repo).staged_files()) == ["link.txt"]
+    assert git_command(repo, "ls-files", "--stage").splitlines()[-1].startswith("120000 ")
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_stage_rejects_symlinked_parent_outside_repository(repo: Path, absolute: bool) -> None:
+    outside = repo.parent / "outside-directory"
+    outside.mkdir()
+    (outside / "file.txt").write_text("outside content\n")
+    (repo / "escape").symlink_to(outside, target_is_directory=True)
+    (repo / "new.txt").write_text("must remain untracked\n")
+    path = str(repo / "escape" / "file.txt") if absolute else "escape/file.txt"
+    with pytest.raises(ValueError, match="explicit path"):
+        asyncio.run(Git(repo).stage(["new.txt", path]))
+    assert asyncio.run(Git(repo).staged_files()) == []
