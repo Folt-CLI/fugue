@@ -113,6 +113,43 @@ def test_upload_verified_round_trip(fake: Fake, tmp_path: Path) -> None:
         assert not Path(call["argv"][-1]).exists()
 
 
+def test_symlink_upload_preserves_supplied_name(
+    fake: Fake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = tmp_path / "content.txt"
+    content.write_bytes(b"report content")
+    report = tmp_path / "report.md"
+    report.symlink_to(content)
+    client, calls = fake(
+        [
+            (
+                ["attach", str(report)],
+                {"stdout": json.dumps([{"name": report.name, "href": URL}])},
+            ),
+            (["attach", "download", URL], {"download_file": str(content)}),
+        ]
+    )
+    monkeypatch.chdir(tmp_path)
+    assert asyncio.run(client.upload_attachments([Path("report.md")])) == [
+        UploadedAttachment("report.md", URL, hashlib.sha256(content.read_bytes()).hexdigest())
+    ]
+    assert calls()[0]["argv"][1] == str(report)
+
+
+@pytest.mark.parametrize("same_path", [False, True])
+def test_duplicate_upload_names_rejected(fake: Fake, tmp_path: Path, same_path: bool) -> None:
+    first = tmp_path / "report.md"
+    first.write_bytes(b"first")
+    second = first if same_path else tmp_path / "other" / "report.md"
+    if not same_path:
+        second.parent.mkdir()
+        second.write_bytes(b"second")
+    client, calls = fake([])
+    with pytest.raises(ValueError, match="Duplicate attachment file names"):
+        asyncio.run(client.upload_attachments([first, second]))
+    assert calls() == []
+
+
 def test_mismatch_raises_and_cleans_temp_directory(fake: Fake, tmp_path: Path) -> None:
     source = tmp_path / "source.bin"
     source.write_bytes(b"expected\r\n")

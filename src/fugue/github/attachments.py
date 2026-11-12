@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-from collections import defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,13 +49,14 @@ async def upload_attachments(
 ) -> list[UploadedAttachment]:
     if not paths:
         return []
-    sources: dict[str, deque[bytes]] = defaultdict(deque)
-    for path in paths:
-        sources[path.name].append(path.read_bytes())
+    names = [path.name for path in paths]
+    if len(set(names)) != len(names):
+        raise ValueError("Duplicate attachment file names are not allowed")
+    sources = {path.name: path.read_bytes() for path in paths}
     output = await _run(
         client,
         "attach",
-        *(str(path.resolve()) for path in paths),
+        *(str(path.absolute()) for path in paths),
         "--repo",
         client.repo,
         "--json",
@@ -72,13 +72,13 @@ async def upload_attachments(
                 not isinstance(item, dict)
                 or not isinstance(item.get("name"), str)
                 or not isinstance(item.get("href"), str)
-                or not sources.get(item["name"])
+                or item["name"] not in sources
             ):
                 raise AttachmentVerificationError(
                     "Upload response contains an unexpected attachment"
                 )
             name, href = item["name"], item["href"]
-            source = sources[name].popleft()
+            source = sources.pop(name)
             dest = Path(directory) / str(index)
             await download_attachment(client, href, dest)
             if dest.read_bytes() != source:
