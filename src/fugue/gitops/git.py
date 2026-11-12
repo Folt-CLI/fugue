@@ -61,11 +61,11 @@ class Git:
         return (await self._run("symbolic-ref", "--short", "HEAD")).strip()
 
     async def status_porcelain(self) -> list[str]:
-        output = await self._run("status", "--porcelain=v1")
+        output = await self._run("status", "--porcelain=v1", "--no-renames")
         return output.splitlines()
 
     async def staged_files(self) -> list[str]:
-        output = await self._run("diff", "--cached", "--name-only", "-z", "--")
+        output = await self._run("diff", "--cached", "--name-only", "--no-renames", "-z", "--")
         return output.removesuffix("\0").split("\0") if output else []
 
     async def stage(self, paths: Sequence[str]) -> None:
@@ -82,7 +82,9 @@ class Git:
             await self._run("--literal-pathspecs", "add", "--", *paths)
 
     async def diff(self, base: str, head: str) -> str:
-        return await self._run("diff", "--no-ext-diff", "--no-color", base, head, "--")
+        return await self._run(
+            "diff", "--no-ext-diff", "--no-color", "--no-renames", base, head, "--"
+        )
 
     async def commit(self, message: CommitMessage) -> str:
         await self._run("commit", "--cleanup=verbatim", "-F", "-", stdin=message.render())

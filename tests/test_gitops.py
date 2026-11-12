@@ -240,3 +240,29 @@ def test_diff_preserves_large_output(repo: Path) -> None:
         assert "+" + content + "\n" in await git.diff(base, head)
 
     asyncio.run(scenario())
+
+
+def test_rename_preserves_source_for_validation(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        (repo / "private.txt").write_text("private content\n")
+        await git.stage(["private.txt"])
+        base = await git.commit(message())
+        (repo / "allowed").mkdir()
+        git_command(repo, "config", "diff.renames", "true")
+        git_command(repo, "config", "status.renames", "true")
+        git_command(repo, "mv", "private.txt", "allowed/private.txt")
+
+        staged = await git.staged_files()
+        assert set(staged) == {"private.txt", "allowed/private.txt"}
+        assert validate_staging(staged, ["allowed/"]) == ["private.txt"]
+        assert set(await git.status_porcelain()) == {"D  private.txt", "A  allowed/private.txt"}
+
+        head = await git.commit(message())
+        diff = await git.diff(base, head)
+        assert "deleted file mode" in diff
+        assert "new file mode" in diff
+        assert "--- a/private.txt" in diff
+        assert "+++ b/allowed/private.txt" in diff
+
+    asyncio.run(scenario())
