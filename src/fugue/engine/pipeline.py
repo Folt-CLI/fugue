@@ -136,13 +136,24 @@ class Engine:
                 run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket)
             )
             path = await self._stage(run_id, Stage.PREPARE, lambda: self._prepare(run_id, ticket))
-            if self.deps.artifacts.open_ref(run_id, "implemented") is None:
+            scope_sha = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+            implementations = [
+                artifact
+                for artifact in store.list_artifacts(run_id)
+                if artifact.name.startswith("implemented-")
+            ]
+            implemented_sha = (
+                Path(implementations[-1].path).read_text(encoding="utf-8")
+                if implementations
+                else None
+            )
+            if implemented_sha != scope_sha:
                 await self._stage(
                     run_id,
                     Stage.IMPLEMENT,
                     lambda: self._agent(run_id, path, implementation_prompt(scope)),
                 )
-                self._artifact(run_id, "implemented", "Implementation completed")
+                self._artifact(run_id, f"implemented-{len(implementations)}", scope_sha)
             await self._verify(run_id, path)
             head, pr_number = await self._stage(
                 run_id, Stage.DELIVER, lambda: self._deliver(run_id, ticket, scope, path)
@@ -196,13 +207,28 @@ class Engine:
         branch = branch_name(ticket)
         path = worktree_path(self.deps.worktrees_root, ticket)
         git = Git(self.deps.repo_root)
+        base_name = f"preparation-base-{hashlib.sha256(branch.encode()).hexdigest()}"
+        operation = self.deps.store.begin_operation(run_id, "worktree", branch, {"path": str(path)})
 
         async def existing() -> dict[str, Any] | None:
             if path.exists():
                 try:
                     await git.resolve_ref(branch)
                     if await Git(path).current_branch() == branch:
-                        return {"path": str(path)}
+                        saved = json.loads(operation.result_json) if operation.result_json else {}
+                        base_sha = saved.get("base_sha")
+                        if base_sha is None:
+                            ref = self.deps.artifacts.open_ref(run_id, base_name)
+                            if ref is not None:
+                                base_sha = self.deps.artifacts.read_text(ref)
+                            else:
+                                # Adopt older or pre-existing worktrees using their
+                                # common ancestor, never the current base tip.
+                                base = await git.resolve_ref(self.deps.base_branch)
+                                head = await Git(path).head_sha()
+                                base_sha = (await git._run("merge-base", base, head)).strip()
+                                self._artifact(run_id, base_name, base_sha)
+                        return {"path": str(path), "base_sha": base_sha}
                 except GitError:
                     pass
             return None
@@ -211,8 +237,16 @@ class Engine:
             path.parent.mkdir(parents=True, exist_ok=True)
             await git.fetch()
             await git.fast_forward(self.deps.base_branch)
-            await git.create_worktree(path, branch, self.deps.base_branch)
-            return {"path": str(path)}
+            ref = self.deps.artifacts.open_ref(run_id, base_name)
+            if ref is None:
+                base_sha = await git.resolve_ref(self.deps.base_branch)
+                # Persist before creating the worktree so reconciliation can
+                # recover this base if creation finishes before its result is saved.
+                self._artifact(run_id, base_name, base_sha)
+            else:
+                base_sha = self.deps.artifacts.read_text(ref)
+            await git.create_worktree(path, branch, base_sha)
+            return {"path": str(path), "base_sha": base_sha}
 
         await self._operation(run_id, "worktree", branch, {"path": str(path)}, create, existing)
 
@@ -342,11 +376,15 @@ class Engine:
         if problems:
             raise _Stop(RunState.BLOCKED, problems)
 
+        preparation = self.deps.store.begin_operation(run_id, "worktree", branch, {})
+        prepared = json.loads(preparation.result_json) if preparation.result_json else {}
+        base_sha = prepared.get("base_sha")
+        if not isinstance(base_sha, str):
+            raise _Stop(RunState.BLOCKED, ["Preparation base SHA is missing"])
         operation = self.deps.store.begin_operation(run_id, "commit", branch, {})
 
         async def committed() -> dict[str, Any] | None:
             head = await git.head_sha()
-            base = await git.resolve_ref(self.deps.base_branch)
             changed = await git._run(
                 "diff",
                 "--name-status",
@@ -356,7 +394,7 @@ class Engine:
                 "--no-relative",
                 "--ignore-submodules=none",
                 "-z",
-                f"{base}..{head}",
+                f"{base_sha}..{head}",
                 "--",
             )
             paths = changed.removesuffix("\0").split("\0")[1::2] if changed else []

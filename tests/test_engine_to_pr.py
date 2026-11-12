@@ -1,6 +1,7 @@
 """Engine behaviour against local Git repositories and scripted providers."""
 
 import asyncio
+import json
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -473,3 +474,91 @@ def test_restart_performs_pending_repair(harness: Harness, monkeypatch: pytest.M
         a for a in harness.deps.store.list_artifacts(run.id) if a.name.startswith("gate-failure-")
     ]
     assert len(failures) == 1
+
+
+def test_implementation_completion_tracks_current_scope(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = ScriptedAdapter(
+        [ScriptStep(result=result(), side_effect=write_allowed) for _ in range(3)], name="codex"
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+
+    async def interrupt_verification(self: Engine, run_id: int, path: Path) -> None:
+        raise RuntimeError("stop after implementation")
+
+    replacement = SCOPE + "\nApply the revised behaviour."
+    with monkeypatch.context() as patch:
+        patch.setattr(Engine, "_verify", interrupt_verification)
+        for index, scope in enumerate((SCOPE, replacement, SCOPE)):
+            harness.github.scope = scope
+            sections = dict(harness.github.ticket.body_sections)
+            sections["Solution"] = (
+                f"[33-solution-1.md](https://github.com/user-attachments/files/scope-{index})"
+            )
+            harness.github.ticket = harness.github.ticket.model_copy(
+                update={"body_sections": sections}
+            )
+            with pytest.raises(RuntimeError, match="stop after implementation"):
+                harness.run()
+            assert len(adapter.requests) == index + 1
+            assert adapter.requests[-1].prompt.endswith(scope)
+            assert adapter.requests[-1].session_id == (None if index == 0 else "session-1")
+    # Reusing the current scope skips implementation; returning to an earlier
+    # scope above required implementation because it was no longer the current one.
+    assert harness.run().state == RunState.WAITING_FOR_CI
+    assert len(adapter.requests) == 3
+    assert len(harness.deps.store.list_runs(33)) == 1
+
+
+@pytest.mark.parametrize("interruption", ["after-implementation", "after-worktree", "legacy"])
+def test_base_advance_does_not_change_preparation_base(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    branch = branch_name(harness.github.ticket)
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+
+    async def interrupt_verification(self: Engine, run_id: int, path: Path) -> None:
+        raise RuntimeError("stop after preparation")
+
+    if interruption == "legacy":
+        path.parent.mkdir(parents=True)
+        asyncio.run(Git(harness.deps.repo_root).create_worktree(path, branch, "develop"))
+    else:
+        with monkeypatch.context() as patch:
+            if interruption == "after-implementation":
+                patch.setattr(Engine, "_verify", interrupt_verification)
+            else:
+                complete = harness.deps.store.complete_operation
+
+                def interrupt_record(id: int, result: dict[str, object]) -> None:
+                    if "base_sha" in result:
+                        raise RuntimeError("stop after preparation")
+                    complete(id, result)
+
+                patch.setattr(harness.deps.store, "complete_operation", interrupt_record)
+            with pytest.raises(RuntimeError, match="stop after preparation"):
+                harness.run()
+
+    async def advance_base() -> str:
+        root = harness.deps.repo_root
+        (root / "unrelated.txt").write_text("Another ticket's change")
+        await git_command(root, "add", "unrelated.txt")
+        await git_command(root, "commit", "-m", "Advance develop")
+        await git_command(root, "push", "origin", "develop")
+        return await Git(root).head_sha()
+
+    advanced = asyncio.run(advance_base())
+    assert advanced != harness.initial_head
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    preparation = harness.deps.store.begin_operation(outcome.run_id, "worktree", branch, {})
+    assert preparation.result_json is not None
+    assert json.loads(preparation.result_json)["base_sha"] == harness.initial_head
+    assert not (path / "unrelated.txt").exists()
+    assert len(harness.adapter.requests) == 1
+    # Reconciliation must preserve the preparation base on later resumptions too.
+    assert harness.run().head_sha == outcome.head_sha
+    preparation = harness.deps.store.begin_operation(outcome.run_id, "worktree", branch, {})
+    assert preparation.result_json is not None
+    assert json.loads(preparation.result_json)["base_sha"] == harness.initial_head
