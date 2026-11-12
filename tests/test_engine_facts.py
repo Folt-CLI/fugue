@@ -1,9 +1,21 @@
 """Boundary cases for ticket facts and rendered engine instructions."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from fugue.engine.decision import (
+    Block,
+    Done,
+    Implement,
+    OpenPr,
+    Prepare,
+    Push,
+    Snapshot,
+    Verify,
+    decide,
+)
 from fugue.engine.facts import (
     SOLUTION_LINK_RE,
     allowed_files,
@@ -16,7 +28,7 @@ from fugue.engine.facts import (
 )
 from fugue.engine.ports import GitHubPort
 from fugue.engine.prompts import commit_message, implementation_prompt, pr_body, repair_prompt
-from fugue.github import GitHubClient
+from fugue.github import GitHubClient, PullRequest
 from fugue.models import IssueType, Priority, Size, Status, Ticket
 
 
@@ -163,3 +175,41 @@ def test_explanation_normalizes_title(title: str, expected: str) -> None:
     item = ticket().model_copy(update={"title": title})
     assert explanation(item) == expected
     assert len(f"Feature[#33]: {explanation(item)}") <= 72
+
+
+SNAPSHOT = Snapshot(
+    allowed=("allowed.txt",),
+    worktree=True,
+    head_sha="head",
+    ahead=("Feature[#33]: Add the engine",),
+    dirty=(),
+    changed=("allowed.txt",),
+    remote_head_sha="head",
+    pr=None,
+    status=Status.IN_IMPLEMENTATION,
+    scope_sha256="new",
+    implemented_sha256="new",
+)
+
+
+@pytest.mark.parametrize(
+    ("changes", "action"),
+    [
+        (
+            {"pr": PullRequest(1, "url"), "dirty": ("other.txt",)},
+            Done(PullRequest(1, "url"), "head"),
+        ),
+        ({"dirty": ("other.txt",)}, Block(("Outside allowed files: other.txt",))),
+        ({"changed": ("other.txt",)}, Block(("Outside allowed files: other.txt",))),
+        ({"worktree": False, "ahead": ()}, Prepare()),
+        ({"status": Status.TO_DO}, Prepare()),
+        ({"ahead": (), "remote_head_sha": None}, Implement()),
+        ({"implemented_sha256": "old", "dirty": ("allowed.txt",)}, Implement()),
+        ({"implemented_sha256": None, "dirty": ("allowed.txt",)}, Verify()),
+        ({"remote_head_sha": None}, Push()),
+        ({"remote_head_sha": "behind"}, Push()),
+        ({}, OpenPr()),
+    ],
+)
+def test_decide_applies_the_first_matching_rule(changes: dict[str, object], action: object) -> None:
+    assert decide(replace(SNAPSHOT, **changes)) == action  # type: ignore[arg-type]

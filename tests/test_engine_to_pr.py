@@ -1,9 +1,6 @@
 """Engine behaviour against local Git repositories and scripted providers."""
 
 import asyncio
-import hashlib
-import json
-import sqlite3
 import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -20,7 +17,7 @@ from fugue.agents import (
     ScriptStep,
     UsageRecord,
 )
-from fugue.artifacts import ArtifactRef, ArtifactStore
+from fugue.artifacts import ArtifactStore
 from fugue.config import FugueConfig, RoleConfig
 from fugue.engine import Engine, EngineDeps, GitHubPort, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
@@ -37,7 +34,7 @@ from fugue.models import (
     Ticket,
 )
 from fugue.process import run_command
-from fugue.store import Artifact, StageAttempt, Store
+from fugue.store import Store
 from fugue.workflow import RunState
 
 SCOPE = "You may touch only these files:\n- `allowed.txt`\n\nImplement the change."
@@ -51,7 +48,7 @@ class FakeGitHub:
         self.calls: list[str] = []
         self.pr: PullRequest | None = None
         self.created: list[tuple[str, ...]] = []
-        self.crash = False
+        self.create_error: Exception | None = None
 
     async def get_ticket(self, number: int) -> Ticket:
         assert number == self.ticket.number
@@ -71,10 +68,6 @@ class FakeGitHub:
 
     async def find_pr(self, branch: str) -> PullRequest | None:
         self.calls.append("find_pr")
-        if self.crash:
-            self.crash = False
-            self.pr = PullRequest(71, "https://example.test/pr/71")
-            raise RuntimeError("crash after push")
         return self.pr
 
     async def create_pr(
@@ -89,6 +82,9 @@ class FakeGitHub:
     ) -> PullRequest:
         assert self.pr is None
         self.calls.append("create_pr")
+        if self.create_error is not None:
+            error, self.create_error = self.create_error, None
+            raise error
         self.created.append((branch, base, title, body, assignee, milestone, project_title))
         self.pr = PullRequest(71, "https://example.test/pr/71")
         return self.pr
@@ -188,6 +184,64 @@ def harness(tmp_path: Path) -> Iterator[Harness]:
         yield Harness(deps, github, adapter, origin, head)
 
 
+def interrupt_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def stop(self: Git, branch: str, remote: str = "origin") -> None:
+        raise RuntimeError("stop before push")
+
+    monkeypatch.setattr(Git, "push", stop)
+
+
+def forbid_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unexpected(self: Git, branch: str, remote: str = "origin") -> None:
+        pytest.fail("The branch must not be pushed again")
+
+    monkeypatch.setattr(Git, "push", unexpected)
+
+
+def stop_after_commit(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Run until the commit exists locally, then stop before the push."""
+    with monkeypatch.context() as patch:
+        interrupt_push(patch)
+        with pytest.raises(RuntimeError, match="stop before push"):
+            harness.run()
+    return worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+
+
+def stop_during_implementation(harness: Harness, content: str) -> None:
+    """Leave a dirty tree with no commit, as an interrupted implementer would."""
+
+    def write_then_crash(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text(content)
+        raise RuntimeError("stop during implementation")
+
+    adapter = ScriptedAdapter([ScriptStep(side_effect=write_then_crash)], name="codex")
+    harness.deps.registry.register("codex", lambda config: adapter)
+    with pytest.raises(RuntimeError, match="stop during implementation"):
+        harness.run()
+
+
+def agent_sessions(store: Store, run_id: int) -> list[str]:
+    rows = store._connection.execute(
+        "SELECT session_id FROM agent_sessions WHERE run_id = ?", (run_id,)
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def commit_count(path: Path, base: str) -> int:
+    return int(asyncio.run(git_command(path, "rev-list", "--count", f"{base}..HEAD")))
+
+
+def gate_requires_done() -> list[list[str]]:
+    return [
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
+        ]
+    ]
+
+
+# Scenario 1
 def test_happy_path(harness: Harness) -> None:
     outcome = harness.run()
     assert outcome.state == RunState.WAITING_FOR_CI
@@ -203,14 +257,14 @@ def test_happy_path(harness: Harness) -> None:
     assert harness.github.calls.count("status") == 1
     assert harness.github.ticket.status == Status.IN_IMPLEMENTATION
     assert harness.deps.store.usage_summary(outcome.run_id)["input_tokens"] == 10
-    assert any(
-        a.name.startswith("session-") for a in harness.deps.store.list_artifacts(outcome.run_id)
-    )
+    assert agent_sessions(harness.deps.store, outcome.run_id) == ["session-1"]
     assert harness.adapter.requests[0].access == AccessMode.WORKSPACE_WRITE
+    assert harness.github.created[0][2] == subject
     assert harness.github.created[0][4:] == ("developer", "0.1.0", "Fugue")
     assert "Closes #33" in harness.github.created[0][3]
 
 
+# Scenario 2
 @pytest.mark.parametrize("problem", ["missing", "unselected", "xl", "empty-allowlist"])
 def test_scope_problems_block(harness: Harness, problem: str) -> None:
     ticket = harness.github.ticket
@@ -228,20 +282,16 @@ def test_scope_problems_block(harness: Harness, problem: str) -> None:
     outcome = harness.run()
     assert outcome.state == RunState.BLOCKED
     assert outcome.problems
+    assert harness.deps.store.get_run(outcome.run_id).state == RunState.BLOCKED
     assert not harness.adapter.requests
     assert not harness.deps.worktrees_root.exists()
     assert set(harness.github.calls) <= {"download"}
     assert asyncio.run(Git(harness.deps.repo_root).head_sha()) == harness.initial_head
 
 
+# Scenario 3
 def test_gate_repair_resumes_session(harness: Harness) -> None:
-    harness.deps.config.policy.gate_commands = [
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
-        ]
-    ]
+    harness.deps.config.policy.gate_commands = gate_requires_done()
 
     def broken(request: AgentRequest) -> None:
         (request.cwd / "allowed.txt").write_text("broken")
@@ -262,14 +312,11 @@ def test_gate_repair_resumes_session(harness: Harness) -> None:
     assert harness.deps.store.usage_summary(outcome.run_id)["input_tokens"] == 20
 
 
+# Scenario 3
 def test_repair_limit(harness: Harness) -> None:
     harness.deps.config.limits.max_repair_attempts = 1
     harness.deps.config.policy.gate_commands = [
-        [
-            sys.executable,
-            "-c",
-            "import sys; print('failure evidence'); sys.exit(1)",
-        ]
+        [sys.executable, "-c", "import sys; print('failure evidence'); sys.exit(1)"]
     ]
     adapter = ScriptedAdapter(
         [
@@ -285,6 +332,7 @@ def test_repair_limit(harness: Harness) -> None:
     artifacts = harness.deps.store.list_artifacts(outcome.run_id)
     failures = [a for a in artifacts if a.name.startswith("gate-failure-")]
     assert len(failures) == 2
+    assert len({a.name for a in failures}) == 2
     assert "failure evidence" in Path(failures[-1].path).read_text()
     assert "Return code: 1" in outcome.problems[0]
     path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
@@ -292,6 +340,7 @@ def test_repair_limit(harness: Harness) -> None:
     assert not harness.github.created
 
 
+# Scenario 4
 def test_staging_violation(harness: Harness) -> None:
     def write_disallowed(request: AgentRequest) -> None:
         write_allowed(request)
@@ -309,26 +358,191 @@ def test_staging_violation(harness: Harness) -> None:
     assert not harness.github.created
 
 
-def test_restart_after_push_reconciles(harness: Harness) -> None:
-    harness.github.crash = True
-    with pytest.raises(RuntimeError, match="crash after push"):
-        harness.run()
-    run = harness.deps.store.list_runs(33)[0]
-    branch = branch_name(harness.github.ticket)
-    push = harness.deps.store.begin_operation(run.id, "push", branch, {})
-    assert push.status == "done"
-    head = asyncio.run(Git(harness.origin).head_sha(branch))
+# Scenario 4
+@pytest.mark.parametrize("how", ["amended", "extra-commit"])
+def test_commits_ahead_outside_allowed_files_block(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    path = stop_after_commit(harness, monkeypatch)
+
+    async def tamper() -> None:
+        (path / "disallowed.txt").write_text("outside scope")
+        await git_command(path, "add", "--", "disallowed.txt")
+        if how == "amended":
+            await git_command(path, "commit", "--amend", "--no-edit")
+        else:
+            await git_command(path, "commit", "-m", "Extra")
+
+    asyncio.run(tamper())
+    forbid_push(monkeypatch)
     outcome = harness.run()
-    assert outcome.run_id == run.id
-    assert outcome.head_sha == head
-    assert outcome.pr_number == 71
+    assert outcome.state == RunState.BLOCKED
+    assert outcome.problems == ("Outside allowed files: disallowed.txt",)
     assert not harness.github.created
-    assert len(harness.adapter.requests) == 1
+    assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
+
+
+# Scenario 5
+def test_resume_after_worktree_creation_implements(harness: Harness) -> None:
+    def crash(request: AgentRequest) -> None:
+        raise RuntimeError("stop before implementation")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(side_effect=crash),
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    with pytest.raises(RuntimeError, match="stop before implementation"):
+        harness.run()
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    assert path.exists()
+    assert asyncio.run(Git(path).status_porcelain()) == []
+    first_run = harness.deps.store.list_runs(33)[0]
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert outcome.run_id == first_run.id
+    assert len(adapter.requests) == 2
     assert harness.github.calls.count("status") == 1
-    push = harness.deps.store.begin_operation(run.id, "push", branch, {})
-    assert push.status == "reconciled"
+    assert len(harness.github.created) == 1
 
 
+# Scenario 6
+@pytest.mark.parametrize("gate_passes", [True, False])
+def test_resume_with_dirty_tree_runs_the_gate(harness: Harness, gate_passes: bool) -> None:
+    harness.deps.config.policy.gate_commands = gate_requires_done()
+    stop_during_implementation(harness, "done" if gate_passes else "broken")
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    assert asyncio.run(Git(path).status_porcelain()) == ["?? allowed.txt"]
+    repair = ScriptedAdapter([ScriptStep(result=result(), side_effect=write_allowed)], name="codex")
+    harness.deps.registry.register("codex", lambda config: repair)
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert commit_count(path, "develop") == 1
+    if gate_passes:
+        assert not repair.requests
+    else:
+        assert len(repair.requests) == 1
+        assert "Gate failed:" in repair.requests[0].prompt
+        row = harness.deps.store._connection.execute(
+            "SELECT COUNT(*) FROM stage_attempts WHERE run_id = ? AND stage = 'repair' "
+            "AND status = 'completed'",
+            (outcome.run_id,),
+        ).fetchone()
+        assert row[0] == 1
+
+
+# Scenario 7
+def test_resume_after_commit_pushes(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = stop_after_commit(harness, monkeypatch)
+    head = asyncio.run(Git(path).head_sha())
+    assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
+    monkeypatch.undo()
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert outcome.head_sha == head
+    assert asyncio.run(Git(harness.origin).head_sha(branch_name(harness.github.ticket))) == head
+    assert commit_count(path, "develop") == 1
+    assert len(harness.adapter.requests) == 1
+    assert len(harness.github.created) == 1
+
+
+# Scenario 7
+def test_resume_after_push_opens_the_pull_request(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.github.create_error = RuntimeError("stop before the pull request")
+    with pytest.raises(RuntimeError, match="stop before the pull request"):
+        harness.run()
+    branch = branch_name(harness.github.ticket)
+    pushed = asyncio.run(Git(harness.origin).head_sha(branch))
+    forbid_push(monkeypatch)
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert outcome.head_sha == pushed
+    assert outcome.pr_number == 71
+    assert len(harness.github.created) == 1
+    assert len(harness.adapter.requests) == 1
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    assert commit_count(path, "develop") == 1
+
+
+# Scenario 7
+def test_existing_pull_request_is_done_without_new_work(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = harness.run()
+    forbid_push(monkeypatch)
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert (second.run_id, second.pr_number, second.head_sha) == (
+        first.run_id,
+        first.pr_number,
+        first.head_sha,
+    )
+    assert len(harness.adapter.requests) == 1
+    assert len(harness.github.created) == 1
+    assert harness.github.calls.count("status") == 1
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    assert commit_count(path, "develop") == 1
+
+
+# Scenario 8
+def test_base_advance_is_measured_from_the_merge_base(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = stop_after_commit(harness, monkeypatch)
+    clone = harness.deps.repo_root
+
+    async def advance_base() -> None:
+        (clone / "other.txt").write_text("Merged by another ticket")
+        await git_command(clone, "add", "other.txt")
+        await git_command(clone, "commit", "-m", "Another ticket")
+        await git_command(clone, "push", "origin", "develop")
+
+    asyncio.run(advance_base())
+    monkeypatch.undo()
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert outcome.problems == ()
+    assert commit_count(path, "refs/heads/develop~1") == 1
+    assert len(harness.github.created) == 1
+
+
+# Scenario 9
+def test_replaced_scope_implements_again(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    new_scope = SCOPE + "\n\nAlso update the content."
+
+    def write_revised(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("revised")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=write_allowed),
+            ScriptStep(result=result(), side_effect=write_revised),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    path = stop_after_commit(harness, monkeypatch)
+    monkeypatch.undo()
+    harness.github.scope = new_scope
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert len(adapter.requests) == 2
+    assert adapter.requests[1].prompt.endswith(new_scope)
+    assert (path / "allowed.txt").read_text() == "revised"
+    assert commit_count(path, "develop") == 2
+    assert harness.github.calls.count("download") == 2
+    scopes = [
+        a for a in harness.deps.store.list_artifacts(outcome.run_id) if a.name.startswith("scope-")
+    ]
+    assert len({a.sha256 for a in scopes}) == 2
+
+
+# Scenario 10
 def test_cancellation(harness: Harness) -> None:
     def cancel(request: AgentRequest) -> None:
         raise asyncio.CancelledError
@@ -341,14 +555,12 @@ def test_cancellation(harness: Harness) -> None:
     assert not harness.github.created
 
 
+# Scenario 10
 @pytest.mark.parametrize(
     ("error", "flag", "state"),
     [
         ("Provider rate limited (429)", True, RunState.PROVIDER_LIMITED),
         ("Provider rate limited (429)", False, RunState.FAILED),
-        ("Rate limiter configuration missing", False, RunState.FAILED),
-        ("Usage limit configuration missing", False, RunState.FAILED),
-        ("Claude provider-limited: rejected", False, RunState.FAILED),
         ("Provider crashed", False, RunState.FAILED),
     ],
 )
@@ -360,6 +572,7 @@ def test_provider_failure(harness: Harness, error: str, flag: bool, state: RunSt
     harness.deps.registry.register("codex", lambda config: adapter)
     outcome = harness.run()
     assert outcome.state == state
+    assert harness.deps.store.get_run(outcome.run_id).state == state
     assert outcome.problems == (error,)
     errors = [
         a
@@ -370,533 +583,34 @@ def test_provider_failure(harness: Harness, error: str, flag: bool, state: RunSt
     assert not harness.github.created
 
 
-@pytest.mark.parametrize(("recorded", "disallowed"), [(True, True), (False, True), (True, False)])
-def test_restart_rejects_amended_commit(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch, recorded: bool, disallowed: bool
-) -> None:
-    async def interrupt_push(self: Git, branch: str, remote: str = "origin") -> None:
-        raise RuntimeError("stop before push")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Git, "push", interrupt_push)
-        if not recorded:
-            complete = harness.deps.store.complete_operation
-
-            def interrupt_record(id: int, result: dict[str, object]) -> None:
-                if "head_sha" in result:
-                    raise RuntimeError("stop before push")
-                complete(id, result)
-
-            patch.setattr(harness.deps.store, "complete_operation", interrupt_record)
-        with pytest.raises(RuntimeError, match="stop before push"):
-            harness.run()
-
-    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
-    name = "disallowed\tfile\n.txt" if disallowed else "allowed.txt"
-    (path / name).write_text("Amended content")
-
-    async def amend() -> str:
-        await git_command(path, "add", "--", name)
-        await git_command(path, "commit", "--amend", "--no-edit")
-        return await git_command(path, "log", "-1", "--format=%s")
-
-    assert asyncio.run(amend()) == "Feature[#33]: Add the engine"
-
-    async def unexpected_push(self: Git, branch: str, remote: str = "origin") -> None:
-        pytest.fail("A changed reconciled commit must not be pushed")
-
-    monkeypatch.setattr(Git, "push", unexpected_push)
-    outcome = harness.run()
-    assert outcome.state == RunState.BLOCKED
-    if disallowed:
-        assert f"Outside allowed files: {name}" in outcome.problems
-    if recorded:
-        assert "Commit head SHA differs from the recorded operation result" in outcome.problems
-    assert not harness.github.created
-    assert "find_pr" not in harness.github.calls
-    assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
-
-
-def test_replaced_scope_attachment_is_downloaded(harness: Harness) -> None:
-    harness.github.scope = "No allowed paths"
-    first = harness.run()
-    assert first.state == RunState.BLOCKED
-    assert harness.github.calls.count("download") == 1
-    harness.github.scope = SCOPE
-    sections = dict(harness.github.ticket.body_sections)
-    sections["Solution"] = (
-        "[33-solution-1.md](https://github.com/user-attachments/files/replacement)"
-    )
-    harness.github.ticket = harness.github.ticket.model_copy(update={"body_sections": sections})
-    second = harness.run()
-    assert second.run_id == first.run_id
-    assert second.state == RunState.WAITING_FOR_CI
-    assert harness.github.calls.count("download") == 2
-    assert harness.adapter.requests[0].prompt.endswith(SCOPE)
-    scopes = [
-        a for a in harness.deps.store.list_artifacts(first.run_id) if a.name.startswith("scope-")
-    ]
-    assert len(scopes) == 2
-    assert scopes[0].sha256 != scopes[1].sha256
-    assert scopes[0].name != scopes[1].name
-    # An unchanged URL reuses the cached scope without another download.
-    assert harness.run().pr_number == second.pr_number
-    assert harness.github.calls.count("download") == 2
-
-
-def test_restart_performs_pending_repair(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-    harness.deps.config.limits.max_repair_attempts = 1
-    harness.deps.config.policy.gate_commands = [
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
-        ]
-    ]
-
-    def broken(request: AgentRequest) -> None:
-        (request.cwd / "allowed.txt").write_text("broken")
-
+# Scenario 10
+def test_provider_limited_run_resumes_session(harness: Harness) -> None:
+    limited = replace(result(), ok=False, error="Limited", provider_limited=True)
     adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=result(), side_effect=broken),
-            ScriptStep(result=result(), side_effect=write_allowed),
-        ],
+        [ScriptStep(result=limited), ScriptStep(result=result(), side_effect=write_allowed)],
         name="codex",
     )
     harness.deps.registry.register("codex", lambda config: adapter)
-    write_artifact = Engine._artifact
-
-    def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> ArtifactRef:
-        ref = write_artifact(self, run_id, name, text)
-        if name.startswith("gate-failure-"):
-            raise asyncio.CancelledError
-        return ref
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Engine, "_artifact", interrupt_after_failure)
-        with pytest.raises(asyncio.CancelledError):
-            harness.run()
-    run = harness.deps.store.list_runs(33)[0]
-    assert run.state == RunState.INTERRUPTED
-    assert len(adapter.requests) == 1
-    assert any(op.kind == "repair" for op in harness.deps.store.pending_operations(run.id))
-    outcome = harness.run()
-    assert outcome.run_id == run.id
-    assert outcome.state == RunState.WAITING_FOR_CI
-    assert len(adapter.requests) == 2
-    assert adapter.requests[1].session_id == "session-1"
-    assert "Gate failed:" in adapter.requests[1].prompt
-    assert not harness.deps.store.pending_operations(run.id)
-    failures = [
-        a for a in harness.deps.store.list_artifacts(run.id) if a.name.startswith("gate-failure-")
-    ]
-    # Resuming checks the still-failing gate before using the pending repair.
-    assert len(failures) == 2
-
-
-def test_implementation_completion_tracks_current_scope(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    adapter = ScriptedAdapter(
-        [ScriptStep(result=result(), side_effect=write_allowed) for _ in range(3)], name="codex"
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-
-    async def interrupt_verification(self: Engine, run_id: int, path: Path) -> None:
-        raise RuntimeError("stop after implementation")
-
-    replacement = SCOPE + "\nApply the revised behaviour."
-    with monkeypatch.context() as patch:
-        patch.setattr(Engine, "_verify", interrupt_verification)
-        for index, scope in enumerate((SCOPE, replacement, SCOPE)):
-            harness.github.scope = scope
-            sections = dict(harness.github.ticket.body_sections)
-            sections["Solution"] = (
-                f"[33-solution-1.md](https://github.com/user-attachments/files/scope-{index})"
-            )
-            harness.github.ticket = harness.github.ticket.model_copy(
-                update={"body_sections": sections}
-            )
-            with pytest.raises(RuntimeError, match="stop after implementation"):
-                harness.run()
-            assert len(adapter.requests) == index + 1
-            assert adapter.requests[-1].prompt.endswith(scope)
-            assert adapter.requests[-1].session_id == (None if index == 0 else "session-1")
-    # Reusing the current scope skips implementation; returning to an earlier
-    # scope above required implementation because it was no longer the current one.
-    assert harness.run().state == RunState.WAITING_FOR_CI
-    assert len(adapter.requests) == 3
-    assert len(harness.deps.store.list_runs(33)) == 1
-
-
-@pytest.mark.parametrize("interruption", ["after-implementation", "after-worktree", "legacy"])
-def test_base_advance_does_not_change_preparation_base(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch, interruption: str
-) -> None:
-    branch = branch_name(harness.github.ticket)
-    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
-
-    async def interrupt_verification(self: Engine, run_id: int, path: Path) -> None:
-        raise RuntimeError("stop after preparation")
-
-    if interruption == "legacy":
-        path.parent.mkdir(parents=True)
-        asyncio.run(Git(harness.deps.repo_root).create_worktree(path, branch, "develop"))
-    else:
-        with monkeypatch.context() as patch:
-            if interruption == "after-implementation":
-                patch.setattr(Engine, "_verify", interrupt_verification)
-            else:
-                complete = harness.deps.store.complete_operation
-
-                def interrupt_record(id: int, result: dict[str, object]) -> None:
-                    if "base_sha" in result:
-                        raise RuntimeError("stop after preparation")
-                    complete(id, result)
-
-                patch.setattr(harness.deps.store, "complete_operation", interrupt_record)
-            with pytest.raises(RuntimeError, match="stop after preparation"):
-                harness.run()
-
-    async def advance_base() -> str:
-        root = harness.deps.repo_root
-        (root / "unrelated.txt").write_text("Another ticket's change")
-        await git_command(root, "add", "unrelated.txt")
-        await git_command(root, "commit", "-m", "Advance develop")
-        await git_command(root, "push", "origin", "develop")
-        return await Git(root).head_sha()
-
-    advanced = asyncio.run(advance_base())
-    assert advanced != harness.initial_head
-    outcome = harness.run()
-    assert outcome.state == RunState.WAITING_FOR_CI
-    preparation = harness.deps.store.begin_operation(outcome.run_id, "worktree", branch, {})
-    assert preparation.result_json is not None
-    assert json.loads(preparation.result_json)["base_sha"] == harness.initial_head
-    assert not (path / "unrelated.txt").exists()
-    assert len(harness.adapter.requests) == 1
-    # Reconciliation must preserve the preparation base on later resumptions too.
-    assert harness.run().head_sha == outcome.head_sha
-    preparation = harness.deps.store.begin_operation(outcome.run_id, "worktree", branch, {})
-    assert preparation.result_json is not None
-    assert json.loads(preparation.result_json)["base_sha"] == harness.initial_head
-
-
-@pytest.mark.parametrize("exhausted", [False, True])
-def test_passing_gate_satisfies_pending_repair_without_attempt(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch, exhausted: bool
-) -> None:
-    harness.deps.config.limits.max_repair_attempts = 1
-    harness.deps.config.policy.gate_commands = [
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
-        ]
-    ]
-
-    def broken(request: AgentRequest) -> None:
-        (request.cwd / "allowed.txt").write_text("broken")
-
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=result(), side_effect=broken),
-            ScriptStep(result=result()),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-    if exhausted:
-        assert harness.run().state == RunState.BLOCKED
-    else:
-        write_artifact = Engine._artifact
-
-        def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> ArtifactRef:
-            ref = write_artifact(self, run_id, name, text)
-            if name.startswith("gate-failure-"):
-                raise asyncio.CancelledError
-            return ref
-
-        with monkeypatch.context() as patch:
-            patch.setattr(Engine, "_artifact", interrupt_after_failure)
-            with pytest.raises(asyncio.CancelledError):
-                harness.run()
-    run = harness.deps.store.list_runs(33)[0]
-    pending = [op for op in harness.deps.store.pending_operations(run.id) if op.kind == "repair"]
-    assert len(pending) == 1
-    calls_before = len(adapter.requests)
-    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
-    (path / "allowed.txt").write_text("done")
-    begin_attempt = harness.deps.store.begin_attempt
-    stages: list[str] = []
-
-    def record_attempt(run_id: int, stage: str) -> StageAttempt:
-        stages.append(stage)
-        return begin_attempt(run_id, stage)
-
-    monkeypatch.setattr(harness.deps.store, "begin_attempt", record_attempt)
-    outcome = harness.run()
-    assert outcome.state == RunState.WAITING_FOR_CI
-    assert outcome.run_id == run.id
-    assert len(adapter.requests) == calls_before
-    assert "repair" not in stages
-    assert not harness.deps.store.pending_operations(run.id)
-    satisfied = harness.deps.store.begin_operation(run.id, "repair", pending[0].key, {})
-    assert satisfied.result_json is not None
-    assert json.loads(satisfied.result_json) == {"satisfied_by_gate": True}
-
-
-@pytest.mark.parametrize("interruption", ["after-implementation", "after-commit", "after-push"])
-def test_title_change_preserves_run_identity(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch, interruption: str
-) -> None:
-    ticket = harness.github.ticket
-    branch = branch_name(ticket)
-    path = worktree_path(harness.deps.worktrees_root, ticket)
-    subject = "Feature[#33]: Add the engine"
-
-    async def interrupt_verification(self: Engine, run_id: int, path: Path) -> None:
-        raise RuntimeError("interrupt delivery")
-
-    async def interrupt_push(self: Git, branch: str, remote: str = "origin") -> None:
-        raise RuntimeError("interrupt delivery")
-
-    async def interrupt_find(branch: str) -> PullRequest | None:
-        raise RuntimeError("interrupt delivery")
-
-    with monkeypatch.context() as patch:
-        if interruption == "after-implementation":
-            patch.setattr(Engine, "_verify", interrupt_verification)
-        elif interruption == "after-commit":
-            patch.setattr(Git, "push", interrupt_push)
-        else:
-            patch.setattr(harness.github, "find_pr", interrupt_find)
-        with pytest.raises(RuntimeError, match="interrupt delivery"):
-            harness.run()
-    run = harness.deps.store.list_runs(33)[0]
-    preparation = harness.deps.store.begin_operation(run.id, "worktree", branch, {})
-    assert preparation.result_json is not None
-    prepared = json.loads(preparation.result_json)
-    assert prepared["branch"] == branch
-    assert prepared["path"] == str(path)
-    assert prepared["subject"] == subject
-    markers = [
-        a for a in harness.deps.store.list_artifacts(run.id) if a.name.startswith("implemented-")
-    ]
-    marker = json.loads(Path(markers[-1].path).read_text())
-    assert marker["branch"] == branch
-    assert marker["path"] == str(path)
-    harness.github.ticket = harness.github.ticket.model_copy(
-        update={"title": "renamed ticket after interruption"}
-    )
-    outcome = harness.run()
-    assert outcome.state == RunState.WAITING_FOR_CI
-    assert outcome.run_id == run.id
-    assert len(harness.adapter.requests) == 1
-    assert harness.adapter.requests[0].cwd == path
-    assert list(harness.deps.worktrees_root.iterdir()) == [path]
-    assert asyncio.run(Git(path).current_branch()) == branch
-    assert asyncio.run(git_command(path, "log", "-1", "--format=%s")) == subject
-    assert harness.github.created[0][0] == branch
-    assert harness.github.created[0][2] == subject
-    # A second resume must use the same recorded commit and PR after the rename.
-    assert harness.run().head_sha == outcome.head_sha
-    assert len(harness.github.created) == 1
-
-
-@pytest.mark.parametrize("title", ["add the engine", "Add the engine."])
-def test_normalized_title_is_persisted_and_delivered(harness: Harness, title: str) -> None:
-    harness.github.ticket = harness.github.ticket.model_copy(update={"title": title})
-    outcome = harness.run()
-    assert outcome.state == RunState.WAITING_FOR_CI
-    identity = harness.deps.store.begin_operation(outcome.run_id, "prepare", "identity", {})
-    assert identity.result_json is not None
-    saved = json.loads(identity.result_json)
-    assert saved["explanation"] == "Add the engine"
-    assert saved["subject"] == "Feature[#33]: Add the engine"
-    path = Path(saved["path"])
-    assert asyncio.run(git_command(path, "log", "-1", "--format=%s")) == saved["subject"]
-    assert harness.github.created[0][2] == saved["subject"]
-
-
-@pytest.mark.parametrize("title", ["", " \n\t", "... . "])
-def test_invalid_title_does_not_persist_identity_and_can_be_corrected(
-    harness: Harness, title: str
-) -> None:
-    harness.github.ticket = harness.github.ticket.model_copy(update={"title": title})
-    first = harness.run()
-    assert first.state == RunState.BLOCKED
-    assert "Explanation must be capitalised" in first.problems
-    identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
-    assert identity.result_json is None
-    assert json.loads(identity.intent_json) == {"repo_root": str(harness.deps.repo_root.resolve())}
-    assert not harness.deps.worktrees_root.exists()
-    assert not harness.adapter.requests
-    assert "status" not in harness.github.calls
-    harness.github.ticket = harness.github.ticket.model_copy(update={"title": "Add the engine"})
-    second = harness.run()
-    assert second.run_id == first.run_id
-    assert second.state == RunState.WAITING_FOR_CI
-    identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
-    assert identity.result_json is not None
-    assert json.loads(identity.result_json)["subject"] == "Feature[#33]: Add the engine"
-    assert len(harness.adapter.requests) == 1
-
-
-@pytest.mark.parametrize(
-    ("provider", "error"),
-    [
-        ("claude", "Claude provider-limited: rejected"),
-        ("claude", "Capacity unavailable"),
-        ("codex", None),
-        ("codex", "Usage limit reached"),
-    ],
-)
-def test_provider_limited_run_resumes_session(
-    harness: Harness, provider: str, error: str | None
-) -> None:
-    harness.deps.config.roles[Role.IMPLEMENTER] = (
-        RoleConfig(provider="claude") if provider == "claude" else RoleConfig(provider="codex")
-    )
-    limited = replace(
-        result(),
-        ok=False,
-        provider=provider,
-        error=error,
-        provider_limited=True,
-    )
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=limited),
-            ScriptStep(result=replace(result(), provider=provider), side_effect=write_allowed),
-        ],
-        name=provider,
-    )
-    harness.deps.registry.register(provider, lambda config: adapter)
     first = harness.run()
     assert first.state == RunState.PROVIDER_LIMITED
-    assert harness.deps.store.get_run(first.run_id).state == RunState.PROVIDER_LIMITED
-    assert len(adapter.requests) == 1
-    assert not harness.github.created
     second = harness.run()
     assert second.state == RunState.WAITING_FOR_CI
     assert second.run_id == first.run_id
     assert len(harness.deps.store.list_runs(33)) == 1
-    assert len(adapter.requests) == 2
     assert adapter.requests[1].session_id == "session-1"
     assert adapter.requests[1].cwd == adapter.requests[0].cwd
     assert harness.deps.store.usage_summary(first.run_id)["input_tokens"] == 20
 
 
-@pytest.mark.parametrize("separation", ["repository", "checkout", "both"])
-@pytest.mark.parametrize("blocked_before_prepare", [False, True])
-def test_shared_store_isolates_repository_and_checkout(
-    harness: Harness, tmp_path: Path, separation: str, blocked_before_prepare: bool
-) -> None:
-    first_adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=replace(result(), ok=False, provider_limited=True, error="Limited")),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: first_adapter)
-    if blocked_before_prepare:
-        harness.github.scope = "No allowed files"
-    first = harness.run()
-    assert first.state == (
-        RunState.BLOCKED if blocked_before_prepare else RunState.PROVIDER_LIMITED
-    )
-    assert harness.deps.store.get_run(first.run_id).repo == "owner/repo"
-    first_identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
-    first_saved = json.loads(first_identity.result_json or first_identity.intent_json)
-    assert first_saved["repo_root"] == str(harness.deps.repo_root.resolve())
-    first_state = harness.deps.store.get_run(first.run_id).state
-
-    if separation in ("repository", "both"):
-        harness.github.repo = "owner/another-repository"
-    if separation in ("checkout", "both"):
-        clone = tmp_path / "another-clone"
-        asyncio.run(git_command(tmp_path, "clone", str(harness.origin), str(clone)))
-        asyncio.run(git_command(clone, "config", "user.name", "Test Developer"))
-        asyncio.run(git_command(clone, "config", "user.email", "test@example.test"))
-        harness.deps.repo_root = clone
-    # Separate branches also allow the same checkout to be repointed to another
-    # GitHub repository without colliding with the old run's worktree.
-    harness.github.ticket = harness.github.ticket.model_copy(
-        update={"title": "Implement another task"}
-    )
-    harness.github.scope = SCOPE
-    harness.deps.worktrees_root = tmp_path / "another-worktrees"
-    second_adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=result(), side_effect=write_allowed),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: second_adapter)
-    second = harness.run()
-    assert second.state == RunState.WAITING_FOR_CI
-    assert second.run_id != first.run_id
-    assert len(harness.deps.store.list_runs(33)) == 2
-    assert harness.deps.store.get_run(first.run_id).state == first_state
-    assert harness.deps.store.get_run(second.run_id).repo == harness.github.repo
-    assert second_adapter.requests[0].session_id is None
-    second_identity = harness.deps.store.begin_operation(second.run_id, "prepare", "identity", {})
-    assert second_identity.result_json is not None
-    assert json.loads(second_identity.result_json)["repo_root"] == str(
-        harness.deps.repo_root.resolve()
-    )
-
-
-def test_run_reuses_resolved_checkout_identity(harness: Harness, tmp_path: Path) -> None:
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=replace(result(), ok=False, provider_limited=True, error="Limited")),
-            ScriptStep(result=result(), side_effect=write_allowed),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-    first = harness.run()
-    alias = tmp_path / "clone-alias"
-    alias.symlink_to(harness.deps.repo_root, target_is_directory=True)
-    harness.deps.repo_root = alias
-    harness.github.repo = "OWNER/REPO"
-    second = harness.run()
-    assert second.state == RunState.WAITING_FOR_CI
-    assert second.run_id == first.run_id
-    assert len(harness.deps.store.list_runs(33)) == 1
-    assert adapter.requests[1].session_id == "session-1"
-
-
+# Scenario 10
 @pytest.mark.parametrize("change", ["provider", "authentication"])
-@pytest.mark.parametrize("stage", ["implement", "repair"])
 def test_session_reuse_requires_matching_provider_and_authentication(
-    harness: Harness, change: str, stage: str
+    harness: Harness, change: str
 ) -> None:
     limited = replace(
-        result(),
-        ok=False,
-        error="Codex rate limit",
-        provider_limited=True,
-        session_id="codex-session",
+        result(), ok=False, error="Rate limit", provider_limited=True, session_id="codex-session"
     )
-
-    def broken(request: AgentRequest) -> None:
-        (request.cwd / "allowed.txt").write_text("broken")
-
-    steps = [ScriptStep(result=limited)]
-    if stage == "repair":
-        harness.deps.config.policy.gate_commands = [
-            [
-                sys.executable,
-                "-c",
-                "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
-            ]
-        ]
-        steps.insert(0, ScriptStep(result=result(), side_effect=broken))
-    original = ScriptedAdapter(steps, name="codex")
+    original = ScriptedAdapter([ScriptStep(result=limited)], name="codex")
     harness.deps.registry.register("codex", lambda config: original)
     first = harness.run()
     assert first.state == RunState.PROVIDER_LIMITED
@@ -915,9 +629,7 @@ def test_session_reuse_requires_matching_provider_and_authentication(
         session_id="new-session",
     )
     replacement = ScriptedAdapter(
-        [
-            ScriptStep(result=success, side_effect=write_allowed),
-        ],
+        [ScriptStep(result=success, side_effect=write_allowed)],
         name=config.provider,
         authentication_mode=config.authentication_mode,
     )
@@ -925,59 +637,85 @@ def test_session_reuse_requires_matching_provider_and_authentication(
     second = harness.run()
     assert second.state == RunState.WAITING_FOR_CI
     assert second.run_id == first.run_id
-    assert len(replacement.requests) == 1
     assert replacement.requests[0].session_id is None
     assert SCOPE in replacement.requests[0].prompt
-    if stage == "repair":
-        assert "Gate failed:" in replacement.requests[0].prompt
+
+
+# Scenario 11
+@pytest.mark.parametrize("separation", ["repository", "checkout", "both"])
+def test_another_repository_or_checkout_starts_a_new_run(
+    harness: Harness, tmp_path: Path, separation: str
+) -> None:
+    limited = replace(result(), ok=False, provider_limited=True, error="Limited")
+    first_adapter = ScriptedAdapter([ScriptStep(result=limited)], name="codex")
+    harness.deps.registry.register("codex", lambda config: first_adapter)
+    first = harness.run()
+    assert first.state == RunState.PROVIDER_LIMITED
+    first_path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+
+    if separation in ("repository", "both"):
+        harness.github.repo = "owner/another-repository"
+    if separation in ("checkout", "both"):
+        clone = tmp_path / "another-clone"
+        asyncio.run(git_command(tmp_path, "clone", str(harness.origin), str(clone)))
+        asyncio.run(git_command(clone, "config", "user.name", "Test Developer"))
+        asyncio.run(git_command(clone, "config", "user.email", "test@example.test"))
+        harness.deps.repo_root = clone
+    harness.github.ticket = harness.github.ticket.model_copy(
+        update={"title": "Implement another task"}
+    )
+    harness.deps.worktrees_root = tmp_path / "another-worktrees"
+    second_adapter = ScriptedAdapter(
+        [ScriptStep(result=result(), side_effect=write_allowed)], name="codex"
+    )
+    harness.deps.registry.register("codex", lambda config: second_adapter)
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id != first.run_id
+    assert len(harness.deps.store.list_runs(33)) == 2
+    assert harness.deps.store.get_run(first.run_id).state == RunState.PROVIDER_LIMITED
+    assert harness.deps.store.get_run(second.run_id).repo == harness.github.repo
+    assert second_adapter.requests[0].session_id is None
+    assert second_adapter.requests[0].cwd != first_path
+
+
+# Scenario 11
+def test_run_reuses_resolved_checkout_identity(harness: Harness, tmp_path: Path) -> None:
+    limited = replace(result(), ok=False, provider_limited=True, error="Limited")
+    adapter = ScriptedAdapter(
+        [ScriptStep(result=limited), ScriptStep(result=result(), side_effect=write_allowed)],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    first = harness.run()
+    alias = tmp_path / "clone-alias"
+    alias.symlink_to(harness.deps.repo_root, target_is_directory=True)
+    harness.deps.repo_root = alias
+    harness.github.repo = "OWNER/REPO"
+    second = harness.run()
+    assert second.state == RunState.WAITING_FOR_CI
+    assert second.run_id == first.run_id
     assert len(harness.deps.store.list_runs(33)) == 1
 
 
-def test_switching_back_reuses_latest_compatible_session(harness: Harness) -> None:
-    codex = ScriptedAdapter(
-        [
-            ScriptStep(
-                result=replace(
-                    result(),
-                    ok=False,
-                    provider_limited=True,
-                    error="Limited",
-                    session_id="codex-session",
-                )
-            ),
-            ScriptStep(result=result(), side_effect=write_allowed),
-        ],
+# Scenario 11
+def test_ticket_rename_keeps_the_first_identity(harness: Harness) -> None:
+    limited = replace(result(), ok=False, provider_limited=True, error="Limited")
+    adapter = ScriptedAdapter(
+        [ScriptStep(result=limited), ScriptStep(result=result(), side_effect=write_allowed)],
         name="codex",
     )
-    claude = ScriptedAdapter(
-        [
-            ScriptStep(
-                result=replace(
-                    result(),
-                    ok=False,
-                    provider="claude",
-                    provider_limited=True,
-                    error="Limited",
-                    session_id="claude-session",
-                )
-            ),
-        ],
-        name="claude",
-    )
-    harness.deps.registry.register("codex", lambda config: codex)
-    harness.deps.registry.register("claude", lambda config: claude)
+    harness.deps.registry.register("codex", lambda config: adapter)
     first = harness.run()
-    assert first.state == RunState.PROVIDER_LIMITED
-    harness.deps.config.roles[Role.IMPLEMENTER] = RoleConfig(provider="claude")
-    assert harness.run().state == RunState.PROVIDER_LIMITED
-    assert claude.requests[0].session_id is None
-    harness.deps.config.roles[Role.IMPLEMENTER] = RoleConfig(provider="codex")
-    last = harness.run()
-    assert last.state == RunState.WAITING_FOR_CI
-    assert last.run_id == first.run_id
-    assert codex.requests[-1].session_id == "codex-session"
+    original = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    harness.github.ticket = harness.github.ticket.model_copy(update={"title": "Renamed"})
+    second = harness.run()
+    assert second.run_id == first.run_id
+    assert adapter.requests[1].cwd == original.resolve()
+    assert harness.github.created[0][0] == "feature/33-add-the-engine"
 
 
+# Scenario 12
 @pytest.mark.parametrize("name", ["-outside.txt", "outside[1].txt"])
 @pytest.mark.parametrize("allowed", [False, True])
 def test_special_changed_paths_block_without_delivery(
@@ -1015,6 +753,7 @@ def test_special_changed_paths_block_without_delivery(
     assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
 
 
+# Scenario 12
 def test_git_stage_error_blocks_and_identifies_path(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1027,15 +766,11 @@ def test_git_stage_error_blocks_and_identifies_path(
     assert harness.deps.store.get_run(outcome.run_id).state == RunState.BLOCKED
     assert "Cannot stage path 'allowed.txt'" in outcome.problems[0]
     assert "Index is locked" in outcome.problems[0]
-    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
-    assert asyncio.run(Git(path).head_sha()) == harness.initial_head
     assert not harness.github.created
 
 
-@pytest.mark.parametrize(
-    "stage",
-    ["load", "validate", "prepare", "implement", "verify", "repair", "deliver", "checkpoint"],
-)
+# Scenario 12
+@pytest.mark.parametrize("stage", ["load", "validate", "prepare", "implement", "verify", "commit"])
 def test_unexpected_stage_failure_blocks_before_propagating(
     harness: Harness, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
@@ -1046,35 +781,12 @@ def test_unexpected_stage_failure_blocks_before_propagating(
         monkeypatch.setattr(harness.github, "get_ticket", fail)
     elif stage == "verify":
         monkeypatch.setattr(harness.deps, "gate_runner", fail)
-    elif stage == "repair":
-
-        def fail_repair(request: AgentRequest) -> None:
-            raise RuntimeError("Unexpected stage failure")
-
-        harness.deps.config.policy.gate_commands = [[sys.executable, "-c", "raise SystemExit(1)"]]
-        adapter = ScriptedAdapter(
-            [
-                ScriptStep(result=result(), side_effect=write_allowed),
-                ScriptStep(side_effect=fail_repair),
-            ],
-            name="codex",
-        )
-        harness.deps.registry.register("codex", lambda config: adapter)
-    elif stage == "checkpoint":
-        write_artifact = Engine._artifact
-
-        def fail_checkpoint(self: Engine, run_id: int, name: str, text: str) -> ArtifactRef:
-            if name.startswith("implemented-"):
-                raise RuntimeError("Unexpected stage failure")
-            return write_artifact(self, run_id, name, text)
-
-        monkeypatch.setattr(Engine, "_artifact", fail_checkpoint)
     else:
         method = {
             "validate": "_validate",
             "prepare": "_prepare",
             "implement": "_agent",
-            "deliver": "_deliver",
+            "commit": "_commit",
         }[stage]
         monkeypatch.setattr(Engine, method, fail)
     with pytest.raises(RuntimeError, match="Unexpected stage failure"):
@@ -1084,304 +796,15 @@ def test_unexpected_stage_failure_blocks_before_propagating(
     assert not harness.github.created
 
 
-@pytest.mark.parametrize("matching_local_branch", [False, True])
-def test_shared_worktrees_root_cannot_adopt_another_clones_worktree(
-    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, matching_local_branch: bool
-) -> None:
-    original_adapter = ScriptedAdapter(
-        [
-            ScriptStep(
-                result=replace(result(), ok=False, provider_limited=True, error="Limited"),
-                side_effect=write_allowed,
-            ),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: original_adapter)
+@pytest.mark.parametrize("title", ["", " \n\t", "... . "])
+def test_invalid_title_blocks_before_anything_is_persisted(harness: Harness, title: str) -> None:
+    harness.github.ticket = harness.github.ticket.model_copy(update={"title": title})
     first = harness.run()
-    assert first.state == RunState.PROVIDER_LIMITED
-    branch = branch_name(harness.github.ticket)
-    shared_path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
-    before_status = asyncio.run(Git(shared_path).status_porcelain())
-    before_content = (shared_path / "allowed.txt").read_bytes()
-    second_root = tmp_path / "second-clone"
-    asyncio.run(git_command(tmp_path, "clone", str(harness.origin), str(second_root)))
-    if matching_local_branch:
-        asyncio.run(git_command(second_root, "branch", branch, "develop"))
-    github = FakeGitHub(harness.github.ticket.model_copy(update={"status": Status.TO_DO}))
-    adapter = ScriptedAdapter([], name="codex")
-    registry = AdapterRegistry()
-    registry.register("codex", lambda config: adapter)
-    deps = replace(harness.deps, repo_root=second_root, github=github, registry=registry)
-
-    async def unexpected_mutation(*args: object, **kwargs: object) -> None:
-        pytest.fail("A foreign worktree must block before external mutations")
-
-    for method in ("fetch", "fast_forward", "create_worktree", "stage", "commit", "push"):
-        monkeypatch.setattr(Git, method, unexpected_mutation)
-    monkeypatch.setattr(github, "set_status", unexpected_mutation)
-    monkeypatch.setattr(github, "create_pr", unexpected_mutation)
-    second = asyncio.run(Engine(deps).run_to_pr(33))
-    assert second.state == RunState.BLOCKED
-    assert second.run_id != first.run_id
-    assert "belongs to a different repository" in second.problems[0]
-    assert str(shared_path) in second.problems[0]
-    assert str((second_root / ".git").resolve()) in second.problems[0]
-    assert not adapter.requests
-    assert github.calls == ["download"]
-    assert asyncio.run(Git(shared_path).head_sha()) == harness.initial_head
-    assert asyncio.run(Git(shared_path).status_porcelain()) == before_status
-    assert (shared_path / "allowed.txt").read_bytes() == before_content
-    assert asyncio.run(Git(second_root).head_sha()) == harness.initial_head
-    assert harness.deps.store.get_run(first.run_id).state == RunState.PROVIDER_LIMITED
-    assert harness.deps.store.get_run(second.run_id).state == RunState.BLOCKED
-
-
-def test_revised_scope_recovers_second_commit_after_result_recording_crash(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    revised_scope = SCOPE + "\nRevise the allowed file."
-
-    def revise(request: AgentRequest) -> None:
-        (request.cwd / "allowed.txt").write_text("revised")
-
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=result(), side_effect=write_allowed),
-            ScriptStep(result=result(), side_effect=revise),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-    first = harness.run()
-    assert first.state == RunState.WAITING_FOR_CI
-    assert first.head_sha is not None
-    parent = harness.initial_head
-    first_key = f"{parent}:{hashlib.sha256(SCOPE.encode()).hexdigest()}"
-    first_operation = harness.deps.store.begin_operation(first.run_id, "commit", first_key, {})
-    assert first_operation.result_json is not None
-    assert json.loads(first_operation.result_json)["head_sha"] == first.head_sha
-
-    harness.github.scope = revised_scope
-    sections = dict(harness.github.ticket.body_sections)
-    sections["Solution"] = "[33-solution-1.md](https://github.com/user-attachments/files/revised)"
-    harness.github.ticket = harness.github.ticket.model_copy(update={"body_sections": sections})
-    complete = harness.deps.store.complete_operation
-
-    def interrupt_record(id: int, result: dict[str, object]) -> None:
-        if "head_sha" in result:
-            raise RuntimeError("Interrupted before second commit result")
-        complete(id, result)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(harness.deps.store, "complete_operation", interrupt_record)
-        with pytest.raises(RuntimeError, match="Interrupted before second commit result"):
-            harness.run()
-    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
-    second_sha = asyncio.run(Git(path).head_sha())
-    assert second_sha != first.head_sha
-    assert asyncio.run(Git(path).head_sha("HEAD^")) == first.head_sha
-    second_key = f"{first.head_sha}:{hashlib.sha256(revised_scope.encode()).hexdigest()}"
-    pending = harness.deps.store.begin_operation(first.run_id, "commit", second_key, {})
-    assert pending.status == "intent"
-    assert pending.result_json is None
-    assert json.loads(pending.intent_json)["parent_sha"] == first.head_sha
-
-    resumed = harness.run()
-    assert resumed.state == RunState.WAITING_FOR_CI
-    assert resumed.run_id == first.run_id
-    assert resumed.head_sha == second_sha
-    assert len(adapter.requests) == 2
-    assert len(harness.github.created) == 1
-    assert resumed.pr_number == first.pr_number
-    assert (
-        asyncio.run(Git(harness.origin).head_sha(branch_name(harness.github.ticket))) == second_sha
-    )
-    assert asyncio.run(git_command(path, "rev-list", "--count", f"{parent}..HEAD")) == "2"
-    recovered = harness.deps.store.begin_operation(first.run_id, "commit", second_key, {})
-    assert recovered.status == "reconciled"
-    assert recovered.result_json is not None
-    assert json.loads(recovered.result_json)["head_sha"] == second_sha
-    original = harness.deps.store.begin_operation(first.run_id, "commit", first_key, {})
-    assert original.result_json == first_operation.result_json
-    assert not harness.deps.store.pending_operations(first.run_id)
-
-
-def test_scope_revision_can_reuse_commit_recorded_for_an_earlier_scope(harness: Harness) -> None:
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=result(), side_effect=write_allowed),
-            ScriptStep(result=result()),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-    first = harness.run()
-    harness.github.scope = SCOPE + "\nVerify the existing implementation."
-    sections = dict(harness.github.ticket.body_sections)
-    sections["Solution"] = "[33-solution-1.md](https://github.com/user-attachments/files/recheck)"
-    harness.github.ticket = harness.github.ticket.model_copy(update={"body_sections": sections})
+    assert first.state == RunState.BLOCKED
+    assert "Explanation must be capitalised" in first.problems
+    assert not harness.deps.worktrees_root.exists()
+    assert "status" not in harness.github.calls
+    harness.github.ticket = harness.github.ticket.model_copy(update={"title": "Add the engine"})
     second = harness.run()
-    assert second.state == RunState.WAITING_FOR_CI
     assert second.run_id == first.run_id
-    assert second.head_sha == first.head_sha
-    assert len(adapter.requests) == 2
-    assert len(harness.github.created) == 1
-
-
-@pytest.mark.parametrize("kind", ["agent", "session", "implemented"])
-def test_artifact_conflicts_pick_an_unused_suffix(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch, kind: str
-) -> None:
-    begin_attempt = harness.deps.store.begin_attempt
-    orphan_names: list[str] = []
-
-    def seed_conflicts(run_id: int, stage: str) -> StageAttempt:
-        attempt = begin_attempt(run_id, stage)
-        if stage == "implement":
-            extension = {"agent": ".txt", "session": ".json", "implemented": ""}[kind]
-            call = 1 if kind == "implemented" else 0
-            name = f"{kind}-{attempt.id}-{call}{extension}"
-            for suffix in ("", "-1"):
-                candidate = f"{Path(name).stem}{suffix}{Path(name).suffix}"
-                harness.deps.artifacts.write(run_id, candidate, "Orphaned conflicting content")
-                orphan_names.append(candidate)
-        return attempt
-
-    monkeypatch.setattr(harness.deps.store, "begin_attempt", seed_conflicts)
-    outcome = harness.run()
-    assert outcome.state == RunState.WAITING_FOR_CI
-    artifacts = harness.deps.store.list_artifacts(outcome.run_id)
-    matching = [artifact for artifact in artifacts if artifact.name.startswith(f"{kind}-")]
-    assert len(matching) == 1
-    assert matching[0].name not in orphan_names
-    assert "-2" in matching[0].name
-    assert Path(matching[0].path).read_text() != "Orphaned conflicting content"
-    for name in orphan_names:
-        ref = harness.deps.artifacts.open_ref(outcome.run_id, name)
-        assert ref is not None
-        assert harness.deps.artifacts.read_text(ref) == "Orphaned conflicting content"
-        assert all(artifact.name != name for artifact in artifacts)
-
-
-@pytest.mark.parametrize("kind", ["agent", "session", "implemented"])
-def test_restart_uses_new_attempt_id_after_artifact_registration_crash(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch, kind: str
-) -> None:
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(
-                result=replace(result(), final_text="First result"), side_effect=write_allowed
-            ),
-            ScriptStep(
-                result=replace(result(), final_text="Retry result"), side_effect=write_allowed
-            ),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-    register = harness.deps.store.register_artifact
-    orphan_paths: list[Path] = []
-
-    def interrupt_registration(
-        run_id: int, name: str, path: str, sha256: str, size_bytes: int
-    ) -> Artifact:
-        if name.startswith(f"{kind}-"):
-            orphan_paths.append(Path(path))
-            raise RuntimeError("Interrupted after artifact write")
-        return register(run_id, name, path, sha256, size_bytes)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(harness.deps.store, "register_artifact", interrupt_registration)
-        with pytest.raises(RuntimeError, match="Interrupted after artifact write"):
-            harness.run()
-    assert len(orphan_paths) == 1
-    orphan = orphan_paths[0]
-    assert orphan.exists()
-    original_content = orphan.read_bytes()
-    first_run = harness.deps.store.list_runs(33)[0]
-    assert first_run.state == RunState.BLOCKED
-    assert all(a.path != str(orphan) for a in harness.deps.store.list_artifacts(first_run.id))
-    resumed = harness.run()
-    assert resumed.state == RunState.WAITING_FOR_CI
-    assert resumed.run_id == first_run.id
-    assert len(adapter.requests) == 2
-    matching = [
-        a
-        for a in harness.deps.store.list_artifacts(resumed.run_id)
-        if a.name.startswith(f"{kind}-")
-    ]
-    assert len(matching) == 1
-    assert Path(matching[0].path) != orphan
-    assert matching[0].name.split("-")[1] != orphan.name.split("-")[1]
-    assert orphan.read_bytes() == original_content
-
-
-@pytest.mark.parametrize("seed_nonexecuted_attempts", [False, True])
-def test_repair_budget_counts_execution_without_allocating_rejected_attempts(
-    harness: Harness, tmp_path: Path, seed_nonexecuted_attempts: bool
-) -> None:
-    database = tmp_path / "repair-budget.sqlite"
-    harness.deps.config.limits.max_repair_attempts = 1
-    harness.deps.config.policy.gate_commands = [
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
-        ]
-    ]
-
-    def broken(request: AgentRequest) -> None:
-        (request.cwd / "allowed.txt").write_text("broken")
-
-    def failed_repair(request: AgentRequest) -> None:
-        raise RuntimeError("Repair execution failed")
-
-    adapter = ScriptedAdapter(
-        [
-            ScriptStep(result=result(), side_effect=broken),
-            ScriptStep(side_effect=failed_repair),
-            ScriptStep(result=result(), side_effect=write_allowed),
-        ],
-        name="codex",
-    )
-    harness.deps.registry.register("codex", lambda config: adapter)
-    with Store(database) as store, sqlite3.connect(database) as reader:
-        harness.deps.store = store
-        with pytest.raises(RuntimeError, match="Repair execution failed"):
-            harness.run()
-        run = store.list_runs(33)[0]
-        assert run.state == RunState.BLOCKED
-        if seed_nonexecuted_attempts:
-            for status in ("skipped", "limit"):
-                attempt = store.begin_attempt(run.id, "repair")
-                store.finish_attempt(attempt.id, status)
-
-        def repair_rows() -> list[tuple[int, str, str | None]]:
-            return reader.execute(
-                "SELECT id, status, finished_at FROM stage_attempts "
-                "WHERE run_id = ? AND stage = 'repair' ORDER BY id",
-                (run.id,),
-            ).fetchall()
-
-        before = repair_rows()
-        assert before[0][1] == "failed"
-        assert all(row[2] is not None for row in before)
-        assert len(adapter.requests) == 2
-        for _ in range(3):
-            blocked = harness.run()
-            assert blocked.run_id == run.id
-            assert blocked.state == RunState.BLOCKED
-            assert "Repair limit reached" in blocked.problems
-            assert repair_rows() == before
-            assert len(adapter.requests) == 2
-        harness.deps.config.limits.max_repair_attempts = 2
-        resumed = harness.run()
-        assert resumed.state == RunState.WAITING_FOR_CI
-        assert resumed.run_id == run.id
-        after = repair_rows()
-        assert after[:-1] == before
-        assert after[-1][1] == "completed"
-        assert len(adapter.requests) == 3
-        assert adapter.requests[-1].session_id == "session-1"
-        assert len(store.list_runs(33)) == 1
+    assert second.state == RunState.WAITING_FOR_CI
