@@ -8,6 +8,35 @@ diff against the pull request's base. For a stack, review each pull request
 against its own base. CI and branch protection on the bottom base apply to
 every layer; see [Stacked pull requests](stacked-prs.md).
 
+## Review contract
+
+The reviewer judges the diff against the ticket scope, the scope's In-scope
+scenarios and repository policy. It reports two lists, Blocking and
+Non-blocking.
+
+- **Blocking:** a defect in code changed by the diff with a concrete trigger
+  reachable in a listed In-scope scenario or in ordinary use of the feature, a
+  wrong result that matters (data loss, security hole, incorrect output or a
+  crash in normal operation) and reproduction steps with inputs. At most three
+  per round, ranked.
+- **Non-blocking:** hardening, rare or pathological timings, speculative misuse
+  and style. At most five, one line each; they never block a merge. The
+  orchestrator collects them into one follow-up ticket per pull request when
+  worth keeping.
+- A finding about a scenario under Out-of-scope scenarios is Non-blocking by
+  definition. A finding about an unlisted scenario is Blocking only when it
+  meets the criteria above for ordinary use.
+- `No findings.` is the correct answer when nothing is blocking.
+- Passes: correctness against the scope always; restart and failure safety only
+  when the scope lists restart or failure scenarios; security only when the
+  scope touches subprocesses, the filesystem, credentials or the network.
+- Merge when a round has no Blocking findings. There is no round cap; the
+  criteria narrow what can block. The orchestrator adjudicates disputes and
+  records the reason. Fixes must not add persisted state or new behaviour that
+  no listed scenario needs.
+
+See [Issue format](issue-format.md#codex-scope-layout) for the scenario sections.
+
 ## Review agent
 
 Run headless Codex with `codex exec`. The `-p` option means `--profile`; it does
@@ -19,10 +48,13 @@ codex exec -s read-only -C <worktree> -o <file> - < prompt
 ```
 
 The prompt should tell the agent to review read-only, compare the PR diff with
-its base, and report only actionable findings. Include an out-of-scope list.
-Do not ask for new tests or dependencies; do review the tests in the diff.
-Return findings with severity (High, Medium, or Low), what goes wrong, a concrete
-trigger, the fix when clear, and `file:line`. Keep findings tied to the changed diff where possible.
+its base, and apply the [Review contract](#review-contract). Include the ticket
+scope with its In-scope and Out-of-scope scenarios, and earlier rejected and
+accepted findings. Do not ask for new tests or dependencies; do review the tests
+in the diff. Return Blocking and Non-blocking lists. Each Blocking finding gives
+what goes wrong, the trigger, reproduction steps with inputs, the fix when clear,
+and `file:line`; each Non-blocking finding is one line. Keep findings tied to the
+changed diff where possible.
 
 The read-only sandbox has no network or `gh` access and runs no builds or checks. The orchestrator posts reviews and runs the gate in
 [Testing](testing.md#gate-before-push). Implementation runs use
@@ -83,13 +115,13 @@ For example, `review.json` may contain:
 
 Use `gh pr review --repo Folt-CLI/fugue` for body-only reviews. Record requested changes on the
 ticket. An implementation agent fixes accepted findings on the same branch as
-further commits, and the review cycle repeats until a review has no findings.
+further commits, and the review cycle repeats until a round has no Blocking findings.
 The orchestrator resolves fixed review threads. If the orchestrator rejects a
 finding, reply on its thread with the reason and do not fix it. Resolve threads
-through GraphQL `resolveReviewThread`. Give the review agent rejected findings
-and their reasons as context for the next round, such as in the prompt. Do not
-report a rejected finding again unless the agent can show that the reason does
-not hold.
+through GraphQL `resolveReviewThread`. Give the review agent rejected and accepted findings
+and their reasons as context for the next round, such as in the prompt. It must
+not report them again; a rejected finding returns only when the agent can show
+that the reason does not hold.
 
 ## Unverified
 

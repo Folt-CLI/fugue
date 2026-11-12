@@ -207,9 +207,16 @@ sections in order:
   leave missing terms unresolved rather than inventing them.
 - **File-by-file changes:** give line references and the exact intent for each
   file, including affected areas.
+- **In-scope scenarios:** numbered; each states the situation and the expected
+  outcome, including restart or failure cases the implementation must handle.
+- **Out-of-scope scenarios:** situations deliberately not handled. Both
+  scenario sections are required for any scope that adds stateful or
+  external-effect behaviour; a purely documentation scope may omit them.
 - **Do not change:** list the boundaries Codex must preserve.
-- **Verification:** give commands and their expected output.
-- **Final message:** state what Codex returns.
+- **Verification:** give commands and their expected output, mapped to the
+  In-scope scenarios.
+- **Final message:** state what Codex returns, including the result for each
+  verification step.
 - **Notes for the orchestrator (not for Codex):** give the Git commit plan, PR
   fields and review focus. These are instructions for the orchestrator only.
 

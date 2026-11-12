@@ -6,6 +6,8 @@ Every ticket adds or updates the tests for what it changes, in the same pull
 request. A bug fix adds a regression case that fails before the fix. The
 implementing agent writes the tests. The local suite must pass before anything
 is pushed. Do not add dependencies without the ticket's selected solution.
+Map each test and verification step to a listed In-scope scenario; see the
+[review contract](review.md#review-contract).
 
 ## Test tickets
 
