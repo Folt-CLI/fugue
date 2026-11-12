@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -91,6 +90,14 @@ class Engine:
             if isinstance(error, _Stop):
                 status = error.state
             self.deps.store.finish_attempt(attempt.id, status, str(error))
+            state = (
+                RunState.INTERRUPTED
+                if isinstance(error, asyncio.CancelledError)
+                else error.state
+                if isinstance(error, _Stop)
+                else RunState.BLOCKED
+            )
+            self.deps.store.set_run_state(run_id, state)
             raise
         if isinstance(result, GateResult) and not result.passed:
             self.deps.store.finish_attempt(attempt.id, "failed", format_failure(result))
@@ -213,6 +220,11 @@ class Engine:
         except _Stop as stop:
             store.set_run_state(run_id, stop.state)
             return RunOutcome(run_id, stop.state, head_sha=head, problems=stop.problems)
+        except Exception:
+            # Keep interruptions caused by unexpected failures resumable, while
+            # making the persisted run state truthful before propagating them.
+            store.set_run_state(run_id, RunState.BLOCKED)
+            raise
 
     async def _validate(self, run_id: int, ticket: Ticket) -> str:
         url = scope_url(ticket)
@@ -388,12 +400,8 @@ class Engine:
         if not result.ok:
             error = result.error or "Implementer failed"
             self._artifact(run_id, f"agent-error-{call}.txt", error)
-            limited = result.provider_limited or bool(
-                re.search(
-                    r"(?:rate|usage|provider)[ _-]?limit|too many requests|\b429\b", error, re.I
-                )
-            )
-            raise _Stop(RunState.PROVIDER_LIMITED if limited else RunState.FAILED, [error])
+            state = RunState.PROVIDER_LIMITED if result.provider_limited else RunState.FAILED
+            raise _Stop(state, [error])
 
     async def _pending_repair(self, run_id: int, path: Path, failure: str) -> None:
         # The intent is the pending-repair marker. It precedes the failure artifact
@@ -429,6 +437,12 @@ class Engine:
             except BaseException as error:
                 status = "interrupted" if isinstance(error, asyncio.CancelledError) else "failed"
                 self.deps.store.finish_attempt(attempt.id, status, str(error))
+                self.deps.store.set_run_state(
+                    run_id,
+                    RunState.INTERRUPTED
+                    if isinstance(error, asyncio.CancelledError)
+                    else RunState.BLOCKED,
+                )
                 raise
             if result.passed:
                 self.deps.store.finish_attempt(attempt.id, "completed")
@@ -514,7 +528,16 @@ class Engine:
 
         async def commit() -> dict[str, Any]:
             paths = [entry[3:] for entry in await git.status_porcelain()]
-            await git.stage(paths)
+            violations = validate_staging(paths, allowed_files(scope))
+            if violations:
+                raise _Stop(RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations])
+            for changed_path in paths:
+                try:
+                    await git.stage([changed_path])
+                except (ValueError, GitError) as error:
+                    raise _Stop(
+                        RunState.BLOCKED, [f"Cannot stage path {changed_path!r}: {error}"]
+                    ) from error
             violations = validate_staging(await git.staged_files(), allowed_files(scope))
             if violations:
                 raise _Stop(RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations])

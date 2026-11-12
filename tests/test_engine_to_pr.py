@@ -3,7 +3,7 @@
 import asyncio
 import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from fugue.config import FugueConfig, RoleConfig
 from fugue.engine import Engine, EngineDeps, GitHubPort, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
 from fugue.github import PullRequest
-from fugue.gitops import Git
+from fugue.gitops import Git, GitError
 from fugue.models import (
     AuthenticationMode,
     Component,
@@ -340,15 +340,20 @@ def test_cancellation(harness: Harness) -> None:
 
 
 @pytest.mark.parametrize(
-    ("error", "state"),
+    ("error", "flag", "state"),
     [
-        ("Provider rate limited (429)", RunState.PROVIDER_LIMITED),
-        ("Provider crashed", RunState.FAILED),
+        ("Provider rate limited (429)", True, RunState.PROVIDER_LIMITED),
+        ("Provider rate limited (429)", False, RunState.FAILED),
+        ("Rate limiter configuration missing", False, RunState.FAILED),
+        ("Usage limit configuration missing", False, RunState.FAILED),
+        ("Claude provider-limited: rejected", False, RunState.FAILED),
+        ("Provider crashed", False, RunState.FAILED),
     ],
 )
-def test_provider_failure(harness: Harness, error: str, state: RunState) -> None:
+def test_provider_failure(harness: Harness, error: str, flag: bool, state: RunState) -> None:
     adapter = ScriptedAdapter(
-        [ScriptStep(result=replace(result(), ok=False, error=error))], name="codex"
+        [ScriptStep(result=replace(result(), ok=False, error=error, provider_limited=flag))],
+        name="codex",
     )
     harness.deps.registry.register("codex", lambda config: adapter)
     outcome = harness.run()
@@ -736,17 +741,16 @@ def test_invalid_title_does_not_persist_identity_and_can_be_corrected(
 
 
 @pytest.mark.parametrize(
-    ("provider", "error", "flag"),
+    ("provider", "error"),
     [
-        ("claude", "Claude provider-limited: rejected", True),
-        ("claude", "Capacity unavailable", True),
-        ("codex", None, True),
-        ("codex", "Usage limit reached", False),
-        ("claude", "Claude provider-limited: rejected", False),
+        ("claude", "Claude provider-limited: rejected"),
+        ("claude", "Capacity unavailable"),
+        ("codex", None),
+        ("codex", "Usage limit reached"),
     ],
 )
 def test_provider_limited_run_resumes_session(
-    harness: Harness, provider: str, error: str | None, flag: bool
+    harness: Harness, provider: str, error: str | None
 ) -> None:
     harness.deps.config.roles[Role.IMPLEMENTER] = (
         RoleConfig(provider="claude") if provider == "claude" else RoleConfig(provider="codex")
@@ -756,7 +760,7 @@ def test_provider_limited_run_resumes_session(
         ok=False,
         provider=provider,
         error=error,
-        provider_limited=flag,
+        provider_limited=True,
     )
     adapter = ScriptedAdapter(
         [
@@ -968,3 +972,109 @@ def test_switching_back_reuses_latest_compatible_session(harness: Harness) -> No
     assert last.state == RunState.WAITING_FOR_CI
     assert last.run_id == first.run_id
     assert codex.requests[-1].session_id == "codex-session"
+
+
+@pytest.mark.parametrize("name", ["-outside.txt", "outside[1].txt"])
+@pytest.mark.parametrize("allowed", [False, True])
+def test_special_changed_paths_block_without_delivery(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, name: str, allowed: bool
+) -> None:
+    if allowed:
+        harness.github.scope = "You may touch only these files:\n- `*`\n\nImplement the change."
+
+    def write_files(request: AgentRequest) -> None:
+        write_allowed(request)
+        (request.cwd / name).write_text("Special filename")
+
+    adapter = ScriptedAdapter([ScriptStep(result=result(), side_effect=write_files)], name="codex")
+    harness.deps.registry.register("codex", lambda config: adapter)
+    stage_paths: list[str] = []
+    original_stage = Git.stage
+
+    async def record_stage(self: Git, paths: Sequence[str]) -> None:
+        stage_paths.extend(paths)
+        await original_stage(self, paths)
+
+    monkeypatch.setattr(Git, "stage", record_stage)
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    assert harness.deps.store.get_run(outcome.run_id).state == RunState.BLOCKED
+    if allowed:
+        assert name in stage_paths
+        assert any(f"Cannot stage path {name!r}" in problem for problem in outcome.problems)
+    else:
+        assert not stage_paths
+        assert f"Outside allowed files: {name}" in outcome.problems
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    assert asyncio.run(Git(path).head_sha()) == harness.initial_head
+    assert not harness.github.created
+    assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
+
+
+def test_git_stage_error_blocks_and_identifies_path(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def reject_stage(self: Git, paths: Sequence[str]) -> None:
+        raise GitError(("git", "add", "--", *paths), 1, "Index is locked")
+
+    monkeypatch.setattr(Git, "stage", reject_stage)
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    assert harness.deps.store.get_run(outcome.run_id).state == RunState.BLOCKED
+    assert "Cannot stage path 'allowed.txt'" in outcome.problems[0]
+    assert "Index is locked" in outcome.problems[0]
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    assert asyncio.run(Git(path).head_sha()) == harness.initial_head
+    assert not harness.github.created
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["load", "validate", "prepare", "implement", "verify", "repair", "deliver", "checkpoint"],
+)
+def test_unexpected_stage_failure_blocks_before_propagating(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("Unexpected stage failure")
+
+    if stage == "load":
+        monkeypatch.setattr(harness.github, "get_ticket", fail)
+    elif stage == "verify":
+        monkeypatch.setattr(harness.deps, "gate_runner", fail)
+    elif stage == "repair":
+
+        def fail_repair(request: AgentRequest) -> None:
+            raise RuntimeError("Unexpected stage failure")
+
+        harness.deps.config.policy.gate_commands = [[sys.executable, "-c", "raise SystemExit(1)"]]
+        adapter = ScriptedAdapter(
+            [
+                ScriptStep(result=result(), side_effect=write_allowed),
+                ScriptStep(side_effect=fail_repair),
+            ],
+            name="codex",
+        )
+        harness.deps.registry.register("codex", lambda config: adapter)
+    elif stage == "checkpoint":
+        write_artifact = Engine._artifact
+
+        def fail_checkpoint(self: Engine, run_id: int, name: str, text: str) -> None:
+            if name.startswith("implemented-"):
+                raise RuntimeError("Unexpected stage failure")
+            write_artifact(self, run_id, name, text)
+
+        monkeypatch.setattr(Engine, "_artifact", fail_checkpoint)
+    else:
+        method = {
+            "validate": "_validate",
+            "prepare": "_prepare",
+            "implement": "_agent",
+            "deliver": "_deliver",
+        }[stage]
+        monkeypatch.setattr(Engine, method, fail)
+    with pytest.raises(RuntimeError, match="Unexpected stage failure"):
+        harness.run()
+    run = harness.deps.store.list_runs(33)[0]
+    assert harness.deps.store.get_run(run.id).state == RunState.BLOCKED
+    assert not harness.github.created
