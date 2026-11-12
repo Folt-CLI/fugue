@@ -10,6 +10,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [artifact](#artifact)
 - [authentication mode](#authentication-mode)
 - [autonomy exceptions](#autonomy-exceptions)
+- [blocking finding](#blocking-finding)
 - [campaign](#campaign)
 - [capability](#capability)
 - [child](#child)
@@ -21,6 +22,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [incident](#incident)
 - [issue type](#issue-type)
 - [milestone](#milestone)
+- [non-blocking finding](#non-blocking-finding)
 - [operation](#operation)
 - [orchestrator](#orchestrator)
 - [parent](#parent)
@@ -30,6 +32,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [repair limit](#repair-limit)
 - [role](#role)
 - [run](#run)
+- [scenario](#scenario)
 - [scope](#scope)
 - [session](#session)
 - [Size](#size)
@@ -45,6 +48,12 @@ remain unresolved until a Question defines them; do not infer them from proposal
 ### autonomy exceptions
 
 Campaign-only overrides of ordinary developer decision and merge rules, defined in the development process. They do not change the product defaults.
+
+Status: decided.
+
+### blocking finding
+
+A review finding that blocks a merge: a defect in code changed by the diff, with a concrete trigger reachable in an in-scope scenario or in ordinary use of the feature, a wrong result that matters (data loss, security hole, incorrect output or a crash in normal operation) and reproduction steps with inputs. The review contract defines the criteria.
 
 Status: decided.
 
@@ -102,6 +111,12 @@ The required release assignment on each ticket and PR: 0.1.0 for this release or
 
 Status: decided.
 
+### non-blocking finding
+
+A review finding that never blocks a merge: hardening, rare or pathological timings, speculative misuse or style. A finding about an out-of-scope scenario is non-blocking by definition.
+
+Status: decided.
+
 ### orchestrator
 
 The role that investigates, publishes decisions and scopes, runs the gate, interprets CI, and delivers changes. Codex implementation and independent read-only review remain separate roles.
@@ -117,6 +132,12 @@ Status: decided.
 ### Question
 
 A decision issue whose answer is explicitly selected and recorded. L is always a Question and splits into M/S/XS children. Ordinary use requires developer selection; the campaign exceptions assign that role to Claude.
+
+Status: decided.
+
+### scenario
+
+A numbered situation with an expected outcome that a scope lists as in scope or out of scope.
 
 Status: decided.
 
