@@ -79,6 +79,7 @@ class CodexAdapter:
         unsupported = check_request(self, request)
         if unsupported is not None:
             return unsupported_result(self, unsupported)
+        cwd = request.cwd.resolve()
         spool_dir = self.spool_dir.resolve()
         spool_dir.mkdir(parents=True, exist_ok=True)
         session_id = request.session_id
@@ -114,7 +115,7 @@ class CodexAdapter:
                 argv += ["resume", "--json", "-o", str(final_file)]
                 argv += ["-c", f'sandbox_mode="{sandbox}"']
             else:
-                argv += ["--json", "-o", str(final_file), "-s", sandbox, "-C", str(request.cwd)]
+                argv += ["--json", "-o", str(final_file), "-s", sandbox, "-C", str(cwd)]
             if request.model is not None:
                 argv += ["-m", request.model]
             if request.output_schema is not None:
@@ -132,7 +133,7 @@ class CodexAdapter:
                     clean_env += ["-u", key]
             result = await run_command(
                 [*clean_env, *argv],
-                cwd=request.cwd,
+                cwd=cwd,
                 stdin=request.prompt,
                 timeout=request.timeout_seconds,
                 max_output_bytes=0,

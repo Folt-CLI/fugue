@@ -98,6 +98,47 @@ def test_arguments_and_stdin(
     assert not Path(final_file).exists()
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_relative_paths(
+    adapter: CodexAdapter,
+    request_data: AgentRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume: bool,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "schema_json")
+    project = tmp_path / "project"
+    project.mkdir()
+    adapter.spool_dir = Path("logs")
+    schema = {"type": "object"}
+    configured = replace(
+        request_data,
+        cwd=Path("project"),
+        session_id="existing-thread" if resume else None,
+        output_schema=schema,
+    )
+
+    result = asyncio.run(adapter.run(configured))
+
+    assert result.ok
+    received = record(tmp_path)
+    assert received["cwd"] == str(project)
+    argv = received["argv"]
+    if not resume:
+        assert argv[argv.index("-C") + 1] == str(project)
+    for flag in ["-o", "--output-schema"]:
+        path = Path(argv[argv.index(flag) + 1])
+        assert path.is_absolute()
+        assert path.parent.parent == tmp_path / "logs"
+    assert received["schema"] == schema
+    assert result.structured_output == {"answer": 42}
+    assert result.log_path is not None
+    assert result.log_path.is_absolute()
+    assert result.log_path.parent == tmp_path / "logs"
+    assert result.log_path.exists()
+
+
 def test_events_usage_and_complete_log(
     adapter: CodexAdapter,
     request_data: AgentRequest,
