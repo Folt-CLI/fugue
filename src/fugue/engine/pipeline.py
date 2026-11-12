@@ -124,6 +124,11 @@ class Engine:
             identity: dict[str, Any] = json.loads(operation.result_json)
             return identity
         message = commit_message(ticket, ticket.body_sections.get("Summary", ""), [])
+        problems = validate_message(
+            message, list(IssueType), self.deps.config.policy.commit_subject_max
+        )
+        if problems:
+            raise _Stop(RunState.BLOCKED, problems)
         identity = {
             "branch": branch_name(ticket),
             "path": str(worktree_path(self.deps.worktrees_root, ticket).resolve()),

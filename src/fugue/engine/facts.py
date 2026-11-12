@@ -52,4 +52,6 @@ def worktree_path(root: Path, ticket: Ticket) -> Path:
 
 def explanation(ticket: Ticket) -> str:
     prefix = f"{ticket.issue_type}[#{ticket.number}]: "
-    return ticket.title.strip()[: 72 - len(prefix)].rstrip()
+    text = " ".join(ticket.title.split()).rstrip(". ")
+    text = text[:1].upper() + text[1:]
+    return text[: max(0, 72 - len(prefix))].rstrip(". ")

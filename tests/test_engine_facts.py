@@ -142,3 +142,24 @@ def test_renderers() -> None:
 def test_client_structurally_satisfies_port() -> None:
     client: GitHubPort = GitHubClient("owner/repo", "owner", 2)
     assert client is not None
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("add the engine", "Add the engine"),
+        ("Add the engine.", "Add the engine"),
+        (" \tadd\n the\r\nengine... . \t", "Add the engine"),
+        ("add the API", "Add the API"),
+        ("", ""),
+        (" \n\t", ""),
+        ("... . ", ""),
+        ("a" * 57 + ". more", "A" + "a" * 56),
+        ("a" * 57 + " more", "A" + "a" * 56),
+        ("ß" + "a" * 100, "SS" + "a" * 56),
+    ],
+)
+def test_explanation_normalizes_title(title: str, expected: str) -> None:
+    item = ticket().model_copy(update={"title": title})
+    assert explanation(item) == expected
+    assert len(f"Feature[#33]: {explanation(item)}") <= 72

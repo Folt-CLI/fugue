@@ -684,3 +684,42 @@ def test_title_change_preserves_run_identity(
     # A second resume must use the same recorded commit and PR after the rename.
     assert harness.run().head_sha == outcome.head_sha
     assert len(harness.github.created) == 1
+
+
+@pytest.mark.parametrize("title", ["add the engine", "Add the engine."])
+def test_normalized_title_is_persisted_and_delivered(harness: Harness, title: str) -> None:
+    harness.github.ticket = harness.github.ticket.model_copy(update={"title": title})
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    identity = harness.deps.store.begin_operation(outcome.run_id, "prepare", "identity", {})
+    assert identity.result_json is not None
+    saved = json.loads(identity.result_json)
+    assert saved["explanation"] == "Add the engine"
+    assert saved["subject"] == "Feature[#33]: Add the engine"
+    path = Path(saved["path"])
+    assert asyncio.run(git_command(path, "log", "-1", "--format=%s")) == saved["subject"]
+    assert harness.github.created[0][2] == saved["subject"]
+
+
+@pytest.mark.parametrize("title", ["", " \n\t", "... . "])
+def test_invalid_title_does_not_persist_identity_and_can_be_corrected(
+    harness: Harness, title: str
+) -> None:
+    harness.github.ticket = harness.github.ticket.model_copy(update={"title": title})
+    first = harness.run()
+    assert first.state == RunState.BLOCKED
+    assert "Explanation must be capitalised" in first.problems
+    identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
+    assert identity.result_json is None
+    assert identity.intent_json == "{}"
+    assert not harness.deps.worktrees_root.exists()
+    assert not harness.adapter.requests
+    assert "status" not in harness.github.calls
+    harness.github.ticket = harness.github.ticket.model_copy(update={"title": "Add the engine"})
+    second = harness.run()
+    assert second.run_id == first.run_id
+    assert second.state == RunState.WAITING_FOR_CI
+    identity = harness.deps.store.begin_operation(first.run_id, "prepare", "identity", {})
+    assert identity.result_json is not None
+    assert json.loads(identity.result_json)["subject"] == "Feature[#33]: Add the engine"
+    assert len(harness.adapter.requests) == 1
