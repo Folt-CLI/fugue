@@ -25,7 +25,7 @@ from fugue.engine.facts import (
 from fugue.engine.ports import GitHubPort
 from fugue.engine.prompts import commit_message, implementation_prompt, pr_body, repair_prompt
 from fugue.gate import GateResult, format_failure, run_gate
-from fugue.gitops import Git, GitError, validate_message, validate_staging
+from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
 from fugue.models import IssueType, Role, Status, Ticket
 from fugue.process import run_command
 from fugue.store import Store
@@ -116,6 +116,24 @@ class Engine:
         self.deps.store.complete_operation(operation.id, result)
         return result
 
+    def _identity(self, run_id: int, ticket: Ticket) -> dict[str, Any]:
+        # A constant operation key lets resumes recover identity without deriving
+        # a new branch, path or subject from mutable ticket fields.
+        operation = self.deps.store.begin_operation(run_id, "prepare", "identity", {})
+        if operation.result_json is not None:
+            identity: dict[str, Any] = json.loads(operation.result_json)
+            return identity
+        message = commit_message(ticket, ticket.body_sections.get("Summary", ""), [])
+        identity = {
+            "branch": branch_name(ticket),
+            "path": str(worktree_path(self.deps.worktrees_root, ticket).resolve()),
+            "issue_type": message.issue_type,
+            "explanation": message.explanation,
+            "subject": message.render().splitlines()[0],
+        }
+        self.deps.store.complete_operation(operation.id, identity)
+        return identity
+
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         store = self.deps.store
         runs = store.list_runs(ticket_number)
@@ -142,18 +160,27 @@ class Engine:
                 for artifact in store.list_artifacts(run_id)
                 if artifact.name.startswith("implemented-")
             ]
-            implemented_sha = (
+            identity = self._identity(run_id, ticket)
+            implementation_key = json.dumps(
+                {
+                    "scope_sha256": scope_sha,
+                    "branch": identity["branch"],
+                    "path": str(path),
+                },
+                sort_keys=True,
+            )
+            implemented_key = (
                 Path(implementations[-1].path).read_text(encoding="utf-8")
                 if implementations
                 else None
             )
-            if implemented_sha != scope_sha:
+            if implemented_key != implementation_key:
                 await self._stage(
                     run_id,
                     Stage.IMPLEMENT,
                     lambda: self._agent(run_id, path, implementation_prompt(scope)),
                 )
-                self._artifact(run_id, f"implemented-{len(implementations)}", scope_sha)
+                self._artifact(run_id, f"implemented-{len(implementations)}", implementation_key)
             await self._verify(run_id, path)
             head, pr_number = await self._stage(
                 run_id, Stage.DELIVER, lambda: self._deliver(run_id, ticket, scope, path)
@@ -204,8 +231,9 @@ class Engine:
         return text
 
     async def _prepare(self, run_id: int, ticket: Ticket) -> Path:
-        branch = branch_name(ticket)
-        path = worktree_path(self.deps.worktrees_root, ticket)
+        identity = self._identity(run_id, ticket)
+        branch = str(identity["branch"])
+        path = Path(identity["path"])
         git = Git(self.deps.repo_root)
         base_name = f"preparation-base-{hashlib.sha256(branch.encode()).hexdigest()}"
         operation = self.deps.store.begin_operation(run_id, "worktree", branch, {"path": str(path)})
@@ -228,7 +256,7 @@ class Engine:
                                 head = await Git(path).head_sha()
                                 base_sha = (await git._run("merge-base", base, head)).strip()
                                 self._artifact(run_id, base_name, base_sha)
-                        return {"path": str(path), "base_sha": base_sha}
+                        return {**identity, "base_sha": base_sha}
                 except GitError:
                     pass
             return None
@@ -246,7 +274,7 @@ class Engine:
             else:
                 base_sha = self.deps.artifacts.read_text(ref)
             await git.create_worktree(path, branch, base_sha)
-            return {"path": str(path), "base_sha": base_sha}
+            return {**identity, "base_sha": base_sha}
 
         await self._operation(run_id, "worktree", branch, {"path": str(path)}, create, existing)
 
@@ -310,13 +338,12 @@ class Engine:
             limited = re.search(r"rate[ _-]?limit|too many requests|\b429\b", error, re.I)
             raise _Stop(RunState.PROVIDER_LIMITED if limited else RunState.FAILED, [error])
 
-    async def _pending_repair(self, run_id: int, path: Path) -> None:
+    async def _pending_repair(self, run_id: int, path: Path, failure: str) -> None:
         # The intent is the pending-repair marker. It precedes the failure artifact
         # so termination immediately after writing that artifact cannot lose work.
         for operation in self.deps.store.pending_operations(run_id):
             if operation.kind != "repair":
                 continue
-            failure = str(json.loads(operation.intent_json)["failure"])
             self.deps.store.set_run_state(run_id, RunState.REPAIRING)
             try:
                 await self._stage(
@@ -332,7 +359,6 @@ class Engine:
             self.deps.store.set_run_state(run_id, RunState.RUNNING)
 
     async def _verify(self, run_id: int, path: Path) -> None:
-        await self._pending_repair(run_id, path)
         while True:
             # Gate attempts and repair attempts have independent counters. The
             # Store allocates each repair's ordinal through begin_attempt.
@@ -349,6 +375,9 @@ class Engine:
                 raise
             if result.passed:
                 self.deps.store.finish_attempt(attempt.id, "completed")
+                for pending in self.deps.store.pending_operations(run_id):
+                    if pending.kind == "repair":
+                        self.deps.store.complete_operation(pending.id, {"satisfied_by_gate": True})
                 return
             failure = format_failure(result)
             self.deps.store.finish_attempt(attempt.id, "failed", failure)
@@ -357,19 +386,31 @@ class Engine:
                 for step in result.steps
                 if step.log_path is not None
             )
-            self.deps.store.begin_operation(run_id, "repair", str(attempt.id), {"failure": failure})
+            if not any(
+                pending.kind == "repair" for pending in self.deps.store.pending_operations(run_id)
+            ):
+                self.deps.store.begin_operation(
+                    run_id, "repair", str(attempt.id), {"failure": failure}
+                )
             self._artifact(run_id, f"gate-failure-{attempt.attempt}.txt", failure + "\n\n" + full)
-            await self._pending_repair(run_id, path)
+            await self._pending_repair(run_id, path, failure)
 
     async def _deliver(
         self, run_id: int, ticket: Ticket, scope: str, path: Path
     ) -> tuple[str, int]:
         git = Git(path)
-        branch = branch_name(ticket)
+        identity = self._identity(run_id, ticket)
+        branch = str(identity["branch"])
         summary = ticket.body_sections.get("Summary", "")
         changes = [f"{name}: implement the selected scope" for name in allowed_files(scope)]
-        message = commit_message(ticket, summary, changes)
-        subject = message.render().splitlines()[0]
+        message = CommitMessage(
+            str(identity["issue_type"]),
+            ticket.number,
+            str(identity["explanation"]),
+            summary,
+            tuple(changes),
+        )
+        subject = str(identity["subject"])
         problems = validate_message(
             message, list(IssueType), self.deps.config.policy.commit_subject_max
         )

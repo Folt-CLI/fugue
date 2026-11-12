@@ -26,7 +26,7 @@ from fugue.github import PullRequest
 from fugue.gitops import Git
 from fugue.models import AuthenticationMode, Component, IssueType, Priority, Size, Status, Ticket
 from fugue.process import run_command
-from fugue.store import Store
+from fugue.store import StageAttempt, Store
 from fugue.workflow import RunState
 
 SCOPE = "You may touch only these files:\n- `allowed.txt`\n\nImplement the change."
@@ -473,7 +473,8 @@ def test_restart_performs_pending_repair(harness: Harness, monkeypatch: pytest.M
     failures = [
         a for a in harness.deps.store.list_artifacts(run.id) if a.name.startswith("gate-failure-")
     ]
-    assert len(failures) == 1
+    # Resuming checks the still-failing gate before using the pending repair.
+    assert len(failures) == 2
 
 
 def test_implementation_completion_tracks_current_scope(
@@ -562,3 +563,124 @@ def test_base_advance_does_not_change_preparation_base(
     preparation = harness.deps.store.begin_operation(outcome.run_id, "worktree", branch, {})
     assert preparation.result_json is not None
     assert json.loads(preparation.result_json)["base_sha"] == harness.initial_head
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_passing_gate_satisfies_pending_repair_without_attempt(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, exhausted: bool
+) -> None:
+    harness.deps.config.limits.max_repair_attempts = 1
+    harness.deps.config.policy.gate_commands = [
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('allowed.txt').read_text() == 'done'",
+        ]
+    ]
+
+    def broken(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("broken")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=result()),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    if exhausted:
+        assert harness.run().state == RunState.BLOCKED
+    else:
+        write_artifact = Engine._artifact
+
+        def interrupt_after_failure(self: Engine, run_id: int, name: str, text: str) -> None:
+            write_artifact(self, run_id, name, text)
+            if name.startswith("gate-failure-"):
+                raise asyncio.CancelledError
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Engine, "_artifact", interrupt_after_failure)
+            with pytest.raises(asyncio.CancelledError):
+                harness.run()
+    run = harness.deps.store.list_runs(33)[0]
+    pending = [op for op in harness.deps.store.pending_operations(run.id) if op.kind == "repair"]
+    assert len(pending) == 1
+    calls_before = len(adapter.requests)
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    (path / "allowed.txt").write_text("done")
+    begin_attempt = harness.deps.store.begin_attempt
+    stages: list[str] = []
+
+    def record_attempt(run_id: int, stage: str) -> StageAttempt:
+        stages.append(stage)
+        return begin_attempt(run_id, stage)
+
+    monkeypatch.setattr(harness.deps.store, "begin_attempt", record_attempt)
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert outcome.run_id == run.id
+    assert len(adapter.requests) == calls_before
+    assert "repair" not in stages
+    assert not harness.deps.store.pending_operations(run.id)
+    satisfied = harness.deps.store.begin_operation(run.id, "repair", pending[0].key, {})
+    assert satisfied.result_json is not None
+    assert json.loads(satisfied.result_json) == {"satisfied_by_gate": True}
+
+
+@pytest.mark.parametrize("interruption", ["after-implementation", "after-commit", "after-push"])
+def test_title_change_preserves_run_identity(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    ticket = harness.github.ticket
+    branch = branch_name(ticket)
+    path = worktree_path(harness.deps.worktrees_root, ticket)
+    subject = "Feature[#33]: Add the engine"
+
+    async def interrupt_verification(self: Engine, run_id: int, path: Path) -> None:
+        raise RuntimeError("interrupt delivery")
+
+    async def interrupt_push(self: Git, branch: str, remote: str = "origin") -> None:
+        raise RuntimeError("interrupt delivery")
+
+    async def interrupt_find(branch: str) -> PullRequest | None:
+        raise RuntimeError("interrupt delivery")
+
+    with monkeypatch.context() as patch:
+        if interruption == "after-implementation":
+            patch.setattr(Engine, "_verify", interrupt_verification)
+        elif interruption == "after-commit":
+            patch.setattr(Git, "push", interrupt_push)
+        else:
+            patch.setattr(harness.github, "find_pr", interrupt_find)
+        with pytest.raises(RuntimeError, match="interrupt delivery"):
+            harness.run()
+    run = harness.deps.store.list_runs(33)[0]
+    preparation = harness.deps.store.begin_operation(run.id, "worktree", branch, {})
+    assert preparation.result_json is not None
+    prepared = json.loads(preparation.result_json)
+    assert prepared["branch"] == branch
+    assert prepared["path"] == str(path)
+    assert prepared["subject"] == subject
+    markers = [
+        a for a in harness.deps.store.list_artifacts(run.id) if a.name.startswith("implemented-")
+    ]
+    marker = json.loads(Path(markers[-1].path).read_text())
+    assert marker["branch"] == branch
+    assert marker["path"] == str(path)
+    harness.github.ticket = harness.github.ticket.model_copy(
+        update={"title": "renamed ticket after interruption"}
+    )
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert outcome.run_id == run.id
+    assert len(harness.adapter.requests) == 1
+    assert harness.adapter.requests[0].cwd == path
+    assert list(harness.deps.worktrees_root.iterdir()) == [path]
+    assert asyncio.run(Git(path).current_branch()) == branch
+    assert asyncio.run(git_command(path, "log", "-1", "--format=%s")) == subject
+    assert harness.github.created[0][0] == branch
+    assert harness.github.created[0][2] == subject
+    # A second resume must use the same recorded commit and PR after the rename.
+    assert harness.run().head_sha == outcome.head_sha
+    assert len(harness.github.created) == 1
