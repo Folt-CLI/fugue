@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from fugue.github import CheckResult, PullRequest
-from fugue.github.client import PostedReview, ReviewComment, ReviewThread
-from fugue.models import Status, Ticket
+from fugue.github.client import PostedReview, PrState, ReviewComment, ReviewThread
+from fugue.models import Disposition, Status, Ticket
 
 
 class GitHubPort(Protocol):
@@ -67,3 +67,22 @@ class ReviewGitHubPort(CiGitHubPort, Protocol):
     async def reply_to_thread(self, pr: PullRequest, comment_id: int, body: str) -> None: ...
 
     async def resolve_thread(self, thread_id: str) -> None: ...
+
+
+@runtime_checkable
+class MergeGitHubPort(CiGitHubPort, Protocol):
+    """Live merge guards and closure mutations."""
+
+    async def pr_head_sha(self, pr: PullRequest) -> str: ...
+
+    async def pr_state(self, pr: PullRequest) -> PrState: ...
+
+    async def unresolved_thread_count(self, pr: PullRequest) -> int: ...
+
+    async def merge(self, pr: PullRequest, expected_head_sha: str) -> None: ...
+
+    async def set_disposition(self, number: int, disposition: Disposition) -> None: ...
+
+    async def children(self, number: int) -> list[Ticket]: ...
+
+    async def delete_remote_branch(self, branch: str, repo_root: Path) -> None: ...
