@@ -43,7 +43,14 @@ from fugue.engine.facts import (
     worktree_path,
 )
 from fugue.engine.ports import CiGitHubPort, GitHubPort
-from fugue.engine.prompts import commit_message, implementation_prompt, pr_body, repair_prompt
+from fugue.engine.prompts import (
+    commit_message,
+    fallback_changes,
+    implementation_prompt,
+    parse_changes,
+    pr_body,
+    repair_prompt,
+)
 from fugue.gate import GateResult, format_failure, run_gate
 from fugue.github import CheckResult, GitHubError
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
@@ -300,8 +307,28 @@ class Engine:
         )
         return identity
 
-    def _message(self, ticket: Ticket, scope: str) -> CommitMessage:
-        changes = [f"{name}: implement the selected scope" for name in allowed_files(scope)]
+    def _changes(self, run_id: int, paths: Sequence[str]) -> list[str]:
+        """Bullets from the last implementer or repair message with a Changes section."""
+        gate = {" ".join(command) for command in self.deps.config.policy.gate_commands}
+        parsed: list[str] = []
+        for artifact in self.deps.store.list_artifacts(run_id):
+            if not artifact.name.startswith("agent-") or artifact.name.startswith("agent-error-"):
+                continue
+            try:
+                text = Path(artifact.path).read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            found = parse_changes(text)
+            if found:
+                parsed = found
+        parsed = [c for c in parsed if c.partition(":")[0].strip().strip("`") not in gate]
+        return parsed or fallback_changes(paths)
+
+    def _message(
+        self, ticket: Ticket, scope: str, changes: Sequence[str] | None = None
+    ) -> CommitMessage:
+        if changes is None:
+            changes = fallback_changes(allowed_files(scope))
         message = commit_message(ticket, ticket.body_sections.get("Summary", ""), changes)
         problems = validate_message(
             message, list(IssueType), self.deps.config.policy.commit_subject_max
@@ -531,7 +558,7 @@ class Engine:
         paths = [entry[3:] for entry in await git.status_porcelain()]
         if not paths:
             return
-        message = self._message(ticket, scope)
+        message = self._message(ticket, scope, self._changes(run_id, paths))
         allowed = allowed_files(scope)
         self._require_allowed(paths, allowed)
         for path in paths:
@@ -562,7 +589,12 @@ class Engine:
     async def _open_pr(self, run_id: int, ticket: Ticket, scope: str, identity: Identity) -> None:
         if await self.deps.github.find_pr(identity.branch) is not None:
             return
-        message = self._message(ticket, scope)
+        git = Git(identity.path)
+        base = f"refs/heads/{self.deps.base_branch}"
+        merge_base = (await git._run("merge-base", base, "HEAD")).strip()
+        diff = await git._run("diff", "--name-only", "--no-renames", "-z", merge_base, "HEAD", "--")
+        paths = [path for path in diff.split("\0") if path]
+        message = self._message(ticket, scope, self._changes(run_id, paths))
         verification = "\n".join(
             f"- {' '.join(command)}: passed" for command in self.deps.config.policy.gate_commands
         )

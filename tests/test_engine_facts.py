@@ -27,7 +27,16 @@ from fugue.engine.facts import (
     worktree_path,
 )
 from fugue.engine.ports import GitHubPort
-from fugue.engine.prompts import commit_message, implementation_prompt, pr_body, repair_prompt
+from fugue.engine.prompts import (
+    MAX_CHANGE_LENGTH,
+    MAX_CHANGES,
+    commit_message,
+    fallback_changes,
+    implementation_prompt,
+    parse_changes,
+    pr_body,
+    repair_prompt,
+)
 from fugue.github import GitHubClient, PullRequest
 from fugue.models import IssueType, Priority, Size, Status, Ticket
 
@@ -54,7 +63,6 @@ def ticket(solution: str = "") -> Ticket:
             "https://github.com/user-attachments/files/abc",
         ),
         ("[32-solution-1.md](https://github.com/user-attachments/a)", None),
-        ("[33-solution-2.md](https://github.com/user-attachments/a)", None),
         ("[33-solution-1.md](https://example.com/a)", None),
         ("[33-solution-1.md](https://github.com/user-attachments/)", None),
         ("[33-solution-1.md](https://github.com/user-attachments/a", None),
@@ -63,6 +71,56 @@ def ticket(solution: str = "") -> Ticket:
 def test_scope_url(body: str, expected: str | None) -> None:
     assert scope_url(ticket(body)) == expected
     assert scope_url(ticket().model_copy(update={"body_sections": {"Details": body}})) is None
+
+
+U = "https://github.com/user-attachments/files/"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (f"**Codex scope:** [33-solution-1.md]({U}1)", f"{U}1"),
+        (
+            f"**Codex scope:** [33-solution-1.md]({U}1)\n"
+            f"**Revised Codex scope (x):** [Selected Solution] [33-solution-2.md]({U}2)",
+            f"{U}2",
+        ),
+        (
+            f"> Pick the attachment tagged **[Selected Solution]** above: "
+            f"[Selected Solution] [33-solution-3.md]({U}3)",
+            f"{U}3",
+        ),
+        (
+            f"[33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)\n[33-solution-3.md]({U}3)",
+            f"{U}3",
+        ),
+        (
+            f"[Selected Solution] [33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)",
+            f"{U}1",
+        ),
+        (f"[Selected Solution]\n[33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)", f"{U}2"),
+        (
+            f"[Selected Solution] {'x' * 40} [33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)",
+            f"{U}2",
+        ),
+        (f"[32-solution-1.md]({U}1)\n[Selected Solution] [32-solution-2.md]({U}2)", None),
+        (f"[33-solution-1.md]({U}1)\n[Selected Solution] [32-solution-2.md]({U}2)", f"{U}1"),
+    ],
+)
+def test_scope_url_prefers_selected_then_latest(body: str, expected: str | None) -> None:
+    assert scope_url(ticket(body)) == expected
+
+
+def test_scope_url_ignores_links_outside_solution() -> None:
+    item = ticket().model_copy(
+        update={
+            "body_sections": {
+                "Analysis": f"[Selected Solution] [33-solution-2.md]({U}2)",
+                "Solution": f"[33-solution-1.md]({U}1)",
+            }
+        }
+    )
+    assert scope_url(item) == f"{U}1"
 
 
 def test_solution_regex() -> None:
@@ -213,3 +271,44 @@ SNAPSHOT = Snapshot(
 )
 def test_decide_applies_the_first_matching_rule(changes: dict[str, object], action: object) -> None:
     assert decide(replace(SNAPSHOT, **changes)) == action  # type: ignore[arg-type]
+
+
+def test_implementation_prompt_asks_for_a_changes_section() -> None:
+    prompt = implementation_prompt("SCOPE")
+    assert "SCOPE" in prompt
+    assert "## Changes" in prompt
+
+
+def test_parse_changes_reads_what_why_bullets() -> None:
+    text = "Done.\n\n## Changes\n\n- a.py: add parser\n* b.py: cover it\n\n## Notes\n- x"
+    assert parse_changes(text) == ["a.py: add parser", "b.py: cover it"]
+
+
+def test_parse_changes_uses_the_last_section_and_trims() -> None:
+    long = "- a.py: " + "x" * 500
+    many = "\n".join(f"- f{i}.py: why" for i in range(MAX_CHANGES + 5))
+    assert parse_changes("## Changes\n- old.py: old\n\n## Changes\n" + long)[0].endswith("...")
+    assert len(parse_changes("## Changes\n" + long)[0]) == MAX_CHANGE_LENGTH
+    assert len(parse_changes("## Changes\n" + many)) == MAX_CHANGES
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "No section here",
+        "## Changes\n",
+        "## Changes\n\n## Next\n- a.py: x",
+        "## Changes\n- no reason given",
+        "## Changes\n- a.py: fine\nplain prose line",
+        "## Changes\n- a.py:",
+        "## Notes\n- a.py: x",
+    ],
+)
+def test_parse_changes_returns_nothing_when_missing_or_malformed(text: str) -> None:
+    assert parse_changes(text) == []
+
+
+def test_fallback_changes_state_only_the_path() -> None:
+    assert fallback_changes(["a.py", "b.py", "a.py"]) == ["a.py: updated", "b.py: updated"]
+    assert fallback_changes([]) == []
