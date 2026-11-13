@@ -9,6 +9,7 @@ from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
 from fugue.models import AuthenticationMode
 from fugue.store import Run
+from fugue.store.records import StageDuration, UsageTotals
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,54 @@ def render_run_detail(detail: RunDetail) -> str:
     lines += ["", "usage (reported values, not a bill):"]
     lines += [f"  {name}: {_usage_value(value)}" for name, value in detail.usage.items()]
     return "\n".join(lines)
+
+
+def render_usage(totals: Sequence[UsageTotals], group_by: str) -> str:
+    """Render usage records per group; n/a marks values no provider reported."""
+    if not totals:
+        return "No usage records."
+    rows = [
+        [
+            total.key,
+            str(total.records),
+            _usage_value(total.input_tokens),
+            _usage_value(total.cached_input_tokens),
+            _usage_value(total.output_tokens),
+            _usage_value(total.reasoning_tokens),
+            "n/a" if total.cost_estimate_usd is None else f"{total.cost_estimate_usd:.4f}",
+            _usage_value(total.duration_ms),
+        ]
+        for total in totals
+    ]
+    header = [
+        group_by,
+        "records",
+        "input",
+        "cached",
+        "output",
+        "reasoning",
+        "cost estimate (USD)",
+        "duration (ms)",
+    ]
+    note = "Cost is an estimate from reported usage, not a bill; n/a means not reported."
+    return "\n".join([*_table(header, rows), "", note])
+
+
+def render_timing(durations: Sequence[StageDuration]) -> str:
+    """Render stage attempt durations; unfinished attempts show n/a."""
+    if not durations:
+        return "No stage attempts."
+    rows = [
+        [
+            str(d.run_id),
+            d.stage,
+            str(d.attempt),
+            d.status,
+            "n/a" if d.duration_seconds is None else f"{d.duration_seconds:.1f}",
+        ]
+        for d in durations
+    ]
+    return "\n".join(_table(["run", "stage", "attempt", "status", "seconds"], rows))
 
 
 def _toml_scalar(value: object) -> str:

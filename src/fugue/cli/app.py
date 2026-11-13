@@ -4,7 +4,7 @@ import asyncio
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Protocol
+from typing import Annotated, Literal, Protocol
 
 import typer
 from rich.console import Console
@@ -156,5 +156,46 @@ def status(
         if ticket is not None and detail.run.ticket_number != ticket:
             raise _fail(f"Run {run_id} is not for ticket #{ticket}")
         _print(render.render_run_detail(detail))
+    finally:
+        store.close()
+
+
+@app.command()
+def usage(
+    by: Annotated[
+        Literal["role", "provider", "run", "ticket"],
+        typer.Option("--by", help="Group usage by role, provider, run or ticket."),
+    ] = "role",
+    ticket: Annotated[
+        int | None, typer.Option("--ticket", help="Only runs for this ticket.")
+    ] = None,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Report usage records (estimates, not a bill)."""
+    loaded = _load(config, _lenient_root(repo_root))
+    store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
+    try:
+        _print(render.render_usage(store.usage_by(by, ticket_number=ticket), by))
+    finally:
+        store.close()
+
+
+@app.command()
+def timing(
+    run_id: Annotated[int | None, typer.Argument()] = None,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Report stage attempt durations for all runs or one run."""
+    loaded = _load(config, _lenient_root(repo_root))
+    store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
+    try:
+        if run_id is not None:
+            try:
+                store.get_run(run_id)
+            except StoreError as error:
+                raise _fail(f"Unknown run id {run_id}") from error
+        _print(render.render_timing(store.stage_durations(run_id)))
     finally:
         store.close()
