@@ -17,6 +17,7 @@ from fugue.agents.codex import CodexAdapter, register_codex
 from fugue.agents.fake import ScriptedAdapter, ScriptStep
 from fugue.agents.fallback import FallbackAdapter, FallbackMember, ProviderSwitch
 from fugue.agents.registry import AdapterConfigError, AdapterRegistry, UnknownProvider
+from fugue.agents.tiers import ModelChoice, resolve_models
 
 __all__ = [
     "AccessMode",
@@ -30,6 +31,7 @@ __all__ = [
     "CodexAdapter",
     "FallbackAdapter",
     "FallbackMember",
+    "ModelChoice",
     "ProviderAdapter",
     "ProviderSwitch",
     "ScriptStep",
@@ -40,5 +42,6 @@ __all__ = [
     "check_request",
     "register_claude",
     "register_codex",
+    "resolve_models",
     "unsupported_result",
 ]

@@ -10,9 +10,17 @@ from datetime import UTC, datetime
 from itertools import count
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
-from fugue.agents import AccessMode, AdapterRegistry, AgentRequest, ProviderAdapter, ProviderSwitch
+from fugue.agents import (
+    AccessMode,
+    AdapterRegistry,
+    AgentRequest,
+    ModelChoice,
+    ProviderAdapter,
+    ProviderSwitch,
+    resolve_models,
+)
 from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
 from fugue.config import FugueConfig, ProviderEntry, RoleConfig
 from fugue.engine.ci import (
@@ -71,7 +79,7 @@ from fugue.gate import GateResult, format_failure, run_gate
 from fugue.github import CheckResult, GitHubError, PullRequest
 from fugue.github.client import ResolvePermissionError
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
-from fugue.models import Disposition, IssueType, Role, Status, Ticket
+from fugue.models import Disposition, IssueType, Role, Size, Status, Ticket
 from fugue.store import Approval, Operation, Run, Store
 from fugue.workflow import RunState, Stage, ready_for_implementation
 from fugue.workflow.guards import can_close, merge_allowed, review_required
@@ -190,6 +198,46 @@ def role_adapter(
         cooldown_seconds=deps.config.limits.provider_cooldown_seconds,
         on_switch=on_switch,
     )
+
+
+def model_choice(deps: EngineDeps, run_id: int, role: Role, size: Size) -> ModelChoice:
+    """Return the run's model choice for a role, recording it on first use.
+
+    The recorded choice is reused after a restart, so a run keeps the tier it started with
+    even when the ticket Size or the configuration changed in between.
+    """
+    operation = deps.store.begin_operation(
+        run_id, "model_choice", str(role), {"role": str(role), "size": str(size)}
+    )
+    if operation.result_json is not None:
+        return ModelChoice.from_json(role, json.loads(operation.result_json))
+    choice = resolve_models(deps.config, role, size)
+    deps.store.complete_operation(operation.id, choice.to_json())
+    if deps.progress is not None:
+        tier = "default" if choice.tier is None else str(choice.tier)
+        deps.progress(f"{role}: tier {tier} ({choice.source})")
+    return choice
+
+
+class UsageChoice(TypedDict):
+    model: str | None
+    tier: str | None
+
+
+def usage_choice(choice: ModelChoice | None, provider: str) -> UsageChoice:
+    """The model and tier to store on a usage record for the provider that served the call."""
+    if choice is None:
+        return {"model": None, "tier": None}
+    tier = None if choice.tier is None else str(choice.tier)
+    return {"model": choice.models.get(provider), "tier": tier}
+
+
+def saved_model_choice(store: Store, run_id: int, role: Role) -> ModelChoice | None:
+    """The recorded model choice, or None for a run that never recorded one."""
+    saved = _operation_by_key(store, run_id, "model_choice", str(role))
+    if saved is None or saved[4] is None:
+        return None
+    return ModelChoice.from_json(role, json.loads(saved[4]))
 
 
 async def _common_dir(path: Path) -> Path:
@@ -606,6 +654,7 @@ class Engine:
             ticket = await self._stage(
                 run_id, Stage.LOAD, lambda: self.deps.github.get_ticket(ticket_number)
             )
+            self._choose_models(run_id, ticket)
             scope = await self._stage(
                 run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket)
             )
@@ -624,6 +673,10 @@ class Engine:
         except Exception:
             store.set_run_state(run_id, RunState.BLOCKED)
             raise
+
+    def _choose_models(self, run_id: int, ticket: Ticket) -> None:
+        for role in (Role.IMPLEMENTER, Role.REVIEWER):
+            model_choice(self.deps, run_id, role, ticket.size)
 
     async def _drive(self, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
         while True:
@@ -764,6 +817,7 @@ class Engine:
             )
         if session is None:
             prompt = fresh_prompt
+        choice = saved_model_choice(self.deps.store, run_id, Role.IMPLEMENTER)
         result = await adapter.run(
             AgentRequest(
                 role=Role.IMPLEMENTER,
@@ -773,7 +827,10 @@ class Engine:
                 session_id=session,
                 sessions=sessions,
                 fresh_prompt=fresh_prompt,
-                model=role_config.model,
+                model=role_config.model
+                if choice is None
+                else choice.models.get(role_config.provider),
+                models={} if choice is None else choice.models,
                 timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
             )
         )
@@ -785,6 +842,7 @@ class Engine:
                 result.provider,
                 result.authentication_mode,
                 **asdict(result.usage),
+                **usage_choice(choice, result.provider),
             )
         if result.session_id is not None:
             self.deps.store.record_agent_session(
@@ -1094,6 +1152,7 @@ class Engine:
 
     async def _load(self, run_id: int, number: int) -> tuple[Ticket, str]:
         ticket = await self._stage(run_id, Stage.LOAD, lambda: self.deps.github.get_ticket(number))
+        self._choose_models(run_id, ticket)
         scope = await self._stage(run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket))
         return ticket, scope
 
@@ -1241,13 +1300,17 @@ class Engine:
             diff=await self._diff(identity.path),
         )
         # Every round is a fresh, read-only conversation so the review stays independent.
+        choice = saved_model_choice(self.deps.store, run_id, Role.REVIEWER)
         result = await adapter.run(
             AgentRequest(
                 role=Role.REVIEWER,
                 prompt=prompt,
                 cwd=identity.path,
                 access=AccessMode.READ_ONLY,
-                model=role_config.model,
+                model=role_config.model
+                if choice is None
+                else choice.models.get(role_config.provider),
+                models={} if choice is None else choice.models,
                 timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
             )
         )
@@ -1259,6 +1322,7 @@ class Engine:
                 result.provider,
                 result.authentication_mode,
                 **asdict(result.usage),
+                **usage_choice(choice, result.provider),
             )
         implementers = self.deps.store.agent_sessions(run_id, role=Role.IMPLEMENTER)
         if implementers and implementers[-1].provider == result.provider:

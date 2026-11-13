@@ -43,6 +43,8 @@ class AgentRequest:
     output_schema: Mapping[str, Any] | None = None
     timeout_seconds: float | None = None
     model: str | None = None
+    # Provider name to model identifier; a fallback member reads its own entry, not model.
+    models: Mapping[str, str | None] = field(default_factory=dict)
     # Provider name to session id, subscription_login only; provider fallback gives
     # each member only its own session.
     sessions: Mapping[str, str] = field(default_factory=dict)

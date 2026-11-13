@@ -22,7 +22,7 @@ from fugue.engine.review import Decision
 from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
 from fugue.gitops import Git
-from fugue.models import Size, Status, Ticket
+from fugue.models import ModelTier, Role, Size, Status, Ticket
 from fugue.store import Run, Store, StoreError
 from fugue.store.records import Approval
 from fugue.workflow import RunState
@@ -318,19 +318,68 @@ def _latest_run(engine: RunEngine, number: int) -> Run | None:
     return runs[-1] if runs else None
 
 
+def _role_name(text: str, option: str) -> Role:
+    try:
+        return Role(text.strip())
+    except ValueError:
+        roles = ", ".join(str(role) for role in Role)
+        raise _fail(f"{option}: unknown role {text!r}; use one of {roles}") from None
+
+
+def _tier_name(text: str) -> ModelTier:
+    try:
+        return ModelTier(text.strip())
+    except ValueError:
+        tiers = ", ".join(str(item) for item in ModelTier)
+        raise _fail(f"--tier: unknown tier {text!r}; use one of {tiers}") from None
+
+
+def _parse_overrides(
+    tier_args: list[str], model_args: list[str]
+) -> tuple[ModelTier | None, dict[Role, ModelTier], dict[Role, str]]:
+    """Parse --tier [ROLE=]TIER and --model ROLE=ID before any run starts."""
+    all_tier: ModelTier | None = None
+    role_tiers: dict[Role, ModelTier] = {}
+    role_models: dict[Role, str] = {}
+    for item in tier_args:
+        name, separator, value = item.rpartition("=")
+        if not separator:
+            all_tier = _tier_name(item)
+        else:
+            role_tiers[_role_name(name, "--tier")] = _tier_name(value)
+    for item in model_args:
+        name, separator, value = item.partition("=")
+        if not separator:
+            raise _fail(f"--model: expected ROLE=ID, got {item!r}")
+        role_models[_role_name(name, "--model")] = value
+    return all_tier, role_tiers, role_models
+
+
 def _run_single(loaded: FugueConfig, engine: RunEngine, ticket: int, to_green: bool) -> typer.Exit:
     wait = loaded.limits.database_wait_seconds
     try:
         with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket) as lock:
-            _print(render.render_roles(loaded))
             if lock.recovered is not None:
                 _print(
                     f"note: recovered stale lock left by process {lock.recovered.pid} "
                     f"({format_elapsed(lock.recovered.age_seconds)} ago); resuming"
                 )
-            outcome = asyncio.run(
-                engine.run_to_green(ticket) if to_green else engine.run_to_pr(ticket)
-            )
+
+            async def go() -> RunOutcome:
+                # The tier depends on the ticket Size, so the table waits for the ticket.
+                # A bare Engine has no get_ticket; read through its GitHub port instead. An
+                # engine with neither shows the policy table, which needs no Size.
+                reader = getattr(engine, "get_ticket", None) or getattr(
+                    engine.deps.github, "get_ticket", None
+                )
+                if reader is None:
+                    _print(render.render_roles(loaded))
+                else:
+                    found: Ticket = await reader(ticket)
+                    _print(render.render_roles(loaded, found.size))
+                return await (engine.run_to_green(ticket) if to_green else engine.run_to_pr(ticket))
+
+            outcome = asyncio.run(go())
     except TicketLocked as error:
         raise _fail(str(error), _STATE_EXIT_CODES[RunState.BLOCKED]) from error
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
@@ -388,7 +437,9 @@ def _run_batch(
         try:
             for number in numbers:
                 try:
-                    tickets.append(await probe.get_ticket(number))
+                    found = await probe.get_ticket(number)
+                    tickets.append(found)
+                    _print(f"ticket #{number}\n{render.render_roles(loaded, found.size)}")
                 except Exception as error:
                     message = _explain(error, wait)
                     rows[number] = render.BatchRow(number, _BATCH_FAILED, None, f"error: {message}")
@@ -404,7 +455,6 @@ def _run_batch(
         )
 
     try:
-        _print(render.render_roles(loaded))
         asyncio.run(execute())
     except (KeyboardInterrupt, asyncio.CancelledError):
         for number, engine in engines.items():
@@ -425,15 +475,33 @@ def run(
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
     to_green: Annotated[bool, typer.Option("--to-green", help="Wait for green CI.")] = False,
+    tier: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tier",
+            help="Model tier for this run: [ROLE=]small|medium|large; repeatable.",
+        ),
+    ] = None,
+    model: Annotated[
+        list[str] | None,
+        typer.Option("--model", help="Model identifier for one role: ROLE=ID; repeatable."),
+    ] = None,
 ) -> None:
     """Run one or more tickets to a pull request."""
     if len(set(tickets)) != len(tickets):
         raise _fail("Duplicate ticket numbers")
     if any(number <= 0 for number in tickets):
         raise _fail("Ticket numbers must be positive")
+    all_tier, role_tiers, role_models = _parse_overrides(tier or [], model or [])
     try:
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
         loaded = _load(config, root_path)
+        try:
+            loaded = loaded.with_overrides(
+                tier=all_tier, role_tiers=role_tiers, role_models=role_models
+            )
+        except ValueError as error:
+            raise _fail(f"--model: {error}") from error
         engine = engine_factory(loaded, root_path, _print)
     except wiring.WiringError as error:
         raise _fail(str(error)) from error

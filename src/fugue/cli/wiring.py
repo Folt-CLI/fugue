@@ -1,5 +1,6 @@
 """Resolve defaults and build the engine from configuration."""
 
+import json
 import re
 import subprocess
 from collections.abc import Callable, Mapping
@@ -7,7 +8,14 @@ from pathlib import Path
 
 from fugue.agents import AdapterRegistry, register_claude, register_codex
 from fugue.artifacts import ArtifactStore
-from fugue.cli.render import ApprovalLine, AttemptLine, OperationLine, RunDetail
+from fugue.cli.render import (
+    ApprovalLine,
+    AttemptLine,
+    ModelLine,
+    OperationLine,
+    RunDetail,
+    describe_models,
+)
 from fugue.config import FugueConfig
 from fugue.engine import Engine, EngineDeps
 from fugue.github import GitHubClient
@@ -155,4 +163,24 @@ def load_run_detail(store: Store, run_id: int) -> RunDetail:
             )
         ),
         usage=store.usage_summary(run_id),
+        models=tuple(
+            _model_line(row["key"], row["result_json"])
+            for row in connection.execute(
+                "SELECT key, result_json FROM operations "
+                "WHERE run_id = ? AND kind = 'model_choice' AND result_json IS NOT NULL "
+                "ORDER BY id",
+                (run_id,),
+            )
+        ),
+    )
+
+
+def _model_line(role: str, result_json: str) -> ModelLine:
+    data = json.loads(result_json)
+    return ModelLine(
+        role=role,
+        size=str(data["size"]),
+        tier="-" if data["tier"] is None else str(data["tier"]),
+        source=str(data["source"]),
+        models=describe_models(data["models"]),
     )

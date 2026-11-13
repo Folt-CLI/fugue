@@ -344,6 +344,8 @@ class Store:
         reasoning_tokens: int | None = None,
         cost_estimate_usd: float | None = None,
         duration_ms: int | None = None,
+        model: str | None = None,
+        tier: str | None = None,
     ) -> UsageRecord:
         return self._insert(
             UsageRecord,
@@ -360,6 +362,8 @@ class Store:
                 cost_estimate_usd=cost_estimate_usd,
                 duration_ms=duration_ms,
                 created_at=self._now(),
+                model=model,
+                tier=tier,
             ),
         )
 

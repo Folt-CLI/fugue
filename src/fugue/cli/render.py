@@ -5,10 +5,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from fugue.agents import resolve_models
 from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
 from fugue.engine.review import Finding
-from fugue.models import AuthenticationMode
+from fugue.models import AuthenticationMode, Role, Size
 from fugue.store import Run
 from fugue.store.db import RepoStageDuration, RepoUsageTotals
 from fugue.store.records import Approval
@@ -39,12 +40,22 @@ class ApprovalLine:
 
 
 @dataclass(frozen=True)
+class ModelLine:
+    role: str
+    size: str
+    tier: str
+    source: str
+    models: str
+
+
+@dataclass(frozen=True)
 class RunDetail:
     run: Run
     attempts: tuple[AttemptLine, ...]
     operations: tuple[OperationLine, ...]
     approvals: tuple[ApprovalLine, ...]
     usage: Mapping[str, int | float | None]
+    models: tuple[ModelLine, ...] = ()
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
@@ -56,16 +67,38 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
     ]
 
 
-def render_roles(config: FugueConfig) -> str:
-    rows = [
-        [
-            str(role),
-            " > ".join([role_config.provider, *(entry.provider for entry in role_config.fallback)]),
-            str(role_config.authentication_mode),
-        ]
-        for role, role_config in config.roles.items()
-    ]
-    lines = _table(["role", "provider", "authentication mode"], rows)
+def describe_models(models: Mapping[str, str | None]) -> str:
+    """Chain members in order, each with its model or `default` when it has none."""
+    return " > ".join(f"{provider}:{model or 'default'}" for provider, model in models.items())
+
+
+def _policy_text(config: FugueConfig, role: Role) -> str:
+    rules = config.policy.tier_rules.get(role, {})
+    return " ".join(f"{size}:{rules[size]}" for size in Size if size in rules) or "-"
+
+
+def render_roles(config: FugueConfig, size: Size | None = None) -> str:
+    """The role table; with a Size it shows the tier and models that Size resolves to."""
+    rows = []
+    for role, role_config in config.roles.items():
+        if size is None:
+            tier, model = _policy_text(config, role), "-"
+        else:
+            choice = resolve_models(config, role, size)
+            tier = "-" if choice.tier is None else str(choice.tier)
+            model = describe_models(choice.models)
+        rows.append(
+            [
+                str(role),
+                " > ".join(
+                    [role_config.provider, *(entry.provider for entry in role_config.fallback)]
+                ),
+                str(role_config.authentication_mode),
+                tier,
+                model,
+            ]
+        )
+    lines = _table(["role", "provider", "authentication mode", "tier", "model"], rows)
     lines.extend(
         f"warning: role {role} uses api_key authentication (metered)"
         for role, role_config in config.roles.items()
@@ -215,6 +248,11 @@ def render_run_detail(detail: RunDetail) -> str:
             [a.kind, a.subject, a.head_sha, a.decision, "yes" if a.valid else "no"]
             for a in detail.approvals
         ],
+    )
+    lines += _section(
+        "models",
+        ["role", "size", "tier", "source", "model"],
+        [[m.role, m.size, m.tier, m.source, m.models] for m in detail.models],
     )
     lines += ["", "usage (reported values, not a bill):"]
     lines += [f"  {name}: {_usage_value(value)}" for name, value in detail.usage.items()]

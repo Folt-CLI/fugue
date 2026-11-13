@@ -16,10 +16,11 @@ from fugue.agents import (
     ProviderAdapter,
     register_claude,
     register_codex,
+    resolve_models,
 )
 from fugue.cli import wiring
 from fugue.config import FugueConfig
-from fugue.models import IssueType, Role
+from fugue.models import IssueType, Role, Size
 from fugue.questions.decision import QuestionClient, QuestionGitHubClient, record_decision
 from fugue.questions.parse import Option, parse_analysis
 
@@ -113,6 +114,8 @@ class QuestionWalkthrough:
                     self.print("Enter a non-empty follow-up question.")
                     continue
                 role_config = self.config.roles.get(Role.ANALYST)
+                # Every Question is Size L; there is no run, so the choice is not persisted.
+                choice = resolve_models(self.config, Role.ANALYST, Size.L)
                 result = await self.adapter.run(
                     AgentRequest(
                         role=Role.ANALYST,
@@ -121,7 +124,8 @@ class QuestionWalkthrough:
                         "Answer read-only; do not modify files.",
                         cwd=self.repo_root,
                         access=AccessMode.READ_ONLY,
-                        model=role_config.model if role_config else None,
+                        model=choice.models.get(role_config.provider) if role_config else None,
+                        models=choice.models,
                         timeout_seconds=self.config.limits.agent_timeout_seconds,
                     )
                 )
