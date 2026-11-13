@@ -17,10 +17,10 @@ in that change's ticket. Test ticket commits use `Test[#N]:`.
 
 ## Roles
 
-Codex implements and fixes in the ticket's dedicated worktree. It does not
+The implementation agent implements and fixes in the ticket's dedicated worktree. It does not
 analyse code, reviews or CI. The orchestrator investigates, runs the gate,
 reads CI and supplies findings and failing output to fix. A separate read-only
-Codex session reviews the diff, changed tests and supplied CI results; it does
+reviewer reviews the diff, changed tests and supplied CI results; it does
 not run builds or checks. See the [campaign exceptions](process.md#autonomous-development-campaign-exceptions).
 
 ## Gate before push
@@ -75,7 +75,7 @@ List each local command and result, and each actual CI job and result after CI
 finishes. State what did not run. Do not infer platforms or check results from
 this policy.
 
-## Standard paragraph for every Codex implementation prompt
+## Standard paragraph for every implementation prompt
 
 > Every ticket adds or updates the tests for what it changes, in the same pull
 > request. A bug fix adds a regression case that fails before the fix. Write the

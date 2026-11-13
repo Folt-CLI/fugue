@@ -3,7 +3,7 @@
 For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](process.md#autonomous-development-campaign-exceptions) for the campaign.
 
 After a pull request is opened or updated, where the [size requires review](working/README.md),
-run a read-only Codex review of its
+run a read-only review of its
 diff against the pull request's base. For a stack, review each pull request
 against its own base. CI and branch protection on the bottom base apply to
 every layer; see [Stacked pull requests](stacked-prs.md).
@@ -35,7 +35,7 @@ Non-blocking.
   records the reason. Fixes must not add persisted state or new behaviour that
   no listed scenario needs.
 
-See [Issue format](issue-format.md#codex-scope-layout) for the scenario sections.
+See [Issue format](issue-format.md#implementation-scope-layout) for the scenario sections.
 
 ### Reviews live on GitHub
 
@@ -95,9 +95,9 @@ in the review prompt, and waits for CI to finish before posting the review.
 
 ## Dependabot PRs
 
-Always run a read-only Codex review on every Dependabot PR. Verify that the bump
+Always run a read-only review on every Dependabot PR. Verify that the bump
 will not break workflows or code using the diff, CI result and release notes of
-the bumped dependencies. Codex has no network; paste the CI result and release
+the bumped dependencies. The reviewer has no network; paste the CI result and release
 notes into the review prompt. When clean, leave a PR comment whose entire body
 is exactly `No issues.`. Otherwise post findings as for any review below.
 

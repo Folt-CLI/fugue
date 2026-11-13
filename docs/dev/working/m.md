@@ -20,15 +20,15 @@ as files: findings, solution scopes and Analysis text. The orchestrator publishe
 them to the ticket and attaches them.
 
 The orchestrator writes Analysis inline, links the findings attachment from
-Details and attaches each solution as a complete Codex scope.
+Details and attaches each solution as a complete implementation scope.
 
 Follow [Analysis and solution selection](../issue-format.md#analysis-and-solution-selection)
 for the layouts, uploads and selection.
-Use a read-only Codex [review](../review.md).
+Use a read-only [review](../review.md).
 
 ## Solution
 
-The developer selects the solution before implementation. Mark its Codex scope
+The developer selects the solution before implementation. Mark its implementation scope
 attachment **[Selected Solution]**.
 Summarize changes, Affected areas and Why this one in Solution; link findings and two to four key points in Details.
 
@@ -37,14 +37,14 @@ Summarize changes, Affected areas and Why this one in Solution; link findings an
 Status path: `S0: To Do` -> `S1: In Analysis` -> `S3: Ready For Implementation` -> `S4: In Implementation` -> `S5: Done`.
 
 S3 requires a recorded selected solution: mark the attachment
-**[Selected Solution]** and fill Solution. Do not start Codex or move the ticket
+**[Selected Solution]** and fill Solution. Do not start the implementation agent or move the ticket
 to S3 or S4 before this is recorded.
 
 Project workflows set Done on close and on merge.
 
 ## Who does what
 
-Codex implements and fixes in a dedicated worktree and does not analyse; the orchestrator analyses.
+The implementation agent implements and fixes in a dedicated worktree and does not analyse; the orchestrator analyses.
 The orchestrator runs the [gate](../testing.md#gate-before-push), commits, pushes and opens the PR; only the developer merges.
 Give every PR a milestone, an assignee and the project. Apply the [type row](README.md#by-issue-type).
 

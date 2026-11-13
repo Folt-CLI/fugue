@@ -13,14 +13,14 @@ Set type Question and the milestone, Priority, Size, Status and ownership from t
 
 L needs analysis and review. The orchestrator writes Analysis inline in the
 ticket, links the findings
-attachment from Details and attaches each solution as a complete Codex scope.
+attachment from Details and attaches each solution as a complete implementation scope.
 Follow [Analysis and solution selection](../issue-format.md#analysis-and-solution-selection)
 for the layouts, uploads and selection.
-Use a read-only Codex [review](../review.md).
+Use a read-only [review](../review.md).
 
 ## Solution
 
-The developer selects the answer. Mark its Codex scope attachment
+The developer selects the answer. Mark its implementation scope attachment
 **[Selected Solution]** and summarize changes, Affected areas and Why this one.
 Link findings and two to four key points in Details. Derive the child tickets from the answer.
 
@@ -31,7 +31,7 @@ Project workflows set Done on close and on merge. An answered Question may be Do
 
 ## Who does what
 
-The orchestrator analyses; the developer selects the answer. Codex implements and fixes in dedicated child worktrees and does not analyse.
+The orchestrator analyses; the developer selects the answer. The implementation agent implements and fixes in dedicated child worktrees and does not analyse.
 The orchestrator runs the [gate](../testing.md#gate-before-push), commits, pushes and opens PRs; only the developer merges.
 Give every PR a milestone, an assignee and the project.
 

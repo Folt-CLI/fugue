@@ -45,7 +45,7 @@ body:
     id: analysis
     attributes:
       label: Analysis
-      description: For M and L, the orchestrator writes the options here and attaches each as a Codex scope; the developer chooses (see campaign exceptions in docs/dev/process.md).
+      description: For M and L, the orchestrator writes the options here and attaches each as an implementation scope; the developer chooses (see campaign exceptions in docs/dev/process.md).
       value: _Not analyzed yet._
 
   - type: textarea

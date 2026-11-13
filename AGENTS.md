@@ -57,7 +57,7 @@ For ordinary developer decisions and merge rules below, apply the
 - Write Analysis inline in the ticket using the layout in
   [Issue format](docs/dev/issue-format.md#analysis-and-solution-selection).
   Attach findings as `<N>-code-findings.md` and each solution as a complete
-  Codex scope `<N>-solution-<k>.md` using gh-attach. Verify uploads and use real
+  implementation scope `<N>-solution-<k>.md` using gh-attach. Verify uploads and use real
   attachment links. Analyses and scopes use `GLOSSARY.md` terms exactly and no
   emojis.
 - Reviews follow the [review contract](docs/dev/review.md#review-contract): only
@@ -69,6 +69,11 @@ For ordinary developer decisions and merge rules below, apply the
 
 ## Commits and delivery
 
+- Do not name the AI provider or model (for example Codex or Claude) in GitHub
+  issues, comments, reviews, pull requests, PR descriptions or commit messages.
+  Use roles: orchestrator, implementation agent, reviewer. Provider names belong
+  only in configuration, code, tests and product documentation.
+
 - When implementation finishes, follow the size's review rule in
   [working templates](docs/dev/working/README.md). The orchestrator runs the
   gate in [Testing](docs/dev/testing.md), then commits in the issue format,
@@ -79,7 +84,7 @@ For ordinary developer decisions and merge rules below, apply the
   green and ask again. Never chain cleanup after a merge command that may have
   failed. Follow [Review](docs/dev/review.md) and
   [Stacked pull requests](docs/dev/stacked-prs.md).
-- All agents, including Codex and delegated agents, must do implementation work
+- All agents, including delegated agents, must do implementation work
   in a dedicated Git worktree for the issue branch. Do not implement in the
   primary checkout or share one worktree between concurrent issue work. Fetch
   and fast-forward the base branch before creating the worktree.
@@ -88,7 +93,7 @@ For ordinary developer decisions and merge rules below, apply the
   exact issue type.
 - Dependabot uses `Dependabot[#0]: <Dependabot's description>`, the only subject
   type that is not an issue type; `#0` needs no ticket, epic or issue. When dependency automation is configured, use that prefix; squash
-  nonconforming PR commits into one with that subject. Always run a read-only Codex review of
+  nonconforming PR commits into one with that subject. Always run a read-only review of
   every Dependabot PR using the diff, CI result and pasted dependency release
   notes to check workflows and code. Post exactly `No issues.` when clean;
   otherwise post findings as in [Review](docs/dev/review.md).

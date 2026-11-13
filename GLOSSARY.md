@@ -119,7 +119,7 @@ Status: decided.
 
 ### orchestrator
 
-The role that investigates, publishes decisions and scopes, runs the gate, interprets CI, and delivers changes. Codex implementation and independent read-only review remain separate roles.
+The role that investigates, publishes decisions and scopes, runs the gate, interprets CI, and delivers changes. Implementation and independent read-only review remain separate roles.
 
 Status: decided.
 
