@@ -37,13 +37,13 @@ solution, use S or XS, not M.
   Follow the size file for analysis and solution readiness, and the Incident
   and Epic rows below for their report and Objective formats.
 - For M and L, the orchestrator writes Analysis inline and attaches findings as
-  `<N>-code-findings.md` and each solution as a complete Codex scope
+  `<N>-code-findings.md` and each solution as a complete implementation scope
   `<N>-solution-<k>.md`. Follow
   [Analysis and solution selection](../issue-format.md#analysis-and-solution-selection)
   for the layouts, uploads and selection. XS, S and XL have no analysis.
   S and XS carry their Solution at creation, derived from the enabling Question;
   its answer does not replace a missing Solution or scope.
-  S always has a complete `<N>-solution-1.md` Codex scope attachment; XS may skip
+  S always has a complete `<N>-solution-1.md` implementation scope attachment; XS may skip
   it when self-descriptive. Attach with gh-attach and verify by downloading and
   comparing at creation; see [S and XS Solution layout](../issue-format.md#s-and-xs-solution-layout).
 - Use these Status values: `S0: To Do`, `S1: In Analysis`,
@@ -52,19 +52,19 @@ solution, use S or XS, not M.
   self-descriptive XS may skip the scope. Their path is S0 -> S4 -> S5.
   M and L require a recorded selected solution before S3: mark the attachment
   **[Selected Solution]** and fill Solution. Their path is S0 -> S1 -> S3 -> S4 -> S5.
-  Do not start Codex or move a ticket to S3 or S4 before these requirements are met.
+  Do not start the implementation agent or move a ticket to S3 or S4 before these requirements are met.
   Project workflows set Done on close and on merge.
-- Codex implements and fixes in a dedicated worktree and does not analyse code,
+- The implementation agent implements and fixes in a dedicated worktree and does not analyse code,
   reviews or CI. The orchestrator analyses, runs the gate, commits, pushes and
   opens the PR. Only the developer merges. Follow [Testing](../testing.md) for
-  roles, tests and the gate, and [Review](../review.md) for read-only Codex
+  roles, tests and the gate, and [Review](../review.md) for read-only
   review where the size requires review.
 - Ask the developer only on Question tickets: nothing is known yet; scope work
   items. Otherwise use the ticket and analysis options, state assumptions in the
   result and continue; for M/L the developer selects an option. Hard-to-reverse
   or outward-facing actions need confirmation unless already permitted.
-- Background Claude sub-agents unblock the orchestrator: move ticket Status,
-  project fields, links, Disposition; watch Codex or CI to completion and
+- Background sub-agents unblock the orchestrator: move ticket Status,
+  project fields, links, Disposition; watch the implementation agent or CI to completion and
   report. No code/review/CI analysis or decisions.
   Analysis agents are read-only and produce drafts as files: findings, solution
   scopes and Analysis text. The orchestrator publishes them to the ticket and

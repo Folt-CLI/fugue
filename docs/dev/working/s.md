@@ -11,7 +11,7 @@ Set the milestone, Priority, Size, Status and ownership from the [shared steps](
 
 ## Analysis and review
 
-S needs review but no analysis. Use a read-only Codex [review](../review.md).
+S needs review but no analysis. Use a read-only [review](../review.md).
 
 ## Solution
 
@@ -21,7 +21,7 @@ the Question's answer does not replace a missing Solution or scope.
 
 Use a `> [!IMPORTANT]` decision line, **Agreed in #N** (what the parent Question
 decided), **You get**, **Changes**, **Not changed** and **Watch out**, then
-**Codex scope** linking the complete `<N>-solution-1.md` scope attachment.
+**Implementation scope** linking the complete `<N>-solution-1.md` scope attachment.
 
 Attach with gh-attach and verify at creation by downloading and comparing.
 
@@ -32,14 +32,14 @@ applicable [type row](README.md#by-issue-type).
 ## Statuses
 
 The ticket is ready when its Solution and scope exist at creation.
-Do not start Codex or move the ticket to S3 or S4 before these requirements are met.
+Do not start the implementation agent or move the ticket to S3 or S4 before these requirements are met.
 
 Status path: `S0: To Do` -> `S4: In Implementation` -> `S5: Done`.
 Project workflows set Done on close and on merge.
 
 ## Who does what
 
-Codex implements and fixes in a dedicated worktree and does not analyse.
+The implementation agent implements and fixes in a dedicated worktree and does not analyse.
 The orchestrator runs the [gate](../testing.md#gate-before-push), commits, pushes and opens the PR; only the developer merges.
 Give every PR a milestone, an assignee and the project.
 

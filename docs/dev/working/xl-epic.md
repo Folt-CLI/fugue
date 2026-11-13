@@ -25,7 +25,7 @@ Project workflows set `S5: Done` on close.
 
 ## Who does what
 
-Follow [Testing roles](../testing.md#roles) for children: Codex implements and fixes in a dedicated worktree and does not analyse.
+Follow [Testing roles](../testing.md#roles) for children: the implementation agent implements and fixes in a dedicated worktree and does not analyse.
 The orchestrator analyses, runs the gate, commits, pushes and opens PRs; only the developer merges.
 Give every PR a milestone, an assignee and the project.
 

@@ -292,7 +292,8 @@ def test_scope_problems_block(harness: Harness, problem: str) -> None:
 
 
 # Scenario 3
-def test_gate_repair_resumes_session(harness: Harness) -> None:
+@pytest.mark.parametrize("session_id", ["session-1", None])
+def test_gate_repair_resumes_session(harness: Harness, session_id: str | None) -> None:
     harness.deps.config.policy.gate_commands = gate_requires_done()
 
     def broken(request: AgentRequest) -> None:
@@ -300,7 +301,7 @@ def test_gate_repair_resumes_session(harness: Harness) -> None:
 
     adapter = ScriptedAdapter(
         [
-            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=replace(result(), session_id=session_id), side_effect=broken),
             ScriptStep(result=result(), side_effect=write_allowed),
         ],
         name="codex",
@@ -309,7 +310,16 @@ def test_gate_repair_resumes_session(harness: Harness) -> None:
     outcome = harness.run()
     assert outcome.state == RunState.WAITING_FOR_CI
     assert len(adapter.requests) == 2
-    assert adapter.requests[1].session_id == "session-1"
+    assert adapter.requests[1].session_id == session_id
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket).resolve()
+    branch = branch_name(harness.github.ticket)
+    assert adapter.requests[1].prompt.startswith(
+        f"Your working directory is {path} on branch {branch}. Work only there. "
+        "If the scope below names a different worktree path or branch, treat that as a "
+        "placeholder and use this directory and branch.\n\n"
+    )
+    if session_id is None:
+        assert SCOPE in adapter.requests[1].prompt
     assert "Gate failed:" in adapter.requests[1].prompt
     assert harness.deps.store.usage_summary(outcome.run_id)["input_tokens"] == 20
 
@@ -847,7 +857,16 @@ def test_changes_come_from_the_implementer_message(harness: Harness) -> None:
 
 
 # Scenario: no, malformed or empty Changes section
-@pytest.mark.parametrize("final", ["Implemented", "## Changes\n\n", "## Changes\n- vague bullet"])
+@pytest.mark.parametrize(
+    "final",
+    [
+        "Implemented",
+        "## Changes\n\n",
+        "## Changes\n- vague bullet",
+        "## Changes\n- No files changed: nothing to report",
+        "## Changes\n- allowed.txt: NO FILES CHANGED",
+    ],
+)
 def test_changes_fall_back_to_changed_paths(harness: Harness, final: str) -> None:
     use_messages(harness, ScriptStep(result=result(final_text=final), side_effect=write_allowed))
     harness.run()
@@ -868,8 +887,41 @@ def test_gate_commands_never_appear_as_changes(harness: Harness) -> None:
     assert command in pr_text.split("## Verification")[1]
 
 
+@pytest.mark.parametrize(
+    "first_text",
+    ["## Changes\n- No files changed: nothing to report", "## Changes\n- allowed.txt: stale"],
+)
+@pytest.mark.parametrize("second_text", ["## Changes\n- allowed.txt: delivered", "Implemented"])
+def test_changes_only_use_the_latest_implement_attempt(
+    harness: Harness, first_text: str, second_text: str
+) -> None:
+    use_messages(
+        harness,
+        ScriptStep(result=result(final_text=first_text)),
+        ScriptStep(result=result(final_text=second_text), side_effect=write_allowed),
+    )
+    first = harness.run()
+    assert first.state == RunState.BLOCKED
+    assert first.problems == ("Implementer made no changes",)
+    second = harness.run()
+    assert second.run_id == first.run_id
+    assert second.state == RunState.WAITING_FOR_CI
+    expected = (
+        "- allowed.txt: delivered" if "## Changes" in second_text else "- allowed.txt: updated"
+    )
+    commit_body, pr_text = delivered_changes(harness)
+    assert changes_block(pr_text) == expected
+    assert f"**Changes**\n{expected}" in commit_body
+
+
 # Scenario: repaired run
-def test_repaired_run_uses_the_last_message_with_changes(harness: Harness) -> None:
+@pytest.mark.parametrize(
+    "repair_text",
+    ["Fixed it", "## Changes\n\n", "## Changes\n- allowed.txt: No FiLeS ChAnGeD"],
+)
+def test_repaired_run_uses_the_last_message_with_changes(
+    harness: Harness, repair_text: str
+) -> None:
     harness.deps.config.policy.gate_commands = gate_requires_done()
     use_messages(
         harness,
@@ -877,7 +929,7 @@ def test_repaired_run_uses_the_last_message_with_changes(harness: Harness) -> No
             result=result(final_text="## Changes\n- allowed.txt: first attempt"),
             side_effect=broken,
         ),
-        ScriptStep(result=result(final_text="Fixed it"), side_effect=write_allowed),
+        ScriptStep(result=result(final_text=repair_text), side_effect=write_allowed),
     )
     harness.run()
     commit_body, pr_text = delivered_changes(harness)
@@ -901,3 +953,19 @@ def test_repaired_run_prefers_a_later_changes_section(harness: Harness) -> None:
     harness.run()
     _, pr_text = delivered_changes(harness)
     assert changes_block(pr_text) == "- allowed.txt: repaired value"
+
+
+def test_delivery_prompt_uses_prepared_identity_over_scope(harness: Harness) -> None:
+    harness.github.scope = "Worktree: /placeholder/worktree. Branch: bug/placeholder.\n\n" + SCOPE
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    request = harness.adapter.requests[0]
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket).resolve()
+    branch = branch_name(harness.github.ticket)
+    assert request.cwd == path
+    assert request.prompt.startswith(
+        f"Your working directory is {path} on branch {branch}. Work only there. "
+        "If the scope below names a different worktree path or branch, treat that as a "
+        "placeholder and use this directory and branch.\n\n"
+    )
+    assert request.prompt.endswith(harness.github.scope)
