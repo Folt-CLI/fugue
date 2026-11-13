@@ -186,9 +186,15 @@ def test_names_and_explanation(tmp_path: Path) -> None:
 def test_renderers() -> None:
     item = ticket()
     scope = "Some exact scope\n- `a.py`"
-    assert implementation_prompt(scope).endswith(scope)
-    assert "No git commit, push or gh" in implementation_prompt(scope)
-    assert repair_prompt("failure").endswith("failure")
+    assert implementation_prompt(scope, workdir=Path("/real/worktree"), branch="bug/62").endswith(
+        scope
+    )
+    assert "No git commit, push or gh" in implementation_prompt(
+        scope, workdir=Path("/real/worktree"), branch="bug/62"
+    )
+    assert repair_prompt("failure", workdir=Path("/real/worktree"), branch="bug/62").endswith(
+        "failure"
+    )
     message = commit_message(item, "Why", ["a.py: add behaviour"])
     assert message.render() == (
         "Feature[#33]: Add the engine\n\n**Summary**\nWhy\n\n**Changes**\n- a.py: add behaviour"
@@ -274,7 +280,7 @@ def test_decide_applies_the_first_matching_rule(changes: dict[str, object], acti
 
 
 def test_implementation_prompt_asks_for_a_changes_section() -> None:
-    prompt = implementation_prompt("SCOPE")
+    prompt = implementation_prompt("SCOPE", workdir=Path("/real/worktree"), branch="bug/62")
     assert "SCOPE" in prompt
     assert "## Changes" in prompt
 
@@ -312,3 +318,20 @@ def test_parse_changes_returns_nothing_when_missing_or_malformed(text: str) -> N
 def test_fallback_changes_state_only_the_path() -> None:
     assert fallback_changes(["a.py", "b.py", "a.py"]) == ["a.py: updated", "b.py: updated"]
     assert fallback_changes([]) == []
+
+
+@pytest.mark.parametrize("repair", [False, True])
+@pytest.mark.parametrize("workdir", [Path("/real/worktree"), Path("/real/worktree with spaces")])
+def test_prompts_put_prepared_identity_before_scope(workdir: Path, repair: bool) -> None:
+    scope = "Your working directory is /placeholder on branch bug/placeholder."
+    branch = "bug/62-real-branch"
+    builder = repair_prompt if repair else implementation_prompt
+    prompt = builder(scope, workdir=workdir, branch=branch)
+    preamble = (
+        f"Your working directory is {workdir} on branch {branch}. Work only there. "
+        "If the scope below names a different worktree path or branch, treat that as a "
+        "placeholder and use this directory and branch."
+    )
+    assert prompt.startswith(preamble + "\n\n")
+    assert prompt.endswith(scope)
+    assert "No git commit, push or gh" in prompt

@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Sequence
+from pathlib import Path
 
 from fugue.engine.facts import explanation
 from fugue.gitops import CommitMessage
@@ -20,9 +21,18 @@ CHANGES_INSTRUCTION = (
 )
 
 
-def implementation_prompt(scope_text: str) -> str:
+def _worktree_preamble(workdir: Path, branch: str) -> str:
     return (
-        "Implement only the scope below. No git commit, push or gh.\n\n"
+        f"Your working directory is {workdir} on branch {branch}. Work only there. "
+        "If the scope below names a different worktree path or branch, treat that as a "
+        "placeholder and use this directory and branch.\n\n"
+    )
+
+
+def implementation_prompt(scope_text: str, *, workdir: Path, branch: str) -> str:
+    return (
+        _worktree_preamble(workdir, branch)
+        + "Implement only the scope below. No git commit, push or gh.\n\n"
         + CHANGES_INSTRUCTION
         + "\n\n"
         + scope_text
@@ -62,9 +72,10 @@ def fallback_changes(paths: Sequence[str]) -> list[str]:
     return [f"{path}: updated" for path in dict.fromkeys(paths)][:MAX_CHANGES]
 
 
-def repair_prompt(failure_text: str) -> str:
+def repair_prompt(failure_text: str, *, workdir: Path, branch: str) -> str:
     return (
-        "Repair the gate failure within the allowed scope. No git commit, push or gh.\n\n"
+        _worktree_preamble(workdir, branch)
+        + "Repair the gate failure within the allowed scope. No git commit, push or gh.\n\n"
         + failure_text
     )
 
