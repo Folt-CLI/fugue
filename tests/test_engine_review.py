@@ -929,3 +929,30 @@ def test_reviewer_failure_stops_without_posting(harness: Harness) -> None:
     assert outcome.state == RunState.FAILED
     assert outcome.problems == ("reviewer failed",)
     assert harness.github.posted == []
+
+
+# Scenario 6
+def test_diverged_remote_blocks_the_accepted_repair_push_until_fixed(harness: Harness) -> None:
+    harness.script(write(LINES), review(BLOCKING), write(FIXED), review("No findings."))
+    run_id = harness.start()
+    harness.review(run_id)
+    first_head = harness.head()
+    branch = branch_name(harness.github.ticket)
+    clone = harness.deps.repo_root
+
+    async def diverge() -> None:
+        base = await git_command(clone, "rev-parse", "refs/heads/develop")
+        sha = await git_command(clone, "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "Other")
+        await git_command(clone, "push", "--force", "origin", f"{sha}:refs/heads/{branch}")
+
+    asyncio.run(diverge())
+    outcome = harness.decide(run_id, {1: Decision(True)})
+    assert outcome.state == RunState.BLOCKED
+    assert outcome.problems == (
+        "The remote branch has diverged from the local branch; resolve it before pushing",
+    )
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) != harness.head()
+    asyncio.run(git_command(harness.origin, "update-ref", "refs/heads/" + branch, first_head))
+    resumed = harness.decide(run_id, {1: Decision(True)})
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) == harness.head()

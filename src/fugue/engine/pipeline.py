@@ -133,32 +133,31 @@ def _sha256(text: str) -> str:
 
 
 def _implemented_sha256(store: Store, run_id: int) -> str | None:
-    # Store has no public attempt reader; the latest finished implement attempt
-    # records the scope digest it implemented in its detail.
-    row = store._connection.execute(
-        "SELECT detail FROM stage_attempts WHERE run_id = ? AND stage = ? "
-        "AND status = 'completed' ORDER BY id DESC LIMIT 1",
-        (run_id, Stage.IMPLEMENT),
-    ).fetchone()
-    return None if row is None else row[0]
+    # The latest finished implement attempt records the scope digest it implemented.
+    completed = [
+        attempt
+        for attempt in store.stage_attempts(run_id, Stage.IMPLEMENT)
+        if attempt.status == "completed"
+    ]
+    return completed[-1].detail if completed else None
 
 
 def _repairs_used(store: Store, run_id: int) -> int:
-    row = store._connection.execute(
-        "SELECT COUNT(*) FROM stage_attempts WHERE run_id = ? AND stage = ? "
-        "AND status = 'completed'",
-        (run_id, Stage.REPAIR),
-    ).fetchone()
-    return int(row[0])
+    # A new implement attempt (a replaced scope) starts a fresh repair budget.
+    implements = store.stage_attempts(run_id, Stage.IMPLEMENT)
+    latest_implement = implements[-1].id if implements else 0
+    return sum(
+        1
+        for attempt in store.stage_attempts(run_id, Stage.REPAIR)
+        if attempt.status == "completed" and attempt.id > latest_implement
+    )
 
 
 def _session_id(store: Store, run_id: int, provider: str, authentication_mode: str) -> str | None:
-    row = store._connection.execute(
-        "SELECT session_id FROM agent_sessions WHERE run_id = ? AND role = ? "
-        "AND provider = ? AND authentication_mode = ? ORDER BY id DESC LIMIT 1",
-        (run_id, Role.IMPLEMENTER, provider, authentication_mode),
-    ).fetchone()
-    return None if row is None else row[0]
+    sessions = store.agent_sessions(
+        run_id, role=Role.IMPLEMENTER, provider=provider, authentication_mode=authentication_mode
+    )
+    return sessions[-1].session_id if sessions else None
 
 
 async def _common_dir(path: Path) -> Path:
@@ -330,13 +329,10 @@ class Engine:
 
     def _changes(self, run_id: int, paths: Sequence[str]) -> list[str]:
         """Use the last qualifying message from the latest implement attempt and its repairs."""
-        row = self.deps.store._connection.execute(
-            "SELECT MAX(id) FROM stage_attempts WHERE run_id = ? AND stage = ?",
-            (run_id, Stage.IMPLEMENT),
-        ).fetchone()
-        if row[0] is None:
+        implements = self.deps.store.stage_attempts(run_id, Stage.IMPLEMENT)
+        if not implements:
             return fallback_changes(paths)
-        latest_implement_id = int(row[0])
+        latest_implement_id = implements[-1].id
         gate = {" ".join(command) for command in self.deps.config.policy.gate_commands}
         messages: list[tuple[int, str]] = []
         for artifact in self.deps.store.list_artifacts(run_id):
@@ -824,9 +820,40 @@ class Engine:
 
     async def _push(self, run_id: int, identity: Identity) -> None:
         git = Git(identity.path)
+        await self._require_remote_not_ahead(git, identity)
         await self._operation(
             run_id, "push", {"branch": identity.branch}, lambda: git.push(identity.branch)
         )
+
+    async def _require_remote_not_ahead(self, git: Git, identity: Identity) -> None:
+        remote = await git._run("ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}")
+        if not remote.strip():
+            return
+        remote_sha = remote.split()[0]
+        head = await git.head_sha()
+        if remote_sha == head:
+            return
+        async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
+            await git.fetch()
+        if await self._is_ancestor(git, remote_sha, head):
+            return
+        if await self._is_ancestor(git, head, remote_sha):
+            message = "The remote branch is ahead of the local branch; resolve it before pushing"
+        else:
+            message = (
+                "The remote branch has diverged from the local branch; resolve it before pushing"
+            )
+        raise _Stop(RunState.BLOCKED, [message])
+
+    @staticmethod
+    async def _is_ancestor(git: Git, ancestor: str, descendant: str) -> bool:
+        try:
+            await git._run("merge-base", "--is-ancestor", ancestor, descendant)
+        except GitError as error:
+            if error.returncode == 1:
+                return False
+            raise
+        return True
 
     async def _open_pr(self, run_id: int, ticket: Ticket, scope: str, identity: Identity) -> None:
         if await self.deps.github.find_pr(identity.branch) is not None:

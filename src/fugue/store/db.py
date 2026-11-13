@@ -192,6 +192,39 @@ class Store:
             "stage_attempts", id, dict(status=status, detail=detail, finished_at=self._now())
         )
 
+    def stage_attempts(self, run_id: int, stage: str | None = None) -> list[StageAttempt]:
+        query = "SELECT * FROM stage_attempts WHERE run_id = ?"
+        parameters: list[object] = [run_id]
+        if stage is not None:
+            query += " AND stage = ?"
+            parameters.append(stage)
+        return [
+            _record(StageAttempt, row)
+            for row in self._connection.execute(query + " ORDER BY id", tuple(parameters))
+        ]
+
+    def agent_sessions(
+        self,
+        run_id: int,
+        role: str | None = None,
+        provider: str | None = None,
+        authentication_mode: str | None = None,
+    ) -> list[AgentSession]:
+        query = "SELECT * FROM agent_sessions WHERE run_id = ?"
+        parameters: list[object] = [run_id]
+        for column, value in (
+            ("role", role),
+            ("provider", provider),
+            ("authentication_mode", authentication_mode),
+        ):
+            if value is not None:
+                query += f" AND {column} = ?"
+                parameters.append(value)
+        return [
+            _record(AgentSession, row)
+            for row in self._connection.execute(query + " ORDER BY id", tuple(parameters))
+        ]
+
     def begin_operation(
         self, run_id: int, kind: str, key: str, intent: Mapping[str, Any]
     ) -> Operation:
