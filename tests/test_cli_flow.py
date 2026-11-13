@@ -43,6 +43,9 @@ class FakeEngine:
     async def run_to_green(self, ticket: int) -> RunOutcome:
         return await self.call("green", ticket)
 
+    async def run_to_pr(self, ticket: int) -> RunOutcome:
+        return await self.call("pr", ticket)
+
     async def run_review(self, run_id: int) -> RunOutcome:
         return await self.call("review", run_id)
 
@@ -369,6 +372,44 @@ def test_resume_ignores_old_merge_records_after_clean_review(
         wrapper = cli._StoreClosingEngine(cast(Engine, fake))
         asyncio.run(wrapper.resume(run.id))
         assert fake.calls == [("request-approval" if current_request else "review", run.id)]
+
+
+@pytest.mark.parametrize("progress", ["prepare", "close"])
+def test_resume_missing_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, progress: str
+) -> None:
+    identity = Identity("issue-41", tmp_path / "missing-worktree")
+    fake = FakeEngine()
+    monkeypatch.setattr(fake, "_saved_identity", lambda run_id: identity)
+    monkeypatch.setattr(cli, "_ResumeEngine", lambda deps, run_id: fake)
+
+    async def head_sha(self: object) -> str:
+        raise FileNotFoundError(identity.path)
+
+    monkeypatch.setattr(Git, "head_sha", head_sha)
+    with Store(tmp_path / "store.db") as store:
+        run = store.create_run(41, "owner/repo")
+        operation = store.begin_operation(run.id, "identity", "worktree", {})
+        store.complete_operation(
+            operation.id, {"branch": identity.branch, "path": str(identity.path)}
+        )
+        store.begin_attempt(run.id, progress)
+        if progress == "close":
+            merge = store.begin_operation(run.id, "merge", "abc123", {"head": "abc123"})
+            store.complete_operation(merge.id, {"merge_sha": "merged123"})
+            store.record_approval(run.id, "merge", "12", "abc123", "approved", "user", "ready")
+            removal = store.begin_operation(run.id, "closure", "worktree", {"step": "worktree"})
+            store.complete_operation(removal.id, {})
+            deletion = store.begin_operation(
+                run.id, "closure", "remote_branch", {"step": "remote_branch"}
+            )
+            store.fail_operation(deletion.id, "Remote branch deletion failed")
+        store.set_run_state(run.id, RunState.BLOCKED)
+        fake.deps = SimpleNamespace(store=store)
+        wrapper = cli._StoreClosingEngine(cast(Engine, fake))
+        asyncio.run(wrapper.resume(run.id))
+        expected = [("merge", run.id)] if progress == "close" else [("pr", 41)]
+        assert fake.calls == expected
 
 
 def test_resume_keeps_requested_run_when_ticket_has_newer_run(tmp_path: Path) -> None:

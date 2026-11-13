@@ -108,6 +108,13 @@ class _StoreClosingEngine:
         if run.state == RunState.COMPLETED:
             return RunOutcome(run_id, RunState.COMPLETED)
         detail = wiring.load_run_detail(store, run_id)
+        identity = self._engine._saved_identity(run_id)
+        if identity is None or not identity.path.exists():
+            # Closure can continue after removing the worktree; other stages
+            # need preparation to observe and restore it before using Git there.
+            if any(o.kind in {"merge", "closure"} for o in detail.operations):
+                return await self.merge_and_close(run_id)
+            return await _ResumeEngine(self._engine.deps, run_id).run_to_pr(run.ticket_number)
         # Reuse the durable decision intent after an interrupted repair or thread reply.
         pending = store._connection.execute(
             "SELECT intent_json FROM operations WHERE run_id = ? AND kind = 'decision' "
@@ -118,8 +125,7 @@ class _StoreClosingEngine:
             saved = json.loads(pending[0])["decisions"]
             decisions = {int(index): Decision(**value) for index, value in saved.items()}
             return await self.decide(run_id, decisions)
-        identity = self._engine._saved_identity(run_id)
-        head = await Git(identity.path).head_sha() if identity is not None else None
+        head = await Git(identity.path).head_sha()
         latest_review = store._connection.execute(
             "SELECT status, intent_json FROM operations WHERE run_id = ? AND kind = 'review' "
             "AND json_extract(intent_json, '$.head') = ? ORDER BY id DESC LIMIT 1",
