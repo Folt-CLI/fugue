@@ -418,3 +418,28 @@ def merge(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = 
 def resume(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Continue a run from its last unfinished stage."""
     _execute(lambda engine: asyncio.run(engine.resume(run_id)), config, repo_root)
+
+
+@app.command()
+def question(
+    ticket: int,
+    select: Annotated[
+        int | None, typer.Option("--select", help="Select an option directly.")
+    ] = None,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Browse a Question and explicitly select its implementation scope."""
+    from fugue.cli.question import build_question
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        walkthrough = build_question(loaded, root_path)
+        asyncio.run(walkthrough.run(ticket, select))
+    except (KeyboardInterrupt, asyncio.CancelledError) as error:
+        raise _fail("Question walkthrough interrupted", 6) from error
+    except ValueError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
