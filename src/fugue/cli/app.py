@@ -12,11 +12,14 @@ import typer
 from rich.console import Console
 
 from fugue import __version__
+from fugue.analysis.stage import AnalysisGitHubClient, analyse
 from fugue.cli import render, wiring
 from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.review import Decision
+from fugue.github import GitHubClient
 from fugue.gitops import Git
+from fugue.models import Size, Status
 from fugue.store import Run, StoreError
 from fugue.store.records import Approval
 from fugue.workflow import RunState
@@ -81,10 +84,20 @@ class _StoreClosingEngine:
         self._engine = engine
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
-        return await self._engine.run_to_pr(ticket_number)
+        outcome = await self._analyse_if_needed(ticket_number)
+        return outcome if outcome is not None else await self._engine.run_to_pr(ticket_number)
 
     async def run_to_green(self, ticket_number: int) -> RunOutcome:
-        return await self._engine.run_to_green(ticket_number)
+        outcome = await self._analyse_if_needed(ticket_number)
+        return outcome if outcome is not None else await self._engine.run_to_green(ticket_number)
+
+    async def _analyse_if_needed(
+        self, ticket_number: int, run_id: int | None = None
+    ) -> RunOutcome | None:
+        ticket = await self._engine.deps.github.get_ticket(ticket_number)
+        if ticket.size in {Size.M, Size.L} and ticket.status in {Status.TO_DO, Status.IN_ANALYSIS}:
+            return await analyse(self._engine.deps, ticket, run_id=run_id)
+        return None
 
     async def run_review(self, run_id: int) -> RunOutcome:
         return await self._engine.run_review(run_id)
@@ -107,6 +120,16 @@ class _StoreClosingEngine:
         run = store.get_run(run_id)
         if run.state == RunState.COMPLETED:
             return RunOutcome(run_id, RunState.COMPLETED)
+        if (
+            store._connection.execute(
+                "SELECT 1 FROM stage_attempts WHERE run_id = ? AND stage = 'analyse' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            is not None
+        ):
+            outcome = await self._analyse_if_needed(run.ticket_number, run_id)
+            if outcome is not None:
+                return outcome
         detail = wiring.load_run_detail(store, run_id)
         identity = self._engine._saved_identity(run_id)
         if identity is None or not identity.path.exists():
@@ -169,6 +192,20 @@ def _real_engine_factory(
     engine = wiring.build_engine(
         config, repo_root, env=os.environ, home=Path.home(), progress=progress
     )
+    github = engine.deps.github
+    if isinstance(github, GitHubClient):
+        engine.deps.github = AnalysisGitHubClient(
+            github.repo,
+            github.project_owner,
+            github.project_number,
+            runner=github.runner,
+            strip_tokens=github.strip_tokens,
+            field_ids=github.field_ids,
+            gh_executable=github.gh_executable,
+            max_output_bytes=github.max_output_bytes,
+            project_field_limit=github.project_field_limit,
+            resolve_token_env=github.resolve_token_env,
+        )
     return _StoreClosingEngine(engine)
 
 
