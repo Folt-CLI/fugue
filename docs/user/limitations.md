@@ -27,6 +27,15 @@ GitHub Projects or repository process metadata. See
 - In single-account GitHub use, reviews use COMMENT because the author cannot
   approve their own pull request. A clean required review and Fugue approval
   still have distinct purposes.
+- Stacks (stacked pull requests) are deferred from 0.1.0. Work in
+  [issue #49](https://github.com/Folt-CLI/fugue/issues/49) moved to the
+  [0.2.0 Epic #76](https://github.com/Folt-CLI/fugue/issues/76).
+- A reviewer identity setup command is deferred to
+  [issue #77](https://github.com/Folt-CLI/fugue/issues/77).
+- Branch protection enforcing approvals is deferred to
+  [issue #78](https://github.com/Folt-CLI/fugue/issues/78).
+- Follow-up hardening work remains deferred and is collected in
+  [issue #53](https://github.com/Folt-CLI/fugue/issues/53).
 - The run store and artifacts are local. Keep their directory to inspect or
   resume a run. Output is bounded by `max_output_bytes`; usage and cost data
   are limited to what providers report, and cost estimates are not a bill.
