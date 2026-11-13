@@ -10,7 +10,8 @@ from fugue.engine import RunOutcome
 from fugue.engine.review import Finding
 from fugue.models import AuthenticationMode
 from fugue.store import Run
-from fugue.store.records import Approval, StageDuration, UsageTotals
+from fugue.store.db import RepoStageDuration, RepoUsageTotals
+from fugue.store.records import Approval
 from fugue.workflow import RunState
 
 
@@ -131,13 +132,14 @@ def render_runs(runs: Sequence[Run]) -> str:
     rows = [
         [
             str(run.id),
+            run.repo,
             f"#{run.ticket_number}",
             run.state,
             run.updated_at.isoformat(timespec="seconds"),
         ]
         for run in runs
     ]
-    return "\n".join(_table(["id", "ticket", "state", "updated"], rows))
+    return "\n".join(_table(["id", "repo", "ticket", "state", "updated"], rows))
 
 
 def _section(title: str, header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
@@ -180,12 +182,14 @@ def render_run_detail(detail: RunDetail) -> str:
     return "\n".join(lines)
 
 
-def render_usage(totals: Sequence[UsageTotals], group_by: str) -> str:
+def render_usage(totals: Sequence[RepoUsageTotals], group_by: str) -> str:
     """Render usage records per group; n/a marks values no provider reported."""
     if not totals:
         return "No usage records."
+    with_repo = any(total.repo is not None for total in totals)
     rows = [
         [
+            *([total.repo or ""] if with_repo else []),
             total.key,
             str(total.records),
             _usage_value(total.input_tokens),
@@ -198,6 +202,7 @@ def render_usage(totals: Sequence[UsageTotals], group_by: str) -> str:
         for total in totals
     ]
     header = [
+        *(["repo"] if with_repo else []),
         group_by,
         "records",
         "input",
@@ -211,13 +216,14 @@ def render_usage(totals: Sequence[UsageTotals], group_by: str) -> str:
     return "\n".join([*_table(header, rows), "", note])
 
 
-def render_timing(durations: Sequence[StageDuration]) -> str:
+def render_timing(durations: Sequence[RepoStageDuration]) -> str:
     """Render stage attempt durations; unfinished attempts show n/a."""
     if not durations:
         return "No stage attempts."
     rows = [
         [
             str(d.run_id),
+            d.repo,
             d.stage,
             str(d.attempt),
             d.status,
@@ -225,7 +231,7 @@ def render_timing(durations: Sequence[StageDuration]) -> str:
         ]
         for d in durations
     ]
-    return "\n".join(_table(["run", "stage", "attempt", "status", "seconds"], rows))
+    return "\n".join(_table(["run", "repo", "stage", "attempt", "status", "seconds"], rows))
 
 
 def _toml_scalar(value: object) -> str:
