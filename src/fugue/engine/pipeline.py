@@ -15,7 +15,13 @@ from typing import Any, Protocol
 from fugue.agents import AccessMode, AdapterRegistry, AgentRequest
 from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
 from fugue.config import FugueConfig
-from fugue.engine.ci import FailureKind, ci_repair_prompt, classify_failure, summarize_checks
+from fugue.engine.ci import (
+    FailureKind,
+    actions_run_key,
+    ci_repair_prompt,
+    classify_failure,
+    summarize_checks,
+)
 from fugue.engine.decision import (
     Block,
     Commit,
@@ -626,7 +632,7 @@ class Engine:
         for check in failed:
             names.setdefault(check.link, []).append(check.name)
         substantive: list[tuple[str, str]] = []
-        reruns: list[Operation] = []
+        reruns: dict[str, tuple[Operation, str]] = {}
         for link, link_names in names.items():
             label = ", ".join(link_names)
             try:
@@ -636,17 +642,23 @@ class Engine:
                     RunState.BLOCKED, [f"Cannot read the failure log for {label}: {error}"]
                 ) from error
             kind = classify_failure(excerpt, self.deps.config.limits.infrastructure_markers)
-            # The operation key is the run link, so a link is rerun at most once.
-            operation = store.begin_operation(run_id, "ci_rerun", link, {"checks": link_names})
+            # A rerun acts on the whole run, so it is keyed by run id and happens at most once.
+            key = actions_run_key(link)
+            operation = store.begin_operation(run_id, "ci_rerun", key, {"checks": link_names})
             if kind == FailureKind.INFRASTRUCTURE and operation.status != "done":
-                reruns.append(operation)
+                reruns.setdefault(key, (operation, link))
             else:
                 substantive.append((label, excerpt))
         if substantive:
             await self._repair_ci(run_id, ticket, scope, identity, substantive)
             return True
-        for operation in reruns:
-            await port.rerun_failed(operation.key)
+        for operation, link in reruns.values():
+            try:
+                await port.rerun_failed(link)
+            except (ValueError, GitHubError) as error:
+                raise _Stop(
+                    RunState.BLOCKED, [f"Cannot rerun the failed jobs of {link}: {error}"]
+                ) from error
             store.complete_operation(operation.id, {"done": True})
         return False
 

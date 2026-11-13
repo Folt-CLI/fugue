@@ -1,5 +1,6 @@
 """Pure helpers that summarize checks and classify check failures."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -8,6 +9,15 @@ from fugue.github import CheckResult
 
 GREEN_BUCKETS = frozenset({"pass", "skipping"})
 FAILED_BUCKETS = frozenset({"fail", "cancel"})
+
+
+_RUN_SEGMENT = re.compile(r"/actions/runs/(\d+)")
+
+
+def actions_run_key(link: str) -> str:
+    """The Actions run id in a check link, or the link itself when it names no run."""
+    match = _RUN_SEGMENT.search(link)
+    return link if match is None else match.group(1)
 
 
 class FailureKind(StrEnum):

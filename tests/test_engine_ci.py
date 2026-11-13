@@ -29,7 +29,7 @@ from fugue.engine.ci import (
     summarize_checks,
 )
 from fugue.engine.facts import branch_name, worktree_path
-from fugue.github import CheckResult, PullRequest
+from fugue.github import CheckResult, GitHubError, PullRequest
 from fugue.gitops import Git
 from fugue.models import (
     AuthenticationMode,
@@ -47,6 +47,8 @@ from fugue.workflow import RunState
 SCOPE = "You may touch only these files:\n- `allowed.txt`\n\nImplement the change."
 LINK = "https://github.com/owner/repo/actions/runs/123/job/1"
 OTHER_LINK = "https://github.com/owner/repo/actions/runs/456/job/2"
+SAME_RUN_LINK = "https://github.com/owner/repo/actions/runs/123/job/9"
+RUN_ID = "123"
 
 
 def check(bucket: str, link: str = LINK, name: str = "test") -> CheckResult:
@@ -63,6 +65,7 @@ class FakeCiGitHub:
         self.logs: dict[str, str] = {}
         self.log_error: Exception | None = None
         self.reruns: list[str] = []
+        self.rerun_error: Exception | None = None
 
     async def get_ticket(self, number: int) -> Ticket:
         return self.ticket
@@ -104,6 +107,8 @@ class FakeCiGitHub:
         return self.logs.get(run_link, "")
 
     async def rerun_failed(self, run_link: str) -> None:
+        if self.rerun_error is not None:
+            raise self.rerun_error
         self.reruns.append(run_link)
 
 
@@ -180,8 +185,8 @@ class Harness:
     def use(self, adapter: ScriptedAdapter) -> None:
         self.deps.registry.register("codex", lambda config: adapter)
 
-    def operation_status(self, run_id: int, link: str = LINK) -> str:
-        return self.deps.store.begin_operation(run_id, "ci_rerun", link, {}).status
+    def operation_status(self, run_id: int, key: str = RUN_ID) -> str:
+        return self.deps.store.begin_operation(run_id, "ci_rerun", key, {}).status
 
 
 @pytest.fixture
@@ -432,6 +437,43 @@ def test_distinct_run_links_are_rerun_separately(harness: Harness) -> None:
     outcome = harness.run()
     assert outcome.ci_green
     assert harness.github.reruns == [LINK, OTHER_LINK]
+
+
+def test_failed_jobs_of_one_run_are_rerun_once(harness: Harness) -> None:
+    harness.github.script = [
+        [check("fail", LINK, "unit"), check("fail", SAME_RUN_LINK, "lint")],
+        [check("pass")],
+    ]
+    harness.github.logs[LINK] = "503 Service Unavailable"
+    harness.github.logs[SAME_RUN_LINK] = "no space left on device"
+    outcome = harness.run()
+    assert outcome.ci_green
+    assert len(harness.github.reruns) == 1
+    assert harness.operation_status(outcome.run_id) == "done"
+
+
+def test_rerun_run_failing_again_with_new_job_is_repaired(harness: Harness) -> None:
+    adapter = implement_then_repair()
+    harness.use(adapter)
+    harness.github.script = [[check("fail")], [check("fail", SAME_RUN_LINK)], [check("pass")]]
+    harness.github.logs[LINK] = "Runner lost"
+    harness.github.logs[SAME_RUN_LINK] = "Runner lost"
+    outcome = harness.run()
+    assert outcome.ci_green
+    assert harness.github.reruns == [LINK]
+    assert len(adapter.requests) == 2
+    assert "Runner lost" in adapter.requests[1].prompt
+
+
+def test_rerun_failure_blocks_without_raising(harness: Harness) -> None:
+    harness.github.script = [[check("fail")]]
+    harness.github.logs[LINK] = "Runner lost"
+    harness.github.rerun_error = GitHubError(["run", "rerun"], "run already in progress")
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    assert "run already in progress" in outcome.problems[0]
+    assert harness.github.reruns == []
+    assert harness.deps.store.list_runs(38)[0].state == RunState.BLOCKED
 
 
 def test_port_without_ci_methods_is_rejected(harness: Harness) -> None:
