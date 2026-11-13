@@ -61,13 +61,13 @@ class QuestionWalkthrough:
         by: str | None = None,
     ) -> None:
         ticket = await self.client.get_ticket(number)
-        if ticket.issue_type != IssueType.QUESTION:
-            raise ValueError(f"Ticket #{number} is not a Question")
         body = await self.client.get_body(number)
         analysis = parse_analysis(body)
+        is_question = ticket.issue_type == IssueType.QUESTION
+        label = "Question" if is_question else "Ticket"
         if not analysis.options:
-            raise ValueError(f"Question #{number} has no Analysis options")
-        self.print(Markdown(f"# Question #{number}: {ticket.title}\n\n{analysis.overview}"))
+            raise ValueError(f"{label} #{number} has no Analysis options")
+        self.print(Markdown(f"# {label} #{number}: {ticket.title}\n\n{analysis.overview}"))
         for option in analysis.options:
             self.print(f"{option.number}: {option.name}")
         self.print(Markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}"))

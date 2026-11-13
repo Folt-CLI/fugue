@@ -42,6 +42,10 @@ uv run fugue question 47
 uv run fugue question 47 --select 1 --reason 'This scope meets the requirements' --by developer
 ```
 
+The same command selects the solution for an analysed M or L ticket of any
+issue type that has Analysis options, for example a Feature in
+`waiting_for_selection`.
+
 These are alternative ways to select. Check the proposed scope before recording
 a choice. Human selection is the default; `resume` does not supply that decision.
 
