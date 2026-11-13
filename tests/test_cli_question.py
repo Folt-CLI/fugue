@@ -18,6 +18,8 @@ from fugue.engine.facts import scope_url
 from fugue.github.parse import parse_body_sections
 from fugue.models import IssueType, Priority, Role, Size, Status, Ticket
 
+runner = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"})
+
 
 class FakeClient:
     def __init__(self, body: str = BODY) -> None:
@@ -71,7 +73,7 @@ def walkthrough(
         Path("/tmp"),
         adapter=adapter,
         prompt=prompt,
-        print_fn=Console(file=output, width=120).print,
+        print_fn=Console(file=output, width=200, no_color=True, force_terminal=False).print,
     ), output
 
 
@@ -167,7 +169,7 @@ def test_cli_registration_and_selection(
     arguments = ["question", "2", "--repo-root", str(tmp_path)]
     if direct:
         arguments.extend(["--select", "2"])
-    result = CliRunner().invoke(cli_app.app, arguments)
+    result = runner.invoke(cli_app.app, arguments)
     assert result.exit_code == 0, result.output
     expected = 2 if direct else 1
     assert f"[Selected Solution] [2-solution-{expected}.md]" in client.body
@@ -178,7 +180,7 @@ def test_cli_refuses_non_question(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     client.ticket.issue_type = IssueType.TASK
     session, _ = walkthrough(client, [])
     monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
-    result = CliRunner().invoke(cli_app.app, ["question", "2", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["question", "2", "--repo-root", str(tmp_path)])
     assert result.exit_code == 2
     assert "not a Question" in result.output
     assert client.calls == []
@@ -237,18 +239,18 @@ def test_cli_fills_pending_solution_and_replaces_selection(
     session, _ = walkthrough(client, [])
     monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
     arguments = ["question", "2", "--repo-root", str(tmp_path), "--select", "1"]
-    result = CliRunner().invoke(cli_app.app, arguments)
+    result = runner.invoke(cli_app.app, arguments)
     assert result.exit_code == 0, result.output
     first = client.body
     assert "**Why this one:** smaller scope." in first
-    result = CliRunner().invoke(cli_app.app, arguments)
+    result = runner.invoke(cli_app.app, arguments)
     assert result.exit_code == 0, result.output
     assert client.body == first
     arguments[-1] = "2"
     arguments.extend(["--by", "developer"])
     if reason is not None:
         arguments.extend(["--reason", reason])
-    result = CliRunner().invoke(cli_app.app, arguments)
+    result = runner.invoke(cli_app.app, arguments)
     assert result.exit_code == 0, result.output
     assert client.body.count("[Selected Solution] [") == 1
     assert (
@@ -284,7 +286,7 @@ def test_cli_selection_keeps_engine_scope_in_sync(
     session, _ = walkthrough(client, [])
     monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
     for selection in (2, 1, 1, 2):
-        result = CliRunner().invoke(
+        result = runner.invoke(
             cli_app.app,
             ["question", "2", "--repo-root", str(tmp_path), "--select", str(selection)],
         )
