@@ -24,6 +24,7 @@ from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
 from fugue.engine.review import (
     CLEAN,
+    MAX_PROMPT_DIFF,
     Decision,
     DiffLines,
     Finding,
@@ -379,16 +380,31 @@ def test_review_prompt_carries_contract_scope_ci_and_rounds_log() -> None:
         RoundEntry(2, finding(index=1, path=None), "deferred", "Deferred to #9"),
     ]
     prompt = review_prompt(
-        scope="SCOPE TEXT", ci_result="CI is green.", rounds=rounds, base_ref="refs/heads/develop"
+        scope="SCOPE TEXT", ci_result="CI is green.", rounds=rounds, diff="+added line\n"
     )
     assert "At most three per round" in prompt and "At most\n  five" in prompt
     assert "`No findings.`" in prompt
     assert "SCOPE TEXT" in prompt and "CI is green." in prompt
     assert "Round 1, finding 1 (rejected)" in prompt and "Reason: Handled by the caller" in prompt
     assert "(accepted)" in prompt and "(deferred)" in prompt
-    assert "refs/heads/develop" in prompt
-    empty = review_prompt(scope="s", ci_result="c", rounds=[], base_ref="b")
-    assert "No earlier rounds." in empty
+    assert "```diff\n+added line\n```" in prompt
+    assert "git diff" not in prompt
+    empty = review_prompt(scope="s", ci_result="c", rounds=[], diff="")
+    assert "No earlier rounds." in empty and "The diff is empty." in empty
+
+
+def test_review_prompt_truncates_an_oversized_diff_with_a_note() -> None:
+    big = "+" + "x" * MAX_PROMPT_DIFF + "TAIL\n"
+    prompt = review_prompt(scope="s", ci_result="c", rounds=[], diff=big)
+    assert "TAIL" not in prompt
+    assert f"truncated to its first {MAX_PROMPT_DIFF} characters" in prompt
+    exact = review_prompt(scope="s", ci_result="c", rounds=[], diff="y" * MAX_PROMPT_DIFF)
+    assert "truncated" not in exact
+
+
+def test_review_prompt_fence_outgrows_backticks_in_the_diff() -> None:
+    prompt = review_prompt(scope="s", ci_result="c", rounds=[], diff="+```py\n+x\n+```\n")
+    assert "````diff\n" in prompt
 
 
 # ---------------------------------------------------------------- engine
