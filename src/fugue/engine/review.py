@@ -106,6 +106,7 @@ class _Raw:
     blocking: bool
     parts: list[str]
     suggestion: list[str] | None = None
+    unparseable: bool = False
 
 
 def _severity(text: str, blocking: bool) -> tuple[Severity, str]:
@@ -126,6 +127,8 @@ def _raw_items(text: str) -> tuple[list[_Raw], bool]:
     for line in text.splitlines():
         stripped = line.strip()
         if fence is not None:
+            if current is not None and current.unparseable:
+                current.parts.append(line)
             if stripped.startswith("```"):
                 fence = None
             elif fence == "suggestion" and current is not None:
@@ -133,6 +136,11 @@ def _raw_items(text: str) -> tuple[list[_Raw], bool]:
                 current.suggestion.append(line)
             continue
         if stripped.startswith("```"):
+            if current is None:
+                current = _Raw(blocking, [line], unparseable=True)
+                raws.append(current)
+            elif current.unparseable:
+                current.parts.append(line)
             fence = "suggestion" if stripped[3:].strip().casefold() == "suggestion" else "other"
             if fence == "suggestion" and current is not None:
                 current.suggestion = []
@@ -149,6 +157,9 @@ def _raw_items(text: str) -> tuple[list[_Raw], bool]:
             raws.append(current)
         elif current is not None and stripped:
             current.parts.append(stripped)
+        elif stripped:
+            current = _Raw(blocking, [stripped], unparseable=True)
+            raws.append(current)
     return raws, saw_section
 
 
@@ -167,6 +178,15 @@ def parse_findings(text: str) -> list[Finding] | Clean:
     non_blocking: list[Finding] = []
     for raw in raws:
         joined = " ".join(raw.parts).strip()
+        target = blocking if raw.blocking else non_blocking
+        limit = MAX_BLOCKING if raw.blocking else MAX_NON_BLOCKING
+        if raw.unparseable:
+            [fallback] = _unparseable(joined)
+            if len(target) < limit:
+                target.append(
+                    Finding(0, "Medium", fallback.summary, None, None, None, None, raw.blocking)
+                )
+            continue
         if joined.casefold().strip(" .") in _NOTHING:
             continue
         severity, rest = _severity(joined, raw.blocking)
@@ -181,8 +201,6 @@ def parse_findings(text: str) -> list[Finding] | Clean:
             rest = rest[: match.start()] + " " + rest[match.end() :]
         summary = " ".join(rest.split()).strip(" -\u2013\u2014:;,()[]`") or joined
         suggestion = "\n".join(raw.suggestion) if raw.suggestion is not None else None
-        target = blocking if raw.blocking else non_blocking
-        limit = MAX_BLOCKING if raw.blocking else MAX_NON_BLOCKING
         if len(target) < limit:
             target.append(Finding(0, severity, summary, path, start, end, suggestion, raw.blocking))
     ordered = [*blocking, *non_blocking]

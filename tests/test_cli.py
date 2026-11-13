@@ -12,6 +12,7 @@ from fugue.cli import app as cli_app
 from fugue.cli import render, wiring
 from fugue.config import FugueConfig, RoleConfig
 from fugue.engine import RunOutcome
+from fugue.github import GitHubClient
 from fugue.models import AuthenticationMode, Role
 from fugue.store import Store
 from fugue.workflow import RunState
@@ -296,6 +297,26 @@ def test_discover_config_prefers_option(tmp_path: Path) -> None:
 def test_build_engine_requires_project(tmp_path: Path) -> None:
     with pytest.raises(wiring.WiringError):
         wiring.build_engine(FugueConfig(), tmp_path, env={}, home=tmp_path)
+
+
+def test_build_engine_passes_resolve_token_env(tmp_path: Path) -> None:
+    config = FugueConfig.model_validate(
+        {
+            "github": {
+                "repo": "owner/repo",
+                "project_owner": "owner",
+                "project_number": 2,
+                "resolve_token_env": "RESOLVE_TOKEN",
+            }
+        }
+    )
+    engine = wiring.build_engine(config, tmp_path, env={}, home=tmp_path)
+    try:
+        client = engine.deps.github
+        assert isinstance(client, GitHubClient)
+        assert client.resolve_token_env == "RESOLVE_TOKEN"
+    finally:
+        engine.deps.store.close()
 
 
 def test_render_roles_without_api_key_has_no_warning() -> None:

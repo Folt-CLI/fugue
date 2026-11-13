@@ -78,7 +78,26 @@ def parsed(text: str) -> list[Finding]:
 
 def test_exact_no_findings_is_clean() -> None:
     assert parse_findings("  No findings.\n") is CLEAN
-    assert parse_findings("## Blocking\nNone\n\n## Non-blocking\n- None.\n") is CLEAN
+    assert parse_findings("## Blocking\n- None\n\n## Non-blocking\n- None.\n") is CLEAN
+
+
+@pytest.mark.parametrize("heading", ["Blocking", "Non-blocking"])
+def test_unbulleted_section_text_is_one_medium_finding(heading: str) -> None:
+    text = "High: Empty input crashes. src/a.py:10"
+    [finding] = parsed(f"## {heading}\n{text}")
+    assert finding.severity == "Medium"
+    assert finding.blocking == (heading == "Blocking")
+    assert text in finding.summary
+    assert finding.path is None
+
+
+@pytest.mark.parametrize("heading", ["Blocking", "Non-blocking"])
+def test_empty_heading_is_clean_only_without_other_text(heading: str) -> None:
+    assert parse_findings(f"## {heading}\n\n") is CLEAN
+    assert parse_findings("## Blocking\n\n## Non-blocking\n") is CLEAN
+    for text in ["Unexpected output", "None", "No findings.", "```text\nCrash\n```"]:
+        assert parsed(f"{text}\n\n## {heading}\n")
+        assert parsed(f"## {heading}\n{text}")
 
 
 @pytest.mark.parametrize("text", ["No findings. Looks good.", "all fine", "", "   "])
