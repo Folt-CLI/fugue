@@ -18,9 +18,18 @@ from fugue.store.records import (
     Operation,
     Run,
     StageAttempt,
+    StageDuration,
     StoreError,
     UsageRecord,
+    UsageTotals,
 )
+
+_USAGE_GROUPS = {
+    "role": "u.role",
+    "provider": "u.provider",
+    "run": "u.run_id",
+    "ticket": "r.ticket_number",
+}
 
 _USAGE_FIELDS = (
     "input_tokens",
@@ -305,6 +314,65 @@ class Store:
             f"SELECT {columns} FROM usage_records WHERE run_id = ?", (run_id,)
         ).fetchone()
         return {field: row[field] for field in _USAGE_FIELDS}
+
+    def usage_by(
+        self,
+        group_by: Literal["role", "provider", "run", "ticket"],
+        ticket_number: int | None = None,
+    ) -> list[UsageTotals]:
+        """Sum usage records per group; a sum stays NULL when nothing was reported."""
+        expression = _USAGE_GROUPS.get(group_by)
+        if expression is None:
+            raise StoreError(f"Cannot group usage by {group_by!r}")
+        sums = ", ".join(f"SUM(u.{field}) AS {field}" for field in _USAGE_FIELDS)
+        query = (
+            f"SELECT {expression} AS group_key, COUNT(*) AS records, {sums} "
+            "FROM usage_records u JOIN runs r ON r.id = u.run_id"
+        )
+        parameters: tuple[object, ...] = ()
+        if ticket_number is not None:
+            query += " WHERE r.ticket_number = ?"
+            parameters = (ticket_number,)
+        query += f" GROUP BY {expression} ORDER BY {expression}"
+        return [
+            UsageTotals(
+                key=str(row["group_key"]),
+                records=row["records"],
+                input_tokens=row["input_tokens"],
+                cached_input_tokens=row["cached_input_tokens"],
+                output_tokens=row["output_tokens"],
+                reasoning_tokens=row["reasoning_tokens"],
+                cost_estimate_usd=row["cost_estimate_usd"],
+                duration_ms=row["duration_ms"],
+            )
+            for row in self._connection.execute(query, parameters)
+        ]
+
+    def stage_durations(self, run_id: int | None = None) -> list[StageDuration]:
+        """Elapsed time per stage attempt, optionally for one run."""
+        query = "SELECT * FROM stage_attempts"
+        parameters: tuple[object, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id = ?"
+            parameters = (run_id,)
+        durations: list[StageDuration] = []
+        for row in self._connection.execute(query + " ORDER BY run_id, id", parameters):
+            attempt = _record(StageAttempt, row)
+            seconds = (
+                None
+                if attempt.finished_at is None
+                else (attempt.finished_at - attempt.started_at).total_seconds()
+            )
+            durations.append(
+                StageDuration(
+                    run_id=attempt.run_id,
+                    stage=attempt.stage,
+                    attempt=attempt.attempt,
+                    status=attempt.status,
+                    duration_seconds=seconds,
+                )
+            )
+        return durations
 
     def register_artifact(
         self, run_id: int, name: str, path: str, sha256: str, size_bytes: int

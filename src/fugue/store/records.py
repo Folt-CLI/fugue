@@ -85,6 +85,31 @@ class UsageRecord:
 
 
 @dataclass(frozen=True)
+class UsageTotals:
+    """Summed usage records for one group; a field is None when no record reported it."""
+
+    key: str
+    records: int
+    input_tokens: int | None
+    cached_input_tokens: int | None
+    output_tokens: int | None
+    reasoning_tokens: int | None
+    cost_estimate_usd: float | None
+    duration_ms: int | None
+
+
+@dataclass(frozen=True)
+class StageDuration:
+    """Elapsed time of one stage attempt; None while the attempt has not finished."""
+
+    run_id: int
+    stage: str
+    attempt: int
+    status: str
+    duration_seconds: float | None
+
+
+@dataclass(frozen=True)
 class Artifact:
     id: int
     run_id: int
