@@ -35,6 +35,8 @@ def test_load_defaults() -> None:
         "ci_poll_interval_seconds": 20,
         "ci_timeout_seconds": 3600,
         "provider_cooldown_seconds": 300,
+        "overview_max_tickets": 100,
+        "overview_cache_seconds": 300,
         "infrastructure_markers": [
             "runner lost",
             "the runner has received a shutdown signal",
@@ -100,6 +102,8 @@ model = "chosen-model"
         "ci_poll_interval_seconds": 20,
         "ci_timeout_seconds": 3600,
         "provider_cooldown_seconds": 300,
+        "overview_max_tickets": 100,
+        "overview_cache_seconds": 300,
         "infrastructure_markers": [
             "runner lost",
             "the runner has received a shutdown signal",
@@ -234,11 +238,11 @@ def test_positive_limit_boundaries(tmp_path: Path) -> None:
             "[limits]\nmax_repair_attempts = 1\nmax_concurrent_runs = 1\n"
             "database_wait_seconds = 1\nagent_timeout_seconds = 1\nmax_output_bytes = 1\n"
             "ci_poll_interval_seconds = 1\nci_timeout_seconds = 1\n"
-            "provider_cooldown_seconds = 1",
+            "provider_cooldown_seconds = 1\noverview_max_tickets = 1\noverview_cache_seconds = 1",
         )
     )
     integers = config.limits.model_dump(exclude={"infrastructure_markers"})
-    assert len(integers) == 8
+    assert len(integers) == 10
     assert set(integers.values()) == {1}
 
 

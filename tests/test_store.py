@@ -32,6 +32,21 @@ def test_migration_and_reopen(tmp_path: Path) -> None:
         assert reopened.list_runs() == [reopened.get_run(run.id)]
 
 
+def test_merge_approvals_lists_valid_approvals_of_one_repository(store: Store) -> None:
+    run = store.create_run(1, "o/r")
+    other = store.create_run(2, "x/y")
+    valid = store.record_approval(run.id, "merge", "7", "a" * 40, "approved", "dev", "ok")
+    store.record_approval(run.id, "merge", "8", "b" * 40, "rejected", "dev", "no")
+    store.record_approval(run.id, "other", "9", "c" * 40, "approved", "dev", "ok")
+    store.record_approval(other.id, "merge", "7", "d" * 40, "approved", "dev", "ok")
+    stale = store.record_approval(run.id, "merge", "10", "e" * 40, "approved", "dev", "ok")
+    store.invalidate_approvals(run.id, "10", "f" * 40)
+    assert [a.id for a in store.merge_approvals("o/r")] == [valid.id]
+    assert stale.id not in [a.id for a in store.merge_approvals("o/r")]
+    assert [a.subject for a in store.merge_approvals("x/y")] == ["7"]
+    assert store.merge_approvals("none/none") == []
+
+
 def _hold_write_lock(path: Path) -> sqlite3.Connection:
     holder = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
     holder.execute("BEGIN IMMEDIATE")
