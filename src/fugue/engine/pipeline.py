@@ -1162,7 +1162,7 @@ class Engine:
             scope=scope,
             ci_result=ci_result,
             rounds=self._round_log(run_id),
-            base_ref=f"refs/heads/{self.deps.base_branch}",
+            diff=await self._diff(identity.path),
         )
         # Every round is a fresh, read-only conversation so the review stays independent.
         result = await adapter.run(
