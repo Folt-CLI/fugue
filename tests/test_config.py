@@ -31,6 +31,16 @@ def test_load_defaults() -> None:
         "max_concurrent_runs": 1,
         "agent_timeout_seconds": 3600,
         "max_output_bytes": 65536,
+        "ci_poll_interval_seconds": 20,
+        "ci_timeout_seconds": 3600,
+        "infrastructure_markers": [
+            "runner lost",
+            "the runner has received a shutdown signal",
+            "econnreset",
+            "temporary failure in name resolution",
+            "503 service unavailable",
+            "no space left on device",
+        ],
     }
     assert {role: settings.provider for role, settings in config.roles.items()} == {
         Role.ANALYST: "claude",
@@ -84,6 +94,16 @@ model = "chosen-model"
         "max_concurrent_runs": 2,
         "agent_timeout_seconds": 60,
         "max_output_bytes": 1024,
+        "ci_poll_interval_seconds": 20,
+        "ci_timeout_seconds": 3600,
+        "infrastructure_markers": [
+            "runner lost",
+            "the runner has received a shutdown signal",
+            "econnreset",
+            "temporary failure in name resolution",
+            "503 service unavailable",
+            "no space left on device",
+        ],
     }
     assert config.roles[Role.ANALYST].provider == "codex"
     assert config.roles[Role.ANALYST].model == "chosen-model"
@@ -202,10 +222,13 @@ def test_positive_limit_boundaries(tmp_path: Path) -> None:
         write_config(
             tmp_path,
             "[limits]\nmax_repair_attempts = 1\nmax_concurrent_runs = 1\n"
-            "agent_timeout_seconds = 1\nmax_output_bytes = 1",
+            "agent_timeout_seconds = 1\nmax_output_bytes = 1\n"
+            "ci_poll_interval_seconds = 1\nci_timeout_seconds = 1",
         )
     )
-    assert set(config.limits.model_dump().values()) == {1}
+    integers = config.limits.model_dump(exclude={"infrastructure_markers"})
+    assert len(integers) == 6
+    assert set(integers.values()) == {1}
 
 
 def test_missing_file(tmp_path: Path) -> None:

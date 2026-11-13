@@ -15,6 +15,26 @@ class Limits(BaseModel):
     max_concurrent_runs: int = Field(default=1, gt=0)
     agent_timeout_seconds: int = Field(default=3600, gt=0)
     max_output_bytes: int = Field(default=65536, gt=0)
+    ci_poll_interval_seconds: int = Field(default=20, gt=0)
+    ci_timeout_seconds: int = Field(default=3600, gt=0)
+    infrastructure_markers: list[str] = Field(
+        default_factory=lambda: [
+            "runner lost",
+            "the runner has received a shutdown signal",
+            "econnreset",
+            "temporary failure in name resolution",
+            "503 service unavailable",
+            "no space left on device",
+        ]
+    )
+
+    @field_validator("infrastructure_markers")
+    @classmethod
+    def normalize_markers(cls, value: list[str]) -> list[str]:
+        markers = [item.strip().casefold() for item in value]
+        if any(not item for item in markers):
+            raise ValueError("infrastructure markers must not be empty")
+        return markers
 
 
 class RoleConfig(BaseModel):
