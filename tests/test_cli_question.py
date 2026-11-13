@@ -122,12 +122,23 @@ def test_follow_up_sends_analysis_and_question_read_only() -> None:
     assert client.calls == []
 
 
-def test_non_question_refused() -> None:
+def test_non_question_selects_analysed_option() -> None:
     client = FakeClient()
     client.ticket.issue_type = IssueType.FEATURE
-    session, _ = walkthrough(client, ["s 1"])
-    with pytest.raises(ValueError, match="not a Question"):
-        asyncio.run(session.run(2))
+    session, output = walkthrough(client, [])
+    asyncio.run(session.run(2, 1))
+    assert "Ticket #2: Select the process" in output.getvalue()
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
+    assert "[Selected Solution] [2-solution-1.md]" in client.body
+    assert client.calls[2] == ("status", 2, Status.READY_FOR_IMPLEMENTATION)
+
+
+def test_non_question_without_options_refused() -> None:
+    client = FakeClient("## Analysis\nPending")
+    client.ticket.issue_type = IssueType.FEATURE
+    session, _ = walkthrough(client, [])
+    with pytest.raises(ValueError, match="Ticket #2 has no Analysis options"):
+        asyncio.run(session.run(2, 1))
     assert client.calls == []
 
 
@@ -175,14 +186,16 @@ def test_cli_registration_and_selection(
     assert f"[Selected Solution] [2-solution-{expected}.md]" in client.body
 
 
-def test_cli_refuses_non_question(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    client = FakeClient()
+def test_cli_refuses_non_question_without_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = FakeClient("## Analysis\nPending")
     client.ticket.issue_type = IssueType.TASK
     session, _ = walkthrough(client, [])
     monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
     result = runner.invoke(cli_app.app, ["question", "2", "--repo-root", str(tmp_path)])
     assert result.exit_code == 2
-    assert "not a Question" in result.output
+    assert "has no Analysis options" in result.output
     assert client.calls == []
 
 
