@@ -21,7 +21,7 @@ no implementation.
    outcome and scope before implementation starts.
 2. **Analyse and discuss.** For M and L, the orchestrator inspects the code
    and records factual findings, constraints, and compatibility concerns. Each
-   possible solution is a complete Codex scope attachment. The orchestrator
+   possible solution is a complete implementation scope attachment. The orchestrator
    writes Analysis inline as if the developer had already asked for context,
    comparison and the next step, following
    [Issue format](issue-format.md#analysis-and-solution-selection). The
@@ -96,7 +96,7 @@ the only subject type that is not an issue type. `#0` means there is no ticket
 and none is needed: no epic or issue. Dependabot sets the subject through
 `commit-message.prefix` in `.github/dependabot.yml`.
 If a Dependabot PR's commits do not follow this format, squash them into one
-commit with that subject. Always run the read-only Codex
+commit with that subject. Always run the read-only
 [Dependabot review](review.md#dependabot-prs) before merging.
 
 ### Commit size

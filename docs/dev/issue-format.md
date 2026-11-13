@@ -20,7 +20,7 @@ below describes sections when their stage applies.
 | Summary | At creation | State the current situation or user need, expected outcome, and who benefits. |
 | Scope | At creation | Name affected area and what is in and out. |
 | Analysis | During refinement | Record current behavior, cause when relevant, constraints, compatibility, and viable options. |
-| Solution | At creation for S/XS; after the developer chooses for M/L | S/XS: record the enabling Question's decision and required Codex scope. M/L: summarize the selected solution, affected areas, and reason for choosing it. |
+| Solution | At creation for S/XS; after the developer chooses for M/L | S/XS: record the enabling Question's decision and required implementation scope. M/L: summarize the selected solution, affected areas, and reason for choosing it. |
 | Details | After investigation | Link the code findings attachment and summarize two to four key facts. |
 
 For a defect, describe what happens and what should happen without presuming a
@@ -45,7 +45,7 @@ attachment. Leave Details pending until investigation has produced findings.
 - <important finding>
 ```
 
-The orchestrator, not Codex, investigates and writes Analysis inline in the
+The orchestrator, not the implementation agent, investigates and writes Analysis inline in the
 ticket, as if the developer had already asked for context, comparison and the
 next step. The developer selects the solution; a recommendation is not a
 selection.
@@ -58,8 +58,8 @@ answer does not replace a missing Solution or scope. XL has no analysis.
 
 1. Record facts with exact `file:line` references in `<N>-code-findings.md`,
    linked from Details.
-2. Write each viable solution as a complete Codex scope of work in
-   `<N>-solution-<k>.md`, using the layout below. Codex must be able to run the
+2. Write each viable solution as a complete implementation scope of work in
+   `<N>-solution-<k>.md`, using the layout below. The implementation agent must be able to run the
    selected scope as written, without another prompt after selection. Offer
    alternatives only when there is a real trade-off.
 3. Write Analysis inline using the layout below. Discuss the options with the
@@ -81,7 +81,7 @@ Use this order in the ticket's `## Analysis` section:
 3. A comparison table when there are two or more options. Use rows such as rule
    duplication, diff size, main risk and reader.
 4. One `### Option N: <name>` block per option, with bold labels **You get**,
-   **Changes**, **Watch out** and **Codex scope**. The last links to its scope
+   **Changes**, **Watch out** and **Implementation scope**. The last links to its scope
    attachment.
 5. `### Recommendation`: one option and one sentence of reason.
 6. A `> [!TIP]` callout telling the developer to reply with the option number.
@@ -128,7 +128,7 @@ three lines. Use no emojis. A short skeleton for two options:
 
 - <Risk or limitation.>
 
-**Codex scope:** [<N>-solution-1.md](<attachment-url>)
+**Implementation scope:** [<N>-solution-1.md](<attachment-url>)
 
 ### Option 2: <name>
 
@@ -144,14 +144,14 @@ three lines. Use no emojis. A short skeleton for two options:
 
 - <Risk or limitation.>
 
-**Codex scope:** [<N>-solution-2.md](<attachment-url>)
+**Implementation scope:** [<N>-solution-2.md](<attachment-url>)
 
 ### Recommendation
 
 Option <N>: <one sentence of reason>.
 
 > [!TIP]
-> Reply with the option number to select its Codex scope.
+> Reply with the option number to select its implementation scope.
 ```
 
 ### S and XS Solution layout
@@ -160,7 +160,7 @@ Write a short, readable Solution at creation, in the style of Analysis. Use the
 order below; **Agreed in #N** records what the parent Question decided.
 The solution comes from that Question; it is not selected on the S/XS ticket.
 
-**Codex scope** links the complete `<N>-solution-1.md` scope, using the layout
+**Implementation scope** links the complete `<N>-solution-1.md` scope, using the layout
 below. Attach with gh-attach and verify by downloading and comparing at creation.
 S always has this file; XS may skip it when the ticket is self-descriptive.
 
@@ -190,16 +190,16 @@ S always has this file; XS may skip it when the ticket is self-descriptive.
 
 - <Risk or limitation.>
 
-**Codex scope:** [<N>-solution-1.md](<attachment-url>)
+**Implementation scope:** [<N>-solution-1.md](<attachment-url>)
 ```
 
-### Codex scope layout
+### Implementation scope layout
 
 Each `<N>-solution-<k>.md` attachment is a complete scope of work. Use these
 sections in order:
 
 - **Standing rules:** implement only; no Git commit, push or `gh`; the exact
-  worktree path and Git branch; the exact files Codex may touch; no attribution
+  worktree path and Git branch; the exact files the implementation agent may touch; no attribution
   lines; no emojis. Require reading `GLOSSARY.md` first and using its terms
   exactly as defined, never in another sense.
 - **Source of truth** and **Vocabulary changes:** include both when words
@@ -212,12 +212,12 @@ sections in order:
 - **Out-of-scope scenarios:** situations deliberately not handled. Both
   scenario sections are required for any scope that adds stateful or
   external-effect behaviour; a purely documentation scope may omit them.
-- **Do not change:** list the boundaries Codex must preserve.
+- **Do not change:** list the boundaries the implementation agent must preserve.
 - **Verification:** give commands and their expected output, mapped to the
   In-scope scenarios.
-- **Final message:** state what Codex returns, including the result for each
+- **Final message:** state what the implementation agent returns, including the result for each
   verification step.
-- **Notes for the orchestrator (not for Codex):** give the Git commit plan, PR
+- **Notes for the orchestrator (not for the implementation agent):** give the Git commit plan, PR
   fields and review focus. These are instructions for the orchestrator only.
 
 For M and L, Solution contains the selected result, not another plan document:
@@ -239,7 +239,7 @@ feature group, or a table for a change across the application. Copy the affected
 areas from the selected solution attachment. Unselected scopes keep their
 affected-area lists only in their own attachments.
 
-Findings contain facts; solution attachments contain executable Codex scopes.
+Findings contain facts; solution attachments contain executable implementation scopes.
 Long material stays in attachments and issue comments stay short. Name files
 with the issue number so they remain identifiable.
 
