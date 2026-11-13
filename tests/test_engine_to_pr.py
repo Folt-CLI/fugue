@@ -969,3 +969,122 @@ def test_delivery_prompt_uses_prepared_identity_over_scope(harness: Harness) -> 
         "placeholder and use this directory and branch.\n\n"
     )
     assert request.prompt.endswith(harness.github.scope)
+
+
+DIVERGED = "The remote branch has diverged from the local branch; resolve it before pushing"
+AHEAD = "The remote branch is ahead of the local branch; resolve it before pushing"
+
+
+async def publish_commit(harness: Harness, branch: str, parent: str, tree_of: str) -> str:
+    """Create a commit in the shared object store and publish it as the remote branch."""
+    clone = harness.deps.repo_root
+    sha = await git_command(
+        clone, "commit-tree", f"{tree_of}^{{tree}}", "-p", parent, "-m", "Remote"
+    )
+    await git_command(clone, "push", "--force", "origin", f"{sha}:refs/heads/{branch}")
+    return sha
+
+
+# Scenario 3
+def test_remote_behind_the_local_head_pushes(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = stop_after_commit(harness, monkeypatch)
+    head = asyncio.run(Git(path).head_sha())
+    branch = branch_name(harness.github.ticket)
+    asyncio.run(
+        git_command(
+            harness.deps.repo_root,
+            "push",
+            "origin",
+            f"{harness.initial_head}:refs/heads/{branch}",
+        )
+    )
+    monkeypatch.undo()
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) == head
+
+
+# Scenario 4
+def test_remote_ahead_of_the_local_head_blocks_without_pushing(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = stop_after_commit(harness, monkeypatch)
+    head = asyncio.run(Git(path).head_sha())
+    branch = branch_name(harness.github.ticket)
+    remote = asyncio.run(publish_commit(harness, branch, head, head))
+    monkeypatch.undo()
+    forbid_push(monkeypatch)
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    assert outcome.problems == (AHEAD,)
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) == remote
+    assert not harness.github.created
+
+
+# Scenarios 5 and 7
+def test_diverged_remote_blocks_and_a_restart_blocks_again(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop_after_commit(harness, monkeypatch)
+    branch = branch_name(harness.github.ticket)
+    remote = asyncio.run(
+        publish_commit(harness, branch, harness.initial_head, harness.initial_head)
+    )
+    monkeypatch.undo()
+    forbid_push(monkeypatch)
+    for _ in range(2):
+        outcome = harness.run()
+        assert outcome.state == RunState.BLOCKED
+        assert outcome.problems == (DIVERGED,)
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) == remote
+    assert not harness.github.created
+
+
+# Scenario 6
+def test_resume_after_the_remote_is_fixed_pushes(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = stop_after_commit(harness, monkeypatch)
+    head = asyncio.run(Git(path).head_sha())
+    branch = branch_name(harness.github.ticket)
+    asyncio.run(publish_commit(harness, branch, harness.initial_head, harness.initial_head))
+    monkeypatch.undo()
+    with monkeypatch.context() as patch:
+        forbid_push(patch)
+        assert harness.run().state == RunState.BLOCKED
+    asyncio.run(git_command(harness.origin, "update-ref", "-d", f"refs/heads/{branch}"))
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) == head
+
+
+# Scenario 8
+def test_repairs_before_a_replaced_scope_are_not_counted(harness: Harness) -> None:
+    harness.deps.config.limits.max_repair_attempts = 1
+    harness.deps.config.policy.gate_commands = gate_requires_done()
+
+    def broken(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text("broken")
+
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=result(), side_effect=write_allowed),
+        ],
+        name="codex",
+    )
+    harness.deps.registry.register("codex", lambda config: adapter)
+    blocked = harness.run()
+    assert blocked.state == RunState.BLOCKED
+    assert "Repair limit reached" in blocked.problems
+    assert len(adapter.requests) == 2
+    harness.github.scope = SCOPE + "\n\nAlso update the content."
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    assert len(adapter.requests) == 4
+    attempts = harness.deps.store.stage_attempts(outcome.run_id)
+    assert [a.stage for a in attempts].count("implement") == 2

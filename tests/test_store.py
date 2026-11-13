@@ -285,3 +285,42 @@ def test_context_manager_closes_store() -> None:
     store.close()
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         store.list_runs()
+
+
+# Scenario 1
+def test_stage_attempts_are_ordered_and_filtered(store: Store) -> None:
+    run = store.create_run(12, "Folt-CLI/fugue")
+    other = store.create_run(13, "Folt-CLI/fugue")
+    first = store.begin_attempt(run.id, "implement")
+    verify = store.begin_attempt(run.id, "verify")
+    second = store.begin_attempt(run.id, "implement")
+    store.begin_attempt(other.id, "implement")
+    assert [a.id for a in store.stage_attempts(run.id)] == [first.id, verify.id, second.id]
+    assert [a.id for a in store.stage_attempts(run.id, "implement")] == [first.id, second.id]
+    assert store.stage_attempts(run.id, "repair") == []
+    assert store.stage_attempts(999) == []
+
+
+# Scenario 1
+def test_agent_sessions_are_ordered_and_filtered(store: Store) -> None:
+    run = store.create_run(12, "Folt-CLI/fugue")
+    other = store.create_run(13, "Folt-CLI/fugue")
+    first = store.record_agent_session(run.id, "implementer", "codex", "api_key", "s1")
+    reviewer = store.record_agent_session(run.id, "reviewer", "codex", "api_key", "s2")
+    third = store.record_agent_session(run.id, "implementer", "claude", "subscription_login", "s3")
+    store.record_agent_session(other.id, "implementer", "codex", "api_key", "s4")
+    assert [s.id for s in store.agent_sessions(run.id)] == [first.id, reviewer.id, third.id]
+    assert [s.id for s in store.agent_sessions(run.id, role="implementer")] == [first.id, third.id]
+    assert [s.id for s in store.agent_sessions(run.id, provider="claude")] == [third.id]
+    assert [s.id for s in store.agent_sessions(run.id, authentication_mode="api_key")] == [
+        first.id,
+        reviewer.id,
+    ]
+    assert [
+        s.id
+        for s in store.agent_sessions(
+            run.id, role="implementer", provider="codex", authentication_mode="api_key"
+        )
+    ] == [first.id]
+    assert store.agent_sessions(run.id, role="analyst") == []
+    assert store.agent_sessions(999) == []
