@@ -40,6 +40,9 @@ ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to fug
 RepoRootOption = Annotated[
     Path | None, typer.Option("--repo-root", help="Repository root (default: Git top level).")
 ]
+RepoFilterOption = Annotated[
+    str | None, typer.Option("--repo", help="Only runs in this repository (OWNER/NAME).")
+]
 
 
 class RunEngine(Protocol):
@@ -290,6 +293,7 @@ def status(
     ticket: Annotated[
         int | None, typer.Option("--ticket", help="Only runs for this ticket.")
     ] = None,
+    repo: RepoFilterOption = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -298,7 +302,7 @@ def status(
     store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
     try:
         if run_id is None:
-            _print(render.render_runs(list(reversed(store.list_runs(ticket)))[:20]))
+            _print(render.render_runs(list(reversed(store.list_runs(ticket, repo)))[:20]))
             return
         try:
             detail = wiring.load_run_detail(store, run_id)
@@ -320,6 +324,7 @@ def usage(
     ticket: Annotated[
         int | None, typer.Option("--ticket", help="Only runs for this ticket.")
     ] = None,
+    repo: RepoFilterOption = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -327,7 +332,7 @@ def usage(
     loaded = _load(config, _lenient_root(repo_root))
     store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
     try:
-        _print(render.render_usage(store.usage_by(by, ticket_number=ticket), by))
+        _print(render.render_usage(store.usage_by(by, ticket_number=ticket, repo=repo), by))
     finally:
         store.close()
 
@@ -335,6 +340,7 @@ def usage(
 @app.command()
 def timing(
     run_id: Annotated[int | None, typer.Argument()] = None,
+    repo: RepoFilterOption = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -347,7 +353,7 @@ def timing(
                 store.get_run(run_id)
             except StoreError as error:
                 raise _fail(f"Unknown run id {run_id}") from error
-        _print(render.render_timing(store.stage_durations(run_id)))
+        _print(render.render_timing(store.stage_durations(run_id, repo)))
     finally:
         store.close()
 

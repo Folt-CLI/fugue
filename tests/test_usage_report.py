@@ -179,3 +179,65 @@ def test_timing_command(state_dir: Path, tmp_path: Path) -> None:
     assert "load" in ok.output
     missing = runner.invoke(cli_app.app, ["timing", "9", "--repo-root", str(tmp_path)])
     assert missing.exit_code == 2
+
+
+def seed_two_repos(store: Store) -> None:
+    for repo in ("o/one", "o/two"):
+        run = store.create_run(12, repo)
+        store.record_usage(run.id, "implementer", "codex", "subscription_login", input_tokens=7)
+        store.finish_attempt(store.begin_attempt(run.id, "load").id, "completed")
+
+
+def test_usage_by_ticket_separates_repositories() -> None:
+    with Store(":memory:") as store:
+        seed_two_repos(store)
+        totals = store.usage_by("ticket")
+        filtered = store.usage_by("ticket", repo="o/two")
+        unknown = store.usage_by("ticket", repo="o/none")
+        by_role = store.usage_by("role")
+    assert [(t.repo, t.key, t.records) for t in totals] == [("o/one", "12", 1), ("o/two", "12", 1)]
+    assert [t.repo for t in filtered] == ["o/two"]
+    assert unknown == []
+    assert [(t.repo, t.records) for t in by_role] == [(None, 2)]
+
+
+def test_stage_durations_carry_and_filter_repository() -> None:
+    with Store(":memory:") as store:
+        seed_two_repos(store)
+        rows = store.stage_durations()
+        filtered = store.stage_durations(repo="o/one")
+        mismatch = store.stage_durations(1, repo="o/two")
+    assert [d.repo for d in rows] == ["o/one", "o/two"]
+    assert [d.repo for d in filtered] == ["o/one"]
+    assert mismatch == []
+
+
+def test_render_repo_columns() -> None:
+    with Store(":memory:") as store:
+        seed_two_repos(store)
+        usage = render.render_usage(store.usage_by("ticket"), "ticket").splitlines()
+        role = render.render_usage(store.usage_by("role"), "role").splitlines()
+        timing = render.render_timing(store.stage_durations()).splitlines()
+    assert usage[0].split()[:2] == ["repo", "ticket"]
+    assert usage[1].split()[:2] == ["o/one", "12"]
+    assert usage[2].split()[:2] == ["o/two", "12"]
+    assert "repo" not in role[0].split()
+    assert timing[0].split()[:2] == ["run", "repo"]
+    assert "o/one" in timing[1]
+    assert "o/two" in timing[2]
+
+
+def test_reports_repo_option(state_dir: Path, tmp_path: Path) -> None:
+    with Store(state_dir / "fugue.db") as store:
+        seed_two_repos(store)
+    base = ["--repo-root", str(tmp_path)]
+    both = runner.invoke(cli_app.app, ["usage", "--by", "ticket", *base])
+    assert "o/one" in both.output and "o/two" in both.output
+    one = runner.invoke(cli_app.app, ["usage", "--by", "ticket", "--repo", "o/one", *base])
+    assert "o/one" in one.output and "o/two" not in one.output
+    none = runner.invoke(cli_app.app, ["usage", "--repo", "o/none", *base])
+    assert none.output.strip() == "No usage records."
+    timing = runner.invoke(cli_app.app, ["timing", "--repo", "o/two", *base])
+    assert "o/two" in timing.output and "o/one" not in timing.output
+    empty = runner.invoke(cli_app.app, ["timing", "--repo", "o/none", *base])
+    assert empty.output.strip() == "No stage attempts."

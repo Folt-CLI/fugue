@@ -210,6 +210,21 @@ def test_status_ticket_filter(isolated_state: Path, tmp_path: Path) -> None:
     assert "#6" not in result.output
 
 
+def test_status_lists_repository_and_filters_by_repo(isolated_state: Path, tmp_path: Path) -> None:
+    seed_store(isolated_state)
+    with Store(isolated_state / "fugue.db") as store:
+        store.create_run(5, "other/repo")
+    base = ["--repo-root", str(tmp_path)]
+    everything = runner.invoke(cli_app.app, ["status", *base])
+    assert everything.output.splitlines()[0].split()[:3] == ["id", "repo", "ticket"]
+    assert "owner/repo" in everything.output and "other/repo" in everything.output
+    only = runner.invoke(cli_app.app, ["status", "--repo", "other/repo", *base])
+    assert "other/repo" in only.output and "owner/repo" not in only.output
+    unknown = runner.invoke(cli_app.app, ["status", "--repo", "no/such", *base])
+    assert unknown.exit_code == 0
+    assert unknown.output.strip() == "No runs."
+
+
 def test_status_without_store_is_empty(tmp_path: Path, isolated_state: Path) -> None:
     result = runner.invoke(cli_app.app, ["status", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
