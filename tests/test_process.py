@@ -23,8 +23,18 @@ def _is_running(pid: int) -> bool:
     stat = Path(f"/proc/{pid}/stat")
     try:
         return stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
+
+
+def test_is_running_false_when_proc_entry_vanishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def vanish(self: Path, *args: object, **kwargs: object) -> str:
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(Path, "read_text", vanish)
+    assert not _is_running(os.getpid())
 
 
 def test_success() -> None:
