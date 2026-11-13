@@ -133,6 +133,8 @@ def _raw_items(text: str) -> tuple[list[_Raw], bool]:
         if fence is not None:
             if current is not None and current.unparseable:
                 current.parts.append(line)
+            elif fence == "other" and current is not None:
+                current.parts[-1] += "\n" + line
             if stripped.startswith("```"):
                 fence = None
             elif fence == "suggestion" and current is not None:
@@ -146,6 +148,8 @@ def _raw_items(text: str) -> tuple[list[_Raw], bool]:
             elif current.unparseable:
                 current.parts.append(line)
             fence = "suggestion" if stripped[3:].strip().casefold() == "suggestion" else "other"
+            if fence == "other" and not current.unparseable:
+                current.parts.append(line)
             if fence == "suggestion" and current is not None:
                 current.suggestion = []
             continue
@@ -193,17 +197,32 @@ def parse_findings(text: str) -> list[Finding] | Clean:
             continue
         if joined.casefold().strip(" .") in _NOTHING:
             continue
-        severity, rest = _severity(joined, raw.blocking)
-        match = _LOCATION.search(rest)
+        parts = raw.parts.copy()
+        severity, parts[0] = _severity(parts[0], raw.blocking)
         path = start = end = None
-        if match is not None:
-            path = match["path"]
-            start = int(match["start"])
-            end = int(match["end"]) if match["end"] is not None else start
-            if end < start:
-                start, end = end, start
-            rest = rest[: match.start()] + " " + rest[match.end() :]
-        summary = " ".join(rest.split()).strip(" -\u2013\u2014:;,()[]`") or joined
+        summary_parts: list[str] = []
+        prose: list[str] = []
+        for part in parts:
+            if part.lstrip().startswith("```"):
+                if prose:
+                    summary_parts.append(
+                        " ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]`")
+                    )
+                    prose = []
+                summary_parts.append(part)
+                continue
+            match = _LOCATION.search(part) if path is None else None
+            if match is not None:
+                path = match["path"]
+                start = int(match["start"])
+                end = int(match["end"]) if match["end"] is not None else start
+                if end < start:
+                    start, end = end, start
+                part = part[: match.start()] + " " + part[match.end() :]
+            prose.append(part)
+        if prose:
+            summary_parts.append(" ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]`"))
+        summary = "\n".join(summary_parts) or joined
         suggestion = "\n".join(raw.suggestion) if raw.suggestion is not None else None
         if len(target) < limit:
             target.append(Finding(0, severity, summary, path, start, end, suggestion, raw.blocking))

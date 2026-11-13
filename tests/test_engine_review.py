@@ -34,6 +34,7 @@ from fugue.engine.review import (
     parse_findings,
     place_finding,
     review_prompt,
+    review_repair_prompt,
     validate_decisions,
 )
 from fugue.github import CheckResult, PullRequest
@@ -140,6 +141,34 @@ def test_parse_locations_ranges_suggestions_and_limits() -> None:
 def test_parse_reversed_range_is_ordered() -> None:
     [finding] = parsed("- High: Bad. src/a.py:9-3\n")
     assert (finding.start_line, finding.end_line) == (3, 9)
+
+
+@pytest.mark.parametrize("language", ["python", "", "text"])
+def test_ordinary_fences_are_preserved_in_findings_comments_and_repairs(language: str) -> None:
+    block = (
+        f"```{language}\nparse([])\n\n    indented = True  \n"
+        "## Non-blocking\n1. Low: code.py:99\n```"
+    )
+    [item, following] = parsed(
+        "## Blocking\n1. High: Crash.\n"
+        f"{block}\nReproduce with empty input. `src/a.py:2`\n"
+        "```suggestion\nreturn []\n```\n"
+        "2. Medium: Another defect. `src/a.py:3`\n"
+        "## Non-blocking\n- None\n"
+    )
+    assert item.summary == f"Crash.\n{block}\nReproduce with empty input."
+    assert item.location == "src/a.py:2"
+    assert item.blocking and following.blocking
+    assert following.summary == "Another defect."
+    assert item.suggestion == "return []"
+    assert "suggestion" not in item.summary and "return []" not in item.summary
+    built = build_review([item], RANGES, 1, separate_identity=False)
+    [comment] = built.comments
+    assert block in comment.body
+    assert comment.body.count("```suggestion\nreturn []\n```") == 1
+    prompt = review_repair_prompt([item])
+    assert block in prompt
+    assert prompt.count("return []") == 1
 
 
 @pytest.mark.parametrize(
@@ -637,8 +666,11 @@ def test_line_outside_the_diff_and_unlocated_finding(harness: Harness) -> None:
 
 
 # Scenario 5
-def test_accept_repairs_pushes_and_reviews_again(harness: Harness) -> None:
-    adapter = harness.script(write(LINES), review(BLOCKING), write(FIXED), review("No findings."))
+@pytest.mark.parametrize("reproduction", ["", "```python\nparse([])\n```\n"])
+def test_accept_repairs_pushes_and_reviews_again(harness: Harness, reproduction: str) -> None:
+    adapter = harness.script(
+        write(LINES), review(BLOCKING + reproduction), write(FIXED), review("No findings.")
+    )
     run_id = harness.start()
     first = harness.review(run_id)
     first_head = harness.head()
@@ -652,6 +684,10 @@ def test_accept_repairs_pushes_and_reviews_again(harness: Harness) -> None:
     assert repair.role == Role.IMPLEMENTER and repair.access == AccessMode.WORKSPACE_WRITE
     assert repair.session_id == "session-1"
     assert "Crash on empty input" in repair.prompt and "allowed.txt:1" in repair.prompt
+    if reproduction:
+        assert reproduction.rstrip("\n") in repair.prompt
+        [comment] = harness.github.posted[0].comments
+        assert reproduction.rstrip("\n") in comment.body
     assert [p.head for p in harness.github.posted] == [first_head, new_head]
     assert harness.github.replies[0][0] == 1001
     assert harness.github.replies[0][1].startswith(f"Fixed in {new_head}: ")
