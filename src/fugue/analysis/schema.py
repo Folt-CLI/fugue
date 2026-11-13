@@ -14,6 +14,7 @@ class HandoffModel(BaseModel):
 
 class Scope(HandoffModel):
     standing_rules: Items
+    allowed_files: Items
     source_of_truth: Items
     file_changes: Items
     in_scope: Items

@@ -85,8 +85,9 @@ async def analyse(deps: EngineDeps, ticket: Ticket, *, run_id: int | None = None
                     "Read GLOSSARY.md first and use its terms exactly. Analyse this ticket "
                     "without changing files. Follow docs/dev/issue-format.md Analysis and "
                     "implementation scope layouts. Return complete executable scopes with "
-                    "exact allowed files, worktree and branch, standing rules, numbered "
-                    "scenarios and verification. Include exact file:line evidence in findings. "
+                    "an allowed_files list of every file that may be touched, worktree and "
+                    "branch, standing rules, numbered scenarios and verification. "
+                    "Include exact file:line evidence in findings. "
                     "Use no emojis. Do not select a solution.\n\n" + ticket.model_dump_json()
                 ),
                 cwd=deps.repo_root,
