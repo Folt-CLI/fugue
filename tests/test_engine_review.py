@@ -138,6 +138,20 @@ def test_parse_locations_ranges_suggestions_and_limits() -> None:
     assert all(f.severity == "Low" for f in rest)
 
 
+def test_summary_keeps_inline_code_spans_intact() -> None:
+    text = "- Medium: `status <run_id> --repo OWNER/NAME` and `--ticket N` differ\n"
+    [finding] = parsed(text)
+    assert finding.summary == "`status <run_id> --repo OWNER/NAME` and `--ticket N` differ"
+    [ending] = parsed("- Low: Rename the flag to `--ticket N`\n")
+    assert ending.summary == "Rename the flag to `--ticket N`"
+
+
+def test_backticked_location_is_removed_from_summary() -> None:
+    [finding] = parsed("- High: Crash in `run()` on empty input (`src/a.py:10`)\n")
+    assert (finding.path, finding.start_line) == ("src/a.py", 10)
+    assert finding.summary == "Crash in `run()` on empty input"
+
+
 def test_parse_reversed_range_is_ordered() -> None:
     [finding] = parsed("- High: Bad. src/a.py:9-3\n")
     assert (finding.start_line, finding.end_line) == (3, 9)
