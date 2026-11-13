@@ -11,8 +11,9 @@ This guide uses a source checkout.
 - The GitHub CLI, authenticated with access to that repository and its GitHub
   Project, including the permissions needed to update issues and pull requests.
 - The unmodified Claude and Codex CLIs on your PATH for the default roles.
-  Sign in to each provider CLI yourself before starting. Fugue defaults to
-  `subscription_login`; `api_key` is an explicit, metered choice.
+  Sign in to each provider CLI yourself before starting. Both bundled provider
+  adapters require `subscription_login` and reject `api_key` when invoked.
+  There is no automatic fallback to metered authentication.
 - A repository using Fugue's ticket structure and Project fields. See the
   [development process](../dev/process.md) and
   [ticket planning](../dev/ticket-planning.md) for that contract. Fugue does not

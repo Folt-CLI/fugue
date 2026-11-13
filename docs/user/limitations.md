@@ -12,9 +12,11 @@ GitHub Projects or repository process metadata. See
 - The configuration schema supports `claude` and `codex` providers and the
   analyst, implementer and reviewer roles. Provider capabilities and reported
   usage differ; a session can be resumed only where the provider supports it.
-- `subscription_login` uses your own provider sign-in. Provider restrictions,
-  quota limits, missing credentials and billing requirements need intervention.
-  Metered `api_key` authentication must be explicitly chosen in TOML.
+- Both bundled provider adapters require `subscription_login`, using your own
+  sign-in to the unmodified provider CLI. The schema accepts `api_key` when
+  explicitly set in TOML, but both adapters reject it when invoked. There is no
+  automatic fallback to metered authentication. Provider restrictions, quota
+  limits, missing credentials and billing requirements need intervention.
 - Workflow commands require a GitHub repository and Project configuration,
   ticket metadata and suitable permissions. A non-GitHub origin cannot be used
   to infer the repository; set `github.repo` explicitly when needed.

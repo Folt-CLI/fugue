@@ -53,15 +53,14 @@ Each role (`analyst`, `implementer`, `reviewer`) accepts:
 | --- | --- |
 | `provider` | `claude` or `codex`; defaults as in the example |
 | `model` | Optional string; unset by default |
-| `authentication_mode` | `subscription_login` by default, or `api_key` |
+| `authentication_mode` | `subscription_login` by default; the schema also accepts `api_key`, but both bundled adapters reject it when invoked |
 
 Omitted roles keep their defaults. If you supply a role table, include its
-`provider`. Provider choice and authentication mode are independent settings.
-`subscription_login` uses your own sign-in to the unmodified provider CLI.
-`api_key` must be explicitly set in TOML and uses metered authentication; Fugue
-prints a warning for roles configured this way. Credentials belong in the
-provider's supported environment or sign-in mechanism, not in this file. There
-is no automatic fallback to metered authentication.
+`provider`. Both bundled provider adapters currently require `subscription_login`,
+using your own sign-in to the unmodified provider CLI. The schema accepts `api_key`
+when explicitly set in TOML, but both adapters reject it when invoked. Credentials
+belong in the provider's supported environment or sign-in mechanism, not in this
+file. There is no automatic fallback to metered authentication.
 
 ## GitHub
 
