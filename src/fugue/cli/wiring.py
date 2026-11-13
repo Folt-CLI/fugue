@@ -97,7 +97,9 @@ def build_engine(
     return Engine(
         EngineDeps(
             config=config,
-            store=Store(state_dir / "fugue.db"),
+            store=Store(
+                state_dir / "fugue.db", busy_timeout_seconds=config.limits.database_wait_seconds
+            ),
             artifacts=ArtifactStore(state_dir / "artifacts"),
             github=GitHubClient(
                 repo,
@@ -114,10 +116,10 @@ def build_engine(
     )
 
 
-def open_store(state_dir: Path) -> Store:
+def open_store(state_dir: Path, wait_seconds: float = 30.0) -> Store:
     """Open the run store for reading; a missing store reads as empty and is not created."""
     path = state_dir / "fugue.db"
-    return Store(path) if path.is_file() else Store(":memory:")
+    return Store(path, busy_timeout_seconds=wait_seconds) if path.is_file() else Store(":memory:")
 
 
 def load_run_detail(store: Store, run_id: int) -> RunDetail:

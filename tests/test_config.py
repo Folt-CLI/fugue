@@ -29,6 +29,7 @@ def test_load_defaults() -> None:
     assert config.limits.model_dump() == {
         "max_repair_attempts": 3,
         "max_concurrent_runs": 1,
+        "database_wait_seconds": 30,
         "agent_timeout_seconds": 3600,
         "max_output_bytes": 65536,
         "ci_poll_interval_seconds": 20,
@@ -92,6 +93,7 @@ model = "chosen-model"
     assert config.limits.model_dump() == {
         "max_repair_attempts": 5,
         "max_concurrent_runs": 2,
+        "database_wait_seconds": 30,
         "agent_timeout_seconds": 60,
         "max_output_bytes": 1024,
         "ci_poll_interval_seconds": 20,
@@ -209,7 +211,13 @@ def test_api_key_requires_explicit_toml(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "key",
-    ["max_repair_attempts", "max_concurrent_runs", "agent_timeout_seconds", "max_output_bytes"],
+    [
+        "max_repair_attempts",
+        "max_concurrent_runs",
+        "database_wait_seconds",
+        "agent_timeout_seconds",
+        "max_output_bytes",
+    ],
 )
 @pytest.mark.parametrize("value", [-1, 0])
 def test_limits_reject_nonpositive_values(tmp_path: Path, key: str, value: int) -> None:
@@ -222,12 +230,12 @@ def test_positive_limit_boundaries(tmp_path: Path) -> None:
         write_config(
             tmp_path,
             "[limits]\nmax_repair_attempts = 1\nmax_concurrent_runs = 1\n"
-            "agent_timeout_seconds = 1\nmax_output_bytes = 1\n"
+            "database_wait_seconds = 1\nagent_timeout_seconds = 1\nmax_output_bytes = 1\n"
             "ci_poll_interval_seconds = 1\nci_timeout_seconds = 1",
         )
     )
     integers = config.limits.model_dump(exclude={"infrastructure_markers"})
-    assert len(integers) == 6
+    assert len(integers) == 7
     assert set(integers.values()) == {1}
 
 

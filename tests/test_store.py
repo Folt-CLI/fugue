@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
@@ -28,6 +30,47 @@ def test_migration_and_reopen(tmp_path: Path) -> None:
     with Store(path) as reopened:
         assert reopened.get_run(run.id).state == "implement"
         assert reopened.list_runs() == [reopened.get_run(run.id)]
+
+
+def _hold_write_lock(path: Path) -> sqlite3.Connection:
+    holder = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    return holder
+
+
+def test_write_waits_for_busy_timeout_and_succeeds_when_released(tmp_path: Path) -> None:
+    path = tmp_path / "busy.db"
+    with Store(path, busy_timeout_seconds=10) as store:
+        holder = _hold_write_lock(path)
+        timer = threading.Timer(0.4, holder.rollback)
+        timer.start()
+        try:
+            started = time.monotonic()
+            run = store.create_run(1, "o/r")
+            assert time.monotonic() - started >= 0.3
+        finally:
+            timer.join()
+            holder.close()
+        assert store.get_run(run.id).ticket_number == 1
+
+
+def test_write_fails_with_locked_error_after_busy_timeout(tmp_path: Path) -> None:
+    path = tmp_path / "busy.db"
+    with Store(path, busy_timeout_seconds=0.2) as store:
+        holder = _hold_write_lock(path)
+        try:
+            started = time.monotonic()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.create_run(1, "o/r")
+            assert 0.15 <= time.monotonic() - started < 5
+        finally:
+            holder.rollback()
+            holder.close()
+
+
+def test_busy_timeout_defaults_to_thirty_seconds(tmp_path: Path) -> None:
+    with Store(tmp_path / "default.db") as store:
+        assert store._connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
 
 
 def test_newer_version_errors(tmp_path: Path) -> None:

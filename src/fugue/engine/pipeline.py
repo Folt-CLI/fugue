@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -44,6 +43,7 @@ from fugue.engine.facts import (
     selected_solution,
     worktree_path,
 )
+from fugue.engine.locks import RepoLock
 from fugue.engine.ports import CiGitHubPort, GitHubPort, MergeGitHubPort, ReviewGitHubPort
 from fugue.engine.prompts import (
     commit_message,
@@ -98,7 +98,7 @@ class EngineDeps:
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     progress: Callable[[str], None] | None = None
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
-    repo_lock: asyncio.Lock | None = None
+    repo_lock: RepoLock | None = None
 
 
 @dataclass(frozen=True)
@@ -682,7 +682,9 @@ class Engine:
 
             async def create() -> None:
                 identity.path.parent.mkdir(parents=True, exist_ok=True)
-                async with self.deps.repo_lock or nullcontext():
+                async with self.deps.repo_lock or RepoLock(
+                    self.deps.state_dir, self.deps.repo_root
+                ):
                     await git.fetch()
                     await git.fast_forward(self.deps.base_branch)
                     await git.create_worktree(identity.path, identity.branch, self.deps.base_branch)

@@ -80,6 +80,14 @@ def render_outcome(outcome: RunOutcome) -> str:
     lines.extend(f"note: {note}" for note in outcome.notes)
     if outcome.findings:
         lines.append(render_findings(outcome.findings))
+    hint = next_step(outcome)
+    if hint is not None:
+        lines.append(f"next: {hint}")
+    return "\n".join(lines)
+
+
+def next_step(outcome: RunOutcome) -> str | None:
+    """Return the command that continues a run in this state, if any."""
     hints = {
         RunState.WAITING_FOR_CI: f"fugue review {outcome.run_id}",
         RunState.WAITING_FOR_DECISION: (
@@ -92,10 +100,37 @@ def render_outcome(outcome: RunOutcome) -> str:
         RunState.INTERRUPTED: f"fugue resume {outcome.run_id}",
         RunState.PROVIDER_LIMITED: f"fugue resume {outcome.run_id}",
     }
-    hint = hints.get(outcome.state)
-    if hint is not None:
-        lines.append(f"next: {hint}")
-    return "\n".join(lines)
+    return hints.get(outcome.state)
+
+
+@dataclass(frozen=True)
+class BatchRow:
+    ticket: int
+    state: str
+    run_id: int | None
+    detail: str
+    next_step: str | None = None
+
+
+def render_skip(ticket: int, blockers: Sequence[int]) -> str:
+    return f"skipped: blocked by {', '.join(f'#{number}' for number in blockers)}"
+
+
+def render_batch_summary(rows: Sequence[BatchRow]) -> str:
+    table = _table(
+        ["ticket", "state", "run", "result"],
+        [
+            [
+                f"#{row.ticket}",
+                row.state,
+                "-" if row.run_id is None else str(row.run_id),
+                row.detail,
+            ]
+            for row in rows
+        ],
+    )
+    hints = [f"#{row.ticket} next: {row.next_step}" for row in rows if row.next_step]
+    return "\n".join([*table, *hints])
 
 
 def render_findings(findings: Sequence[Finding]) -> str:

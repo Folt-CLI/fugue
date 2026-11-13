@@ -41,6 +41,24 @@ GitHub Projects or repository process metadata. See
   resume a run. Output is bounded by `max_output_bytes`; usage and cost data
   are limited to what providers report, and cost estimates are not a bill.
 
+## Parallel runs
+
+- Runs of one ticket are exclusive: a second `fugue run` of the same ticket in
+  the same repository exits with code 3 and names the process holding the
+  ticket lock. After a killed process the next run recovers the lock and
+  resumes the unfinished run. If the lock file is held but its recorded process
+  is not running, stop any remaining processes holding the file; never delete it.
+- `fugue run` accepts several ticket numbers, runs at most
+  `limits.max_concurrent_runs` at once, labels progress lines `[#N]` and prints
+  a summary. A ticket with an open blocker is skipped. Skipped and
+  lock-conflicted tickets exit with code 3.
+- Shared Git steps in the primary checkout are serialised across processes by a
+  repository lock; agent work is not.
+- Concurrent runs share no provider throttle, backoff or fallback. A run that
+  hits a provider limit ends provider-limited (exit code 5) while others go on.
+- `resume`, `review`, `decide`, `approve` and `merge` do not take the ticket
+  lock.
+
 ## Exit codes
 
 The CLI maps run outcomes to these codes:
@@ -53,6 +71,10 @@ The CLI maps run outcomes to these codes:
 | `4` | Run failed or an execution error occurred |
 | `5` | Run provider-limited |
 | `6` | Run interrupted |
+
+For several tickets the highest-precedence code applies: interrupted (6), then
+failed or error (4), provider-limited (5), then blocked, skipped or
+lock-conflicted (3), otherwise 0.
 
 An exit code of zero alone does not mean the ticket was merged or even that the
 run completed. Check the printed state and `status`. CLI argument parsing can

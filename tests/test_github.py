@@ -48,7 +48,7 @@ BLOCKERS: list[dict[str, Any]] = [
         "id": 1010,
         "number": 10,
         "title": "Add process runner",
-        "state": "closed",
+        "state": "open",
         "url": "https://api.github.com/repos/example/fugue/issues/10",
     },
 ]
@@ -645,6 +645,16 @@ def test_parser_uses_separate_native_blockers() -> None:
     issue = {**ISSUE, "blocked_by": [{"number": 999}]}
     assert parse_ticket(issue, VALUES, ITEM, BLOCKERS).blocked_by == [11, 10]
     assert parse_ticket(issue, VALUES, ITEM, []).blocked_by == []
+
+
+def test_parser_ignores_closed_blockers_and_counts_missing_state_as_open() -> None:
+    blockers: list[dict[str, Any]] = [
+        {"number": 11, "state": "open"},
+        {"number": 12, "state": "closed"},
+        {"number": 13},
+    ]
+    assert parse_ticket(ISSUE, VALUES, ITEM, blockers).blocked_by == [11, 13]
+    assert parse_ticket(ISSUE, VALUES, ITEM, [blockers[1]]).blocked_by == []
 
 
 @pytest.mark.parametrize("paged", [False, True])
