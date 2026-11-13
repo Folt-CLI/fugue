@@ -83,7 +83,10 @@ class FallbackAdapter:
             prompt = request.fresh_prompt
         if note is not None:
             prompt = f"{prompt}\n\n{note}"
-        return replace(request, prompt=prompt, session_id=session, model=member.model, sessions={})
+        model = request.models.get(member.adapter.name, member.model)
+        return replace(
+            request, prompt=prompt, session_id=session, model=model, models={}, sessions={}
+        )
 
     async def run(
         self,

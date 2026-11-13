@@ -82,6 +82,8 @@ class UsageRecord:
     cost_estimate_usd: float | None
     duration_ms: int | None
     created_at: datetime
+    model: str | None = None
+    tier: str | None = None
 
 
 @dataclass(frozen=True)

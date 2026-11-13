@@ -13,7 +13,7 @@ from fugue.agents import AccessMode, AgentRequest
 from fugue.analysis.render import render_analysis, render_attachments, render_body, render_details
 from fugue.analysis.schema import Handoff, handoff_schema
 from fugue.engine import Engine, EngineDeps, RunOutcome
-from fugue.engine.pipeline import role_adapter
+from fugue.engine.pipeline import model_choice, role_adapter, usage_choice
 from fugue.github import GitHubClient
 from fugue.github.attachments import UploadedAttachment
 from fugue.models import Role, Size, Status, Ticket
@@ -80,6 +80,7 @@ async def analyse(deps: EngineDeps, ticket: Ticket, *, run_id: int | None = None
         if saved is None:
             role = deps.config.roles[Role.ANALYST]
             adapter = role_adapter(deps, run_id, Role.ANALYST, role)
+            choice = model_choice(deps, run_id, Role.ANALYST, ticket.size)
             request = AgentRequest(
                 role=Role.ANALYST,
                 prompt=(
@@ -95,7 +96,8 @@ async def analyse(deps: EngineDeps, ticket: Ticket, *, run_id: int | None = None
                 access=AccessMode.READ_ONLY,
                 output_schema=handoff_schema(),
                 timeout_seconds=deps.config.limits.agent_timeout_seconds,
-                model=role.model,
+                model=choice.models.get(role.provider),
+                models=choice.models,
             )
             result = await adapter.run(request)
             if result.session_id is not None:
@@ -113,6 +115,7 @@ async def analyse(deps: EngineDeps, ticket: Ticket, *, run_id: int | None = None
                     result.provider,
                     result.authentication_mode,
                     **asdict(result.usage),
+                    **usage_choice(choice, result.provider),
                 )
             if not result.ok or result.cancelled or result.timed_out or result.provider_limited:
                 state = (

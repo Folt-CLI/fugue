@@ -46,7 +46,11 @@ MIGRATIONS: list[str] = [
         name TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL,
         size_bytes INT NOT NULL, created_at TEXT NOT NULL
     );
+    """,
     """
+    ALTER TABLE usage_records ADD COLUMN model TEXT;
+    ALTER TABLE usage_records ADD COLUMN tier TEXT;
+    """,
 ]
 
 

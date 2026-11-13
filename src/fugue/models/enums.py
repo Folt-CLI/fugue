@@ -67,6 +67,12 @@ class Role(StrEnum):
     REVIEWER = "reviewer"
 
 
+class ModelTier(StrEnum):
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+
+
 class AuthenticationMode(StrEnum):
     SUBSCRIPTION_LOGIN = "subscription_login"
     API_KEY = "api_key"

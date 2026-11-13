@@ -24,6 +24,8 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [incident](#incident)
 - [issue type](#issue-type)
 - [milestone](#milestone)
+- [model override](#model-override)
+- [model tier](#model-tier)
 - [non-blocking finding](#non-blocking-finding)
 - [operation](#operation)
 - [orchestrator](#orchestrator)
@@ -224,6 +226,18 @@ Status: unresolved.
 ### handoff
 
 the schema-validated structured input or output passed between roles at a stage boundary.
+
+Status: decided.
+
+### model override
+
+a per-run tier or explicit model identifier on the command line that outranks configuration.
+
+Status: decided.
+
+### model tier
+
+one of small, medium or large; configuration maps it per provider to a model identifier.
 
 Status: decided.
 
