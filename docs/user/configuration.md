@@ -98,6 +98,7 @@ All integer fields under `[limits]` must be greater than zero.
 | --- | --- | --- |
 | `max_repair_attempts` | `3` | Repair limit for one stage |
 | `max_concurrent_runs` | `1` | Maximum concurrent runs |
+| `database_wait_seconds` | `30` | Seconds to wait for the run database when another Fugue process is writing |
 | `agent_timeout_seconds` | `3600` | Agent call timeout |
 | `max_output_bytes` | `65536` | Output capture limit |
 | `ci_poll_interval_seconds` | `20` | CI polling interval |

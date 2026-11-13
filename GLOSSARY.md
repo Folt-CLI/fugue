@@ -10,6 +10,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [artifact](#artifact)
 - [authentication mode](#authentication-mode)
 - [autonomy exceptions](#autonomy-exceptions)
+- [batch](#batch)
 - [blocking finding](#blocking-finding)
 - [campaign](#campaign)
 - [capability](#capability)
@@ -30,6 +31,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [Question](#question)
 - [reconcile](#reconcile)
 - [repair limit](#repair-limit)
+- [repository lock](#repository-lock)
 - [role](#role)
 - [run](#run)
 - [scenario](#scenario)
@@ -39,6 +41,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [stack](#stack)
 - [stage](#stage)
 - [Status](#status)
+- [ticket lock](#ticket-lock)
 - [usage record](#usage-record)
 - [work item](#work-item)
 - [worktree](#worktree)
@@ -197,6 +200,12 @@ how a provider call is authenticated and billed; one of `subscription_login` (th
 
 Status: decided.
 
+### batch
+
+one `fugue run` invocation naming several tickets.
+
+Status: decided.
+
 ### capability
 
 a feature a provider adapter declares (streaming_events, structured_output, session_resume, cancellation, read_only_mode, workspace_write_mode, usage_tokens, usage_cost_estimate).
@@ -235,6 +244,12 @@ the configured maximum number of repair attempts for one stage before a run stop
 
 Status: decided.
 
+### repository lock
+
+the cross-process lock held around the shared Git steps in the primary checkout.
+
+Status: decided.
+
 ### role
 
 a named job for an agent in a run: analyst, implementer or reviewer.
@@ -256,6 +271,12 @@ Status: decided.
 ### stage
 
 a named step of a run (load, validate, analyse, select, prepare, implement, verify, deliver, monitor, review, repair, merge, close).
+
+Status: decided.
+
+### ticket lock
+
+the cross-process lock held for the whole run of one ticket.
 
 Status: decided.
 

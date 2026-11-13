@@ -72,9 +72,10 @@ class Store:
         self,
         path: Path | Literal[":memory:"],
         clock: Callable[[], datetime] | None = None,
+        busy_timeout_seconds: float = 30.0,
     ) -> None:
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._connection = sqlite3.connect(str(path))
+        self._connection = sqlite3.connect(str(path), timeout=busy_timeout_seconds)
         self._connection.row_factory = sqlite3.Row
         try:
             self._connection.execute("PRAGMA foreign_keys = ON")

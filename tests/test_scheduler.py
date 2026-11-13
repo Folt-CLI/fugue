@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,14 @@ from typing import cast
 
 import pytest
 
-from fugue.engine.locks import LockMetadata, TicketLock, TicketLocked
+from fugue.engine.locks import (
+    LockMetadata,
+    RepoLock,
+    TicketLock,
+    TicketLocked,
+    pid_alive,
+    read_metadata,
+)
 from fugue.engine.pipeline import Engine, EngineDeps, Identity, RunOutcome
 from fugue.engine.scheduler import run_many
 from fugue.models import IssueType, Priority, Size, Status, Ticket
@@ -46,6 +54,10 @@ class FakeEngine:
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         return await self.action(ticket_number)
 
+    async def run_to_green(self, ticket_number: int) -> RunOutcome:
+        outcome = await self.action(ticket_number)
+        return replace(outcome, state=RunState.COMPLETED)
+
 
 async def success(number: int) -> RunOutcome:
     return RunOutcome(number, RunState.WAITING_FOR_CI)
@@ -72,7 +84,7 @@ def test_limit_respected_and_results_keep_input_order(tmp_path: Path, limit: int
             finally:
                 active -= 1
 
-        def factory() -> FakeEngine:
+        def factory(_ticket: Ticket) -> FakeEngine:
             nonlocal created
             created += 1
             return FakeEngine(tmp_path, action)
@@ -99,7 +111,7 @@ def test_blocked_ticket_skipped_even_when_blocker_is_in_batch(tmp_path: Path) ->
         return await success(number)
 
     results = asyncio.run(
-        run_many([ticket(1, blocked_by=[2]), ticket(2)], lambda: FakeEngine(tmp_path, action), 2)
+        run_many([ticket(1, blocked_by=[2]), ticket(2)], lambda _t: FakeEngine(tmp_path, action), 2)
     )
     assert results == [None, RunOutcome(2, RunState.WAITING_FOR_CI)]
     assert calls == [2]
@@ -107,7 +119,7 @@ def test_blocked_ticket_skipped_even_when_blocker_is_in_batch(tmp_path: Path) ->
 
 @pytest.mark.parametrize("limit", [0, -1])
 def test_invalid_limit_refused_before_factory(limit: int) -> None:
-    def factory() -> FakeEngine:
+    def factory(_ticket: Ticket) -> FakeEngine:
         pytest.fail("Invalid input must not create an engine")
 
     with pytest.raises(ValueError, match="limit must be positive"):
@@ -115,7 +127,7 @@ def test_invalid_limit_refused_before_factory(limit: int) -> None:
 
 
 def test_duplicate_ticket_refused_before_any_run() -> None:
-    def factory() -> FakeEngine:
+    def factory(_ticket: Ticket) -> FakeEngine:
         pytest.fail("Duplicate tickets must not create an engine")
 
     with pytest.raises(ValueError, match="same ticket"):
@@ -123,7 +135,7 @@ def test_duplicate_ticket_refused_before_any_run() -> None:
 
 
 def test_empty_batch_does_not_create_engine() -> None:
-    def factory() -> FakeEngine:
+    def factory(_ticket: Ticket) -> FakeEngine:
         pytest.fail("Empty batch must not create an engine")
 
     assert asyncio.run(run_many([], factory, 1)) == []
@@ -142,7 +154,7 @@ def test_failure_does_not_cancel_other_runs(tmp_path: Path, factory_failure: boo
         finished.append(number)
         return await success(number)
 
-    def factory() -> FakeEngine:
+    def factory(_ticket: Ticket) -> FakeEngine:
         nonlocal created
         created += 1
         if factory_failure and created == 1:
@@ -187,7 +199,7 @@ def test_cancellation_propagates_and_waits_for_cleanup(
                 cleaned.append(number)
 
         task = asyncio.create_task(
-            run_many([ticket(n) for n in range(1, 5)], lambda: FakeEngine(tmp_path, action), 2)
+            run_many([ticket(n) for n in range(1, 5)], lambda _t: FakeEngine(tmp_path, action), 2)
         )
         await asyncio.wait_for(filled.wait(), 2)
         if child_cancellation:
@@ -217,7 +229,7 @@ def test_separate_batches_refuse_same_active_ticket(tmp_path: Path) -> None:
             await release.wait()
             return await success(number)
 
-        def factory() -> FakeEngine:
+        def factory(_ticket: Ticket) -> FakeEngine:
             return FakeEngine(tmp_path, action)
 
         first = asyncio.create_task(run_many([ticket(1)], factory, 1))
@@ -355,7 +367,7 @@ def test_prepare_mutations_are_serialised_while_agents_overlap(
         monkeypatch.setattr("fugue.engine.pipeline.Git", FakeGit)
         with Store(":memory:") as store:
 
-            def factory() -> PreparingEngine:
+            def factory(_ticket: Ticket) -> PreparingEngine:
                 nonlocal created
                 created += 1
                 # Lexically different paths to the same primary repository.
@@ -380,5 +392,127 @@ def test_prepare_mutations_are_serialised_while_agents_overlap(
         assert maximum_preparing == 1
         assert maximum_agents == 2
         assert preparing == agents == 0
+
+    asyncio.run(scenario())
+
+
+def test_until_green_runs_to_green_and_on_complete_sees_each_result(tmp_path: Path) -> None:
+    seen: list[tuple[int, object]] = []
+
+    results = asyncio.run(
+        run_many(
+            [ticket(1), ticket(2, blocked_by=[9])],
+            lambda _t: FakeEngine(tmp_path, success),
+            2,
+            until_green=True,
+            on_complete=lambda t, result: seen.append((t.number, result)),
+        )
+    )
+    assert results == [RunOutcome(1, RunState.COMPLETED), None]
+    assert sorted(seen, key=lambda item: item[0]) == [(1, results[0]), (2, None)]
+
+
+def test_factory_receives_the_ticket_and_errors_reach_on_complete(tmp_path: Path) -> None:
+    received: list[int] = []
+    completed: list[object] = []
+
+    def factory(item: Ticket) -> FakeEngine:
+        received.append(item.number)
+        raise RuntimeError("no engine")
+
+    results = asyncio.run(
+        run_many([ticket(3)], factory, 1, on_complete=lambda _t, result: completed.append(result))
+    )
+    assert received == [3]
+    assert isinstance(results[0], RuntimeError)
+    assert completed == results
+
+
+def test_ticket_lock_records_recovery_and_clean_release_empties_file(tmp_path: Path) -> None:
+    lock = TicketLock(tmp_path, "org/repo", 7)
+    lock.path.parent.mkdir(parents=True)
+    dead = LockMetadata(2**22 + 12345, datetime.now(UTC) - timedelta(seconds=90))
+    lock.path.write_text(json.dumps({"pid": dead.pid, "created_at": dead.created_at.isoformat()}))
+    assert not pid_alive(dead.pid)
+    with lock:
+        assert lock.recovered is not None
+        assert lock.recovered.pid == dead.pid
+        assert lock.recovered.age_seconds >= 90
+    assert lock.path.read_text() == ""
+    assert read_metadata(lock.path) is None
+    again = TicketLock(tmp_path, "org/repo", 7)
+    with again:
+        assert again.recovered is None
+
+
+def test_read_metadata_tolerates_corrupt_content(tmp_path: Path) -> None:
+    path = tmp_path / "x.lock"
+    assert read_metadata(path) is None
+    for text in ["", "not json", "{}", "[]", '{"pid": "x", "created_at": 1}']:
+        path.write_text(text)
+        assert read_metadata(path) is None
+
+
+def test_lock_conflict_message_names_pid_and_elapsed(tmp_path: Path) -> None:
+    with TicketLock(tmp_path, "org/repo", 5) as held:
+        with pytest.raises(TicketLocked) as conflict, TicketLock(tmp_path, "org/repo", 5):
+            pass
+        message = str(conflict.value)
+        assert message.startswith(f"ticket #5 is already being run by process {os.getpid()} (")
+        assert f"lock file {held.path}" in message
+        assert conflict.value.pid == os.getpid()
+        assert conflict.value.age_seconds is not None
+
+
+def test_lock_conflict_with_dead_recorded_pid_says_not_running(tmp_path: Path) -> None:
+    with TicketLock(tmp_path, "org/repo", 5) as held:
+        held.path.write_text(
+            json.dumps({"pid": 2**22 + 12345, "created_at": datetime.now(UTC).isoformat()})
+        )
+        with (
+            pytest.raises(TicketLocked, match="not running but still holds the lock") as conflict,
+            TicketLock(tmp_path, "org/repo", 5),
+        ):
+            pass
+        assert "fuser" in str(conflict.value)
+        assert "do not delete" in str(conflict.value)
+
+
+def test_repo_lock_serialises_holders_without_process_local_state(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        first = RepoLock(tmp_path, tmp_path)
+        second = RepoLock(tmp_path, tmp_path / "x" / "..")
+        assert first.path == second.path
+        order: list[str] = []
+        async with first:
+            with pytest.raises(RuntimeError, match="already acquired"):
+                await first.__aenter__()
+
+            async def waiter() -> None:
+                async with second:
+                    order.append("second")
+
+            task = asyncio.create_task(waiter())
+            await asyncio.sleep(0.2)
+            assert order == []
+            order.append("first")
+        await asyncio.wait_for(task, 2)
+        assert order == ["first", "second"]
+        assert first.path.parent == tmp_path / "locks"
+        assert first.path.name.startswith("repository-")
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_repo_lock_wait_leaves_no_lock_held(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with RepoLock(tmp_path, tmp_path):
+            waiter = asyncio.create_task(RepoLock(tmp_path, tmp_path).__aenter__())
+            await asyncio.sleep(0.15)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+        async with asyncio.timeout(2), RepoLock(tmp_path, tmp_path):
+            pass
 
     asyncio.run(scenario())

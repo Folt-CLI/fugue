@@ -89,7 +89,7 @@ def parse_ticket(
             "milestone": (issue.get("milestone") or {}).get("title"),
             "assignees": [entry["login"] for entry in issue.get("assignees", [])],
             "parent": int(parent_url.rstrip("/").rsplit("/", 1)[1]) if parent_url else None,
-            "blocked_by": [entry["number"] for entry in blockers],
+            "blocked_by": [entry["number"] for entry in blockers if entry.get("state") != "closed"],
             "components": components,
             "body_sections": parse_body_sections(issue.get("body") or ""),
         }

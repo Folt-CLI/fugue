@@ -85,8 +85,11 @@ class FakeEngine:
 
 
 @pytest.fixture
-def engine(monkeypatch: pytest.MonkeyPatch) -> FakeEngine:
+def engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeEngine:
     fake = FakeEngine()
+    fake.deps = SimpleNamespace(
+        state_dir=tmp_path / "lock-state", github=SimpleNamespace(repo="o/r")
+    )
     monkeypatch.setattr(cli, "engine_factory", lambda *args: fake)
     monkeypatch.setattr(getpass, "getuser", lambda: "os-user")
     return fake

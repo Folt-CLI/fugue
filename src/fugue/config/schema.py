@@ -13,6 +13,7 @@ class Limits(BaseModel):
 
     max_repair_attempts: int = Field(default=3, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
+    database_wait_seconds: int = Field(default=30, gt=0)
     agent_timeout_seconds: int = Field(default=3600, gt=0)
     max_output_bytes: int = Field(default=65536, gt=0)
     ci_poll_interval_seconds: int = Field(default=20, gt=0)
