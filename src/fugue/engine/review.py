@@ -206,7 +206,7 @@ def parse_findings(text: str) -> list[Finding] | Clean:
             if part.lstrip().startswith("```"):
                 if prose:
                     summary_parts.append(
-                        " ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]`")
+                        " ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]")
                     )
                     prose = []
                 summary_parts.append(part)
@@ -221,7 +221,7 @@ def parse_findings(text: str) -> list[Finding] | Clean:
                 part = part[: match.start()] + " " + part[match.end() :]
             prose.append(part)
         if prose:
-            summary_parts.append(" ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]`"))
+            summary_parts.append(" ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]"))
         summary = "\n".join(summary_parts) or joined
         suggestion = "\n".join(raw.suggestion) if raw.suggestion is not None else None
         if len(target) < limit:
