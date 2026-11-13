@@ -14,10 +14,11 @@ from typing import cast
 import pytest
 
 from fugue.engine.locks import LockMetadata, TicketLock, TicketLocked
-from fugue.engine.pipeline import EngineDeps, RunOutcome
+from fugue.engine.pipeline import Engine, EngineDeps, Identity, RunOutcome
 from fugue.engine.scheduler import run_many
 from fugue.models import IssueType, Priority, Size, Status, Ticket
-from fugue.workflow import RunState
+from fugue.store import Store
+from fugue.workflow import RunState, Stage
 
 
 def ticket(number: int, *, blocked_by: list[int] | None = None) -> Ticket:
@@ -36,7 +37,9 @@ class FakeEngine:
     def __init__(self, state_dir: Path, action: Callable[[int], Awaitable[RunOutcome]]) -> None:
         self.deps = cast(
             EngineDeps,
-            SimpleNamespace(state_dir=state_dir, github=SimpleNamespace(repo="org/repo")),
+            SimpleNamespace(
+                state_dir=state_dir, repo_root=state_dir, github=SimpleNamespace(repo="org/repo")
+            ),
         )
         self.action = action
 
@@ -275,3 +278,107 @@ os._exit(0)
     assert json.loads(lock.path.read_text())["pid"] != os.getpid()
     with lock:
         assert json.loads(lock.path.read_text())["pid"] == os.getpid()
+
+
+def test_prepare_mutations_are_serialised_while_agents_overlap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        runs_started = asyncio.Event()
+        agents_started = asyncio.Event()
+        mutation_calls: list[str] = []
+        preparing = 0
+        maximum_preparing = 0
+        agents = 0
+        maximum_agents = 0
+        started = 0
+        created = 0
+
+        class FakeGit:
+            def __init__(self, repo: Path) -> None:
+                assert repo.resolve() == tmp_path.resolve()
+
+            async def fetch(self) -> None:
+                nonlocal preparing, maximum_preparing
+                mutation_calls.append("enter")
+                preparing += 1
+                maximum_preparing = max(maximum_preparing, preparing)
+                # Keep the first preparation open until the other run starts.
+                await runs_started.wait()
+
+            async def fast_forward(self, branch: str) -> None:
+                assert branch == "develop"
+                mutation_calls.append("fast_forward")
+
+            async def create_worktree(self, path: Path, branch: str, base: str) -> None:
+                nonlocal preparing
+                mutation_calls.append("worktree_add")
+                preparing -= 1
+                mutation_calls.append("exit")
+
+        class PreparingEngine(Engine):
+            async def run_to_pr(self, ticket_number: int) -> RunOutcome:
+                nonlocal started
+                run = self.deps.store.create_run(ticket_number, self.deps.github.repo)
+                identity = Identity(f"ticket-{ticket_number}", tmp_path / str(ticket_number))
+                started += 1
+                if started == 2:
+                    runs_started.set()
+                await self._stage(
+                    run.id,
+                    Stage.PREPARE,
+                    lambda: self._prepare(
+                        run.id,
+                        ticket(ticket_number).model_copy(
+                            update={"status": Status.IN_IMPLEMENTATION}
+                        ),
+                        "scope",
+                        identity,
+                    ),
+                )
+                await self._agent(run.id, identity, "prompt", "scope")
+                return await success(ticket_number)
+
+            async def _agent(
+                self, run_id: int, identity: Identity, prompt: str, scope: str
+            ) -> None:
+                nonlocal agents, maximum_agents
+                agents += 1
+                maximum_agents = max(maximum_agents, agents)
+                if agents == 2:
+                    agents_started.set()
+                try:
+                    await agents_started.wait()
+                finally:
+                    agents -= 1
+
+        monkeypatch.setattr("fugue.engine.pipeline.Git", FakeGit)
+        with Store(":memory:") as store:
+
+            def factory() -> PreparingEngine:
+                nonlocal created
+                created += 1
+                # Lexically different paths to the same primary repository.
+                repo_root = tmp_path if created == 1 else tmp_path / "unused" / ".."
+                deps = cast(
+                    EngineDeps,
+                    SimpleNamespace(
+                        store=store,
+                        repo_root=repo_root,
+                        state_dir=tmp_path,
+                        github=SimpleNamespace(repo="org/repo"),
+                        base_branch="develop",
+                        progress=None,
+                        repo_lock=None,
+                    ),
+                )
+                return PreparingEngine(deps)
+
+            results = await asyncio.wait_for(run_many([ticket(1), ticket(2)], factory, 2), 2)
+        assert results == [await success(1), await success(2)]
+        assert mutation_calls == ["enter", "fast_forward", "worktree_add", "exit"] * 2
+        assert maximum_preparing == 1
+        assert maximum_agents == 2
+        assert preparing == agents == 0
+
+    asyncio.run(scenario())

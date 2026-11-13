@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Protocol
 
 from fugue.engine.locks import TicketLock
@@ -34,6 +35,7 @@ async def run_many(
     if len(numbers) != len(set(numbers)):
         raise ValueError("The same ticket cannot be scheduled twice")
     semaphore = asyncio.Semaphore(limit)
+    repo_locks: dict[Path, asyncio.Lock] = {}
 
     async def run(ticket: Ticket) -> RunOutcome | Exception | None:
         if ticket.blocked_by:
@@ -41,6 +43,9 @@ async def run_many(
         async with semaphore:
             try:
                 engine = engine_factory()
+                engine.deps.repo_lock = repo_locks.setdefault(
+                    engine.deps.repo_root.resolve(), asyncio.Lock()
+                )
                 with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket.number):
                     return await engine.run_to_pr(ticket.number)
             except Exception as error:
