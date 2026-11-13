@@ -682,6 +682,7 @@ def test_accept_repairs_pushes_and_reviews_again(harness: Harness, reproduction:
     assert asyncio.run(Git(harness.origin).head_sha(branch)) == new_head
     repair = adapter.requests[2]
     assert repair.role == Role.IMPLEMENTER and repair.access == AccessMode.WORKSPACE_WRITE
+    assert repair.cwd == harness.worktree
     assert repair.session_id == "session-1"
     assert "Crash on empty input" in repair.prompt and "allowed.txt:1" in repair.prompt
     if reproduction:

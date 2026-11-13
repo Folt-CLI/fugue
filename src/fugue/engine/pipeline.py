@@ -1101,7 +1101,7 @@ class Engine:
             store.set_run_state(run_id, RunState.REPAIRING)
             prompt = review_repair_prompt(accepted)
             await self._stage(
-                run_id, Stage.REPAIR, lambda: self._agent(run_id, identity.path, prompt, scope)
+                run_id, Stage.REPAIR, lambda: self._agent(run_id, identity, prompt, scope)
             )
             store.complete_operation(repair.id, {"done": True})
             store.set_run_state(run_id, RunState.RUNNING)
