@@ -26,6 +26,7 @@ class Stage(StrEnum):
 class RunState(StrEnum):
     RUNNING = "running"
     WAITING_FOR_SELECTION = "waiting_for_selection"
+    WAITING_FOR_DECISION = "waiting_for_decision"
     WAITING_FOR_MERGE_APPROVAL = "waiting_for_merge_approval"
     WAITING_FOR_CI = "waiting_for_ci"
     CHECKING = "checking"

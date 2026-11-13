@@ -275,7 +275,25 @@ def test_github_and_worktrees_defaults() -> None:
     assert config.github.repo is None
     assert config.github.project_owner is None
     assert config.github.project_number is None
+    assert config.github.reviewer_identity_separate is False
+    assert config.github.resolve_token_env is None
     assert config.worktrees_root is None
+
+
+def test_review_identity_settings_from_toml(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        "[github]\nreviewer_identity_separate = true\nresolve_token_env = ' RESOLVE_TOKEN '\n",
+    )
+    config = load_config(path)
+    assert config.github.reviewer_identity_separate is True
+    assert config.github.resolve_token_env == "RESOLVE_TOKEN"
+
+
+def test_blank_resolve_token_env_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as error:
+        load_config(write_config(tmp_path, "[github]\nresolve_token_env = '  '\n"))
+    assert "github.resolve_token_env" in str(error.value)
 
 
 def test_github_and_worktrees_from_toml(tmp_path: Path) -> None:

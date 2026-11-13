@@ -1,9 +1,11 @@
 """The GitHub operations consumed by the engine."""
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from fugue.github import CheckResult, PullRequest
+from fugue.github.client import PostedReview, ReviewComment, ReviewThread
 from fugue.models import Status, Ticket
 
 
@@ -41,3 +43,27 @@ class CiGitHubPort(GitHubPort, Protocol):
     async def failed_log_tail(self, run_link: str, max_lines: int = 200) -> str: ...
 
     async def rerun_failed(self, run_link: str) -> None: ...
+
+
+@runtime_checkable
+class ReviewGitHubPort(CiGitHubPort, Protocol):
+    """The GitHub operations needed to post reviews and answer their threads."""
+
+    async def reviews(self, pr: PullRequest) -> list[PostedReview]: ...
+
+    async def post_review(
+        self,
+        pr: PullRequest,
+        head_sha: str,
+        body: str,
+        comments: Sequence[ReviewComment] = (),
+        event: str = "COMMENT",
+    ) -> PostedReview: ...
+
+    async def review_threads(self, pr: PullRequest) -> list[ReviewThread]: ...
+
+    async def unresolved_thread_count(self, pr: PullRequest) -> int: ...
+
+    async def reply_to_thread(self, pr: PullRequest, comment_id: int, body: str) -> None: ...
+
+    async def resolve_thread(self, thread_id: str) -> None: ...

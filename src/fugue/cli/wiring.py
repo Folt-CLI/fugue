@@ -99,7 +99,12 @@ def build_engine(
             config=config,
             store=Store(state_dir / "fugue.db"),
             artifacts=ArtifactStore(state_dir / "artifacts"),
-            github=GitHubClient(repo, github.project_owner, github.project_number),
+            github=GitHubClient(
+                repo,
+                github.project_owner,
+                github.project_number,
+                resolve_token_env=github.resolve_token_env,
+            ),
             registry=registry,
             repo_root=repo_root,
             worktrees_root=worktrees_root,

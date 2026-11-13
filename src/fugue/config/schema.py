@@ -106,6 +106,20 @@ class GitHubConfig(BaseModel):
     repo: str | None = None
     project_owner: str | None = None
     project_number: int | None = Field(default=None, gt=0)
+    # False is single-account mode: GitHub forbids author self-approval, so reviews are COMMENT.
+    reviewer_identity_separate: bool = False
+    # Environment variable holding the token used to resolve review threads; None uses the
+    # same environment as every other call.
+    resolve_token_env: str | None = None
+
+    @field_validator("resolve_token_env")
+    @classmethod
+    def require_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("resolve_token_env must not be empty")
+        return value.strip()
 
 
 class FugueConfig(BaseModel):
