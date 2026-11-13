@@ -85,6 +85,28 @@ def test_exact_no_findings_is_clean() -> None:
     assert parse_findings("## Blocking\n- None\n\n## Non-blocking\n- None.\n") is CLEAN
 
 
+def test_no_findings_followed_by_prose_is_clean() -> None:
+    assert parse_findings("No findings.\n\nI could only review the diff, not run it.\n") is CLEAN
+    assert parse_findings("\n  No findings.  \nSecond line.\nThird line.") is CLEAN
+
+
+def test_no_findings_followed_by_blocking_section_yields_those_findings() -> None:
+    [finding] = parsed(f"No findings.\n\n{BLOCKING}")
+    assert (finding.index, finding.severity, finding.blocking) == (1, "High", True)
+    assert finding.path == "allowed.txt"
+    assert "Crash on empty input" in finding.summary
+
+
+def test_no_findings_followed_by_numbered_item_is_not_clean() -> None:
+    [finding] = parsed("No findings.\n1. High: Crash. `allowed.txt:1`\n")
+    assert finding.severity == "High"
+
+
+def test_sentence_containing_no_findings_is_not_clean() -> None:
+    [finding] = parsed("Overall there were No findings.\nLooks fine.")
+    assert (finding.severity, finding.blocking) == ("Medium", True)
+
+
 @pytest.mark.parametrize("heading", ["Blocking", "Non-blocking"])
 def test_unbulleted_section_text_is_one_medium_finding(heading: str) -> None:
     text = "High: Empty input crashes. src/a.py:10"
