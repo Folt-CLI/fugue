@@ -38,7 +38,7 @@ class MergeGitHub(FakeReviewGitHub):
         self.state = "OPEN"
         self.merge_sha: str | None = None
         self.events: list[str] = []
-        self.comments: list[str] = []
+        self.comment_bodies: list[str] = []
         self.merge_error = False
         self.cleanup_error = False
         self.green = True
@@ -75,7 +75,11 @@ class MergeGitHub(FakeReviewGitHub):
 
     async def comment(self, number: int, body: str) -> None:
         self.events.append("comment")
-        self.comments.append(body)
+        self.comment_bodies.append(body)
+
+    async def comments(self, number: int) -> list[str]:
+        assert number == self.ticket.number
+        return list(self.comment_bodies)
 
     async def children(self, number: int) -> list[Ticket]:
         return self.child_tickets
@@ -98,7 +102,7 @@ def ready(review_harness: Harness) -> Iterator[tuple[Harness, MergeGitHub, int]]
     run_id = h.start()
     h.review(run_id)
     github.events.clear()
-    github.comments.clear()
+    github.comment_bodies.clear()
     yield h, github, run_id
 
 
@@ -125,11 +129,13 @@ def test_happy_merge_closes_and_cleans_after_confirmation(
         "delete",
     ]
     assert not h.worktree.exists()
-    assert f"Approval #{approval.id}" in github.comments[0]
-    assert "merge-sha" in github.comments[0] and approval.head_sha in github.comments[0]
+    assert f"Approval #{approval.id}" in github.comment_bodies[0]
+    assert "merge-sha" in github.comment_bodies[0] and approval.head_sha in github.comment_bodies[0]
+    assert len(github.comment_bodies) == 1
+    assert f"<!-- fugue:closure run={run_id} step=comment -->" in github.comment_bodies[0]
     assert github.ticket.status == Status.DONE
     asyncio.run(Engine(h.deps).merge_and_close(run_id))
-    assert len(github.comments) == 1 and github.events.count("delete") == 1
+    assert len(github.comment_bodies) == 1 and github.events.count("delete") == 1
 
 
 def test_new_commit_rejects_old_approval(ready: tuple[Harness, MergeGitHub, int]) -> None:
@@ -188,7 +194,42 @@ def test_restart_finishes_closure_once(ready: tuple[Harness, MergeGitHub, int]) 
     result = asyncio.run(Engine(h.deps).merge_and_close(run_id))
     assert result.state == RunState.COMPLETED
     assert github.events.count("merge") == github.events.count("disposition") == 1
-    assert github.events.count("status") == len(github.comments) == 1
+    assert github.events.count("status") == len(github.comment_bodies) == 1
+
+
+def test_restart_after_closure_comment_response_is_lost(
+    ready: tuple[Harness, MergeGitHub, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, github, run_id = ready
+    request(h, run_id)
+    Engine(h.deps).approve(run_id, "developer", "ready")
+    original = github.comment
+
+    async def lost_response(number: int, body: str) -> None:
+        await original(number, body)
+        raise ConnectionError("comment response lost")
+
+    monkeypatch.setattr(github, "comment", lost_response)
+    with pytest.raises(ConnectionError, match="comment response lost"):
+        asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert github.state == "MERGED" and len(github.comment_bodies) == 1
+    assert h.worktree.exists()
+    monkeypatch.setattr(github, "comment", original)
+    result = asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert result.state == RunState.COMPLETED
+    assert github.events.count("merge") == github.events.count("comment") == 1
+    assert len(github.comment_bodies) == 1
+    assert not h.worktree.exists()
+    asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert len(github.comment_bodies) == 1
+
+
+def test_client_reads_all_ticket_comment_pages(fake: Fake) -> None:
+    args = ["api", f"repos/{REPO}/issues/40/comments", "--paginate", "--slurp"]
+    client, calls = fake([(args, response([[{"body": "First"}], [{"body": "Closure marker"}]]))])
+    assert asyncio.run(client.comments(40)) == ["First", "Closure marker"]
+    assert calls()[0]["argv"] == args
 
 
 def test_unclosed_child_blocks_closure(ready: tuple[Harness, MergeGitHub, int]) -> None:
@@ -253,7 +294,7 @@ def test_restart_after_merge_response_is_lost(
         asyncio.run(Engine(h.deps).merge_and_close(run_id))
     assert h.worktree.exists() and github.state == "MERGED"
     assert asyncio.run(Engine(h.deps).merge_and_close(run_id)).state == RunState.COMPLETED
-    assert github.events.count("merge") == 1 and len(github.comments) == 1
+    assert github.events.count("merge") == 1 and len(github.comment_bodies) == 1
 
 
 def test_cleanup_requires_confirmed_merge(

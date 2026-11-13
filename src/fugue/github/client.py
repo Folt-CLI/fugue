@@ -387,6 +387,10 @@ class GitHubClient:
     async def comment(self, number: int, body: str) -> None:
         await self._run("issue", "comment", str(number), "--repo", self.repo, "--body", body)
 
+    async def comments(self, number: int) -> list[str]:
+        items = await self._paginated(f"repos/{self.repo}/issues/{number}/comments")
+        return [str(item["body"]) for item in items]
+
     async def find_pr(self, branch: str) -> PullRequest | None:
         items = await self._json(
             "pr",

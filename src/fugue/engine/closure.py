@@ -3,6 +3,7 @@
 import json
 from collections.abc import Awaitable, Callable
 
+from fugue.engine.ports import MergeGitHubPort
 from fugue.store import Store
 
 
@@ -54,3 +55,21 @@ async def close_step(
         return
     await action()
     store.complete_operation(operation.id, {"done": True})
+
+
+async def close_comment(
+    store: Store,
+    run_id: int,
+    name: str,
+    port: MergeGitHubPort,
+    number: int,
+    body: str,
+) -> None:
+    """Reconcile a closure comment whose successful post may not have been recorded."""
+    marker = f"<!-- fugue:closure run={run_id} step={name} -->"
+
+    async def post() -> None:
+        if not any(marker in comment for comment in await port.comments(number)):
+            await port.comment(number, f"{body}\n\n{marker}")
+
+    await close_step(store, run_id, name, post)

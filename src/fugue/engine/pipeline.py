@@ -22,7 +22,7 @@ from fugue.engine.ci import (
     classify_failure,
     summarize_checks,
 )
-from fugue.engine.closure import close_step, gate_passed, review_clean
+from fugue.engine.closure import close_comment, close_step, gate_passed, review_clean
 from fugue.engine.decision import (
     Block,
     Commit,
@@ -540,9 +540,7 @@ class Engine:
                     f"{approval.decided_by} approved {approval.head_sha}. "
                     f"Reason: {approval.reason}. Recorded: {approval.created_at.isoformat()}."
                 )
-                await close_step(
-                    store, run_id, "comment", lambda: port.comment(ticket.number, body)
-                )
+                await close_comment(store, run_id, "comment", port, ticket.number, body)
 
                 async def remove() -> None:
                     if identity.path.exists():
