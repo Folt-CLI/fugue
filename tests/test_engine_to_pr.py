@@ -90,10 +90,12 @@ class FakeGitHub:
         return self.pr
 
 
-def result(*, ok: bool = True, error: str | None = None) -> AgentResult:
+def result(
+    *, ok: bool = True, error: str | None = None, final_text: str = "Implemented"
+) -> AgentResult:
     return AgentResult(
         ok=ok,
-        final_text="Implemented",
+        final_text=final_text,
         structured_output=None,
         session_id="session-1",
         usage=UsageRecord(10, None, 4, None, None, 20),
@@ -808,3 +810,94 @@ def test_invalid_title_blocks_before_anything_is_persisted(harness: Harness, tit
     second = harness.run()
     assert second.run_id == first.run_id
     assert second.state == RunState.WAITING_FOR_CI
+
+
+def delivered_changes(harness: Harness) -> tuple[str, str]:
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    commit_body = asyncio.run(git_command(path, "log", "-1", "--format=%b"))
+    pr_text = harness.github.created[0][3]
+    return commit_body, pr_text
+
+
+def changes_block(text: str) -> str:
+    return text.split("## Changes\n\n", 1)[1].split("\n\n## ", 1)[0]
+
+
+def use_messages(harness: Harness, *steps: ScriptStep) -> None:
+    adapter = ScriptedAdapter(list(steps), name="codex")
+    harness.deps.registry.register("codex", lambda config: adapter)
+
+
+def broken(request: AgentRequest) -> None:
+    (request.cwd / "allowed.txt").write_text("broken")
+
+
+# Scenario: Changes section
+def test_changes_come_from_the_implementer_message(harness: Harness) -> None:
+    final = "Done.\n\n## Changes\n\n- allowed.txt: hold the result\n- notes: explain why"
+    use_messages(harness, ScriptStep(result=result(final_text=final), side_effect=write_allowed))
+    harness.run()
+    commit_body, pr_text = delivered_changes(harness)
+    bullets = "- allowed.txt: hold the result\n- notes: explain why"
+    assert f"**Changes**\n{bullets}" in commit_body
+    assert changes_block(pr_text) == bullets
+    assert "implement the selected scope" not in commit_body + pr_text
+    assert "gate passed" not in commit_body
+    assert sys.executable in pr_text.split("## Verification")[1]
+
+
+# Scenario: no, malformed or empty Changes section
+@pytest.mark.parametrize("final", ["Implemented", "## Changes\n\n", "## Changes\n- vague bullet"])
+def test_changes_fall_back_to_changed_paths(harness: Harness, final: str) -> None:
+    use_messages(harness, ScriptStep(result=result(final_text=final), side_effect=write_allowed))
+    harness.run()
+    commit_body, pr_text = delivered_changes(harness)
+    assert "**Changes**\n- allowed.txt: updated" in commit_body
+    assert changes_block(pr_text) == "- allowed.txt: updated"
+    assert sys.executable not in commit_body + changes_block(pr_text)
+
+
+# Scenario: gate command as a change
+def test_gate_commands_never_appear_as_changes(harness: Harness) -> None:
+    command = " ".join(harness.deps.config.policy.gate_commands[0])
+    final = f"## Changes\n- {command}: it passed"
+    use_messages(harness, ScriptStep(result=result(final_text=final), side_effect=write_allowed))
+    harness.run()
+    _, pr_text = delivered_changes(harness)
+    assert changes_block(pr_text) == "- allowed.txt: updated"
+    assert command in pr_text.split("## Verification")[1]
+
+
+# Scenario: repaired run
+def test_repaired_run_uses_the_last_message_with_changes(harness: Harness) -> None:
+    harness.deps.config.policy.gate_commands = gate_requires_done()
+    use_messages(
+        harness,
+        ScriptStep(
+            result=result(final_text="## Changes\n- allowed.txt: first attempt"),
+            side_effect=broken,
+        ),
+        ScriptStep(result=result(final_text="Fixed it"), side_effect=write_allowed),
+    )
+    harness.run()
+    commit_body, pr_text = delivered_changes(harness)
+    assert changes_block(pr_text) == "- allowed.txt: first attempt"
+    assert "**Changes**\n- allowed.txt: first attempt" in commit_body
+
+
+def test_repaired_run_prefers_a_later_changes_section(harness: Harness) -> None:
+    harness.deps.config.policy.gate_commands = gate_requires_done()
+    use_messages(
+        harness,
+        ScriptStep(
+            result=result(final_text="## Changes\n- allowed.txt: first attempt"),
+            side_effect=broken,
+        ),
+        ScriptStep(
+            result=result(final_text="## Changes\n- allowed.txt: repaired value"),
+            side_effect=write_allowed,
+        ),
+    )
+    harness.run()
+    _, pr_text = delivered_changes(harness)
+    assert changes_block(pr_text) == "- allowed.txt: repaired value"
