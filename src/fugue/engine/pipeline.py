@@ -15,6 +15,13 @@ from typing import Any, Protocol
 from fugue.agents import AccessMode, AdapterRegistry, AgentRequest
 from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
 from fugue.config import FugueConfig
+from fugue.engine.ci import (
+    FailureKind,
+    actions_run_key,
+    ci_repair_prompt,
+    classify_failure,
+    summarize_checks,
+)
 from fugue.engine.decision import (
     Block,
     Commit,
@@ -35,7 +42,7 @@ from fugue.engine.facts import (
     selected_solution,
     worktree_path,
 )
-from fugue.engine.ports import GitHubPort
+from fugue.engine.ports import CiGitHubPort, GitHubPort
 from fugue.engine.prompts import (
     commit_message,
     fallback_changes,
@@ -45,6 +52,7 @@ from fugue.engine.prompts import (
     repair_prompt,
 )
 from fugue.gate import GateResult, format_failure, run_gate
+from fugue.github import CheckResult, GitHubError
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
 from fugue.models import IssueType, Role, Status, Ticket
 from fugue.store import Operation, Run, Store
@@ -71,6 +79,7 @@ class EngineDeps:
     gate_runner: GateRunner = run_gate
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     progress: Callable[[str], None] | None = None
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,7 @@ class RunOutcome:
     pr_number: int | None = None
     head_sha: str | None = None
     problems: tuple[str, ...] = ()
+    ci_green: bool = False
 
 
 @dataclass(frozen=True)
@@ -328,6 +338,14 @@ class Engine:
         return message
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
+        return await self._run(ticket_number, until_green=False)
+
+    async def run_to_green(self, ticket_number: int) -> RunOutcome:
+        """Reach a pull request, then wait for green checks, repairing CI failures."""
+        self._ci_port()  # fail fast, before any work is done
+        return await self._run(ticket_number, until_green=True)
+
+    async def _run(self, ticket_number: int, *, until_green: bool) -> RunOutcome:
         store = self.deps.store
         run_id = self._find_or_create_run(ticket_number).id
         store.set_run_state(run_id, RunState.RUNNING)
@@ -338,7 +356,12 @@ class Engine:
             scope = await self._stage(
                 run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket)
             )
-            return await self._drive(run_id, ticket, scope)
+            outcome = await self._drive(run_id, ticket, scope)
+            if not until_green:
+                return outcome
+            return await self._stage(
+                run_id, Stage.MONITOR, lambda: self._wait_for_green(run_id, ticket, scope)
+            )
         except asyncio.CancelledError:
             store.set_run_state(run_id, RunState.INTERRUPTED)
             raise
@@ -590,3 +613,107 @@ class Engine:
                 "Fugue",
             ),
         )
+
+    def _ci_port(self) -> CiGitHubPort:
+        port = self.deps.github
+        if not isinstance(port, CiGitHubPort):
+            raise TypeError("The GitHub port does not support checks, logs and reruns")
+        return port
+
+    async def _wait_for_green(self, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
+        store = self.deps.store
+        limits = self.deps.config.limits
+        port = self._ci_port()
+        identity = self._saved_identity(run_id)
+        pr = None if identity is None else await port.find_pr(identity.branch)
+        if identity is None or pr is None:
+            raise _Stop(RunState.BLOCKED, ["No pull request to monitor"])
+        started = self.deps.clock()
+        while True:
+            store.set_run_state(run_id, RunState.WAITING_FOR_CI)
+            summary = summarize_checks(await port.checks(pr))
+            if summary.is_green:
+                head = await Git(identity.path).head_sha()
+                store.set_run_state(run_id, RunState.RUNNING)
+                return RunOutcome(run_id, RunState.RUNNING, pr.number, head, ci_green=True)
+            if summary.failed and await self._handle_failures(
+                run_id, ticket, scope, identity, port, summary.failed
+            ):
+                # A new commit starts new checks, so the wait begins again.
+                started = self.deps.clock()
+            remaining = limits.ci_timeout_seconds - (self.deps.clock() - started).total_seconds()
+            if remaining <= 0:
+                raise _Stop(
+                    RunState.BLOCKED,
+                    [f"CI did not finish within {limits.ci_timeout_seconds} seconds"],
+                )
+            await self.deps.sleep(min(limits.ci_poll_interval_seconds, remaining))
+
+    async def _handle_failures(
+        self,
+        run_id: int,
+        ticket: Ticket,
+        scope: str,
+        identity: Identity,
+        port: CiGitHubPort,
+        failed: Sequence[CheckResult],
+    ) -> bool:
+        """Rerun infrastructure failures once; repair the rest. True when a commit was pushed."""
+        store = self.deps.store
+        names: dict[str, list[str]] = {}
+        for check in failed:
+            names.setdefault(check.link, []).append(check.name)
+        substantive: list[tuple[str, str]] = []
+        reruns: dict[str, tuple[Operation, str]] = {}
+        for link, link_names in names.items():
+            label = ", ".join(link_names)
+            try:
+                excerpt = await port.failed_log_tail(link)
+            except (ValueError, GitHubError) as error:
+                raise _Stop(
+                    RunState.BLOCKED, [f"Cannot read the failure log for {label}: {error}"]
+                ) from error
+            kind = classify_failure(excerpt, self.deps.config.limits.infrastructure_markers)
+            # A rerun acts on the whole run, so it is keyed by run id and happens at most once.
+            key = actions_run_key(link)
+            operation = store.begin_operation(run_id, "ci_rerun", key, {"checks": link_names})
+            if kind == FailureKind.INFRASTRUCTURE and operation.status != "done":
+                reruns.setdefault(key, (operation, link))
+            else:
+                substantive.append((label, excerpt))
+        if substantive:
+            await self._repair_ci(run_id, ticket, scope, identity, substantive)
+            return True
+        for operation, link in reruns.values():
+            try:
+                await port.rerun_failed(link)
+            except (ValueError, GitHubError) as error:
+                raise _Stop(
+                    RunState.BLOCKED, [f"Cannot rerun the failed jobs of {link}: {error}"]
+                ) from error
+            store.complete_operation(operation.id, {"done": True})
+        return False
+
+    async def _repair_ci(
+        self,
+        run_id: int,
+        ticket: Ticket,
+        scope: str,
+        identity: Identity,
+        failures: Sequence[tuple[str, str]],
+    ) -> None:
+        """Repair, re-run the gate, then add a new commit and push it."""
+        store = self.deps.store
+        prompt = ci_repair_prompt(failures)
+        self._artifact(run_id, "ci-failure", prompt)
+        if _repairs_used(store, run_id) >= self.deps.config.limits.max_repair_attempts:
+            raise _Stop(RunState.BLOCKED, ["CI repair limit reached"])
+        store.set_run_state(run_id, RunState.REPAIRING)
+        await self._stage(
+            run_id, Stage.REPAIR, lambda: self._agent(run_id, identity.path, prompt, scope)
+        )
+        store.set_run_state(run_id, RunState.RUNNING)
+        while not await self._verify(run_id, identity, scope):
+            pass
+        await self._execute(Commit(), run_id, ticket, scope, identity)
+        await self._execute(Push(), run_id, ticket, scope, identity)

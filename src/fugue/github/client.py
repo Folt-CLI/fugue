@@ -405,9 +405,7 @@ class GitHubClient:
         )
         return [CheckResult(**item) for item in json.loads(output)]
 
-    async def failed_log_tail(self, run_link: str, max_lines: int = 200) -> str:
-        if max_lines < 0:
-            raise ValueError("max_lines must not be negative")
+    def _actions_run_id(self, run_link: str) -> str:
         link = urlparse(run_link.strip())
         path = link.path.strip("/").split("/")
         if (
@@ -420,7 +418,16 @@ class GitHubClient:
             or not path[4].isdecimal()
         ):
             raise ValueError("Expected an Actions run link for the configured repository")
-        run_id = path[4]
+        return path[4]
+
+    async def rerun_failed(self, run_link: str) -> None:
+        run_id = self._actions_run_id(run_link)
+        await self._run("run", "rerun", run_id, "--repo", self.repo, "--failed")
+
+    async def failed_log_tail(self, run_link: str, max_lines: int = 200) -> str:
+        if max_lines < 0:
+            raise ValueError("max_lines must not be negative")
+        run_id = self._actions_run_id(run_link)
         output = await self._run(
             "run",
             "view",

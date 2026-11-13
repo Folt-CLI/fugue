@@ -784,3 +784,34 @@ def test_paginated_project_items_and_issue_field_values(fake: Fake) -> None:
     assert "$endCursor:String" in calls()[2]["argv"][3]
     assert "first:100,after:$endCursor" in calls()[2]["argv"][3]
     assert "pageInfo{hasNextPage endCursor}" in calls()[2]["argv"][3]
+
+
+def test_rerun_failed_reruns_only_failed_jobs(fake: Fake) -> None:
+    client, calls = fake([(["run", "rerun"], {})])
+    link = "https://github.com/example/fugue/actions/runs/123/job/456"
+    asyncio.run(client.rerun_failed(link))
+    assert [call["argv"] for call in calls()] == [
+        ["run", "rerun", "123", "--repo", REPO, "--failed"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/example/fugue",
+        "https://github.com/other/repo/actions/runs/123",
+        "https://github.com/example/fugue/actions/runs/abc",
+        "ftp://github.com/example/fugue/actions/runs/123",
+    ],
+)
+def test_rerun_failed_rejects_foreign_links(fake: Fake, link: str) -> None:
+    client, calls = fake([(["run", "rerun"], {})])
+    with pytest.raises(ValueError, match="Actions run link"):
+        asyncio.run(client.rerun_failed(link))
+    assert calls() == []
+
+
+def test_rerun_failed_reports_gh_failure(fake: Fake) -> None:
+    client, _ = fake([(["run", "rerun"], {"stderr": "cannot rerun", "exit_code": 1})])
+    with pytest.raises(GitHubError, match="cannot rerun"):
+        asyncio.run(client.rerun_failed("https://github.com/example/fugue/actions/runs/123"))
