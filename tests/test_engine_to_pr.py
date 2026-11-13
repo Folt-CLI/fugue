@@ -292,7 +292,8 @@ def test_scope_problems_block(harness: Harness, problem: str) -> None:
 
 
 # Scenario 3
-def test_gate_repair_resumes_session(harness: Harness) -> None:
+@pytest.mark.parametrize("session_id", ["session-1", None])
+def test_gate_repair_resumes_session(harness: Harness, session_id: str | None) -> None:
     harness.deps.config.policy.gate_commands = gate_requires_done()
 
     def broken(request: AgentRequest) -> None:
@@ -300,7 +301,7 @@ def test_gate_repair_resumes_session(harness: Harness) -> None:
 
     adapter = ScriptedAdapter(
         [
-            ScriptStep(result=result(), side_effect=broken),
+            ScriptStep(result=replace(result(), session_id=session_id), side_effect=broken),
             ScriptStep(result=result(), side_effect=write_allowed),
         ],
         name="codex",
@@ -309,7 +310,16 @@ def test_gate_repair_resumes_session(harness: Harness) -> None:
     outcome = harness.run()
     assert outcome.state == RunState.WAITING_FOR_CI
     assert len(adapter.requests) == 2
-    assert adapter.requests[1].session_id == "session-1"
+    assert adapter.requests[1].session_id == session_id
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket).resolve()
+    branch = branch_name(harness.github.ticket)
+    assert adapter.requests[1].prompt.startswith(
+        f"Your working directory is {path} on branch {branch}. Work only there. "
+        "If the scope below names a different worktree path or branch, treat that as a "
+        "placeholder and use this directory and branch.\n\n"
+    )
+    if session_id is None:
+        assert SCOPE in adapter.requests[1].prompt
     assert "Gate failed:" in adapter.requests[1].prompt
     assert harness.deps.store.usage_summary(outcome.run_id)["input_tokens"] == 20
 
@@ -901,3 +911,19 @@ def test_repaired_run_prefers_a_later_changes_section(harness: Harness) -> None:
     harness.run()
     _, pr_text = delivered_changes(harness)
     assert changes_block(pr_text) == "- allowed.txt: repaired value"
+
+
+def test_delivery_prompt_uses_prepared_identity_over_scope(harness: Harness) -> None:
+    harness.github.scope = "Worktree: /placeholder/worktree. Branch: bug/placeholder.\n\n" + SCOPE
+    outcome = harness.run()
+    assert outcome.state == RunState.WAITING_FOR_CI
+    request = harness.adapter.requests[0]
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket).resolve()
+    branch = branch_name(harness.github.ticket)
+    assert request.cwd == path
+    assert request.prompt.startswith(
+        f"Your working directory is {path} on branch {branch}. Work only there. "
+        "If the scope below names a different worktree path or branch, treat that as a "
+        "placeholder and use this directory and branch.\n\n"
+    )
+    assert request.prompt.endswith(harness.github.scope)

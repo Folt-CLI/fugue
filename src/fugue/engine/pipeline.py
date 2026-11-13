@@ -471,13 +471,18 @@ class Engine:
             )
 
     async def _implement(self, run_id: int, identity: Identity, scope: str) -> None:
-        await self._agent(run_id, identity.path, implementation_prompt(scope), scope)
+        await self._agent(
+            run_id,
+            identity,
+            implementation_prompt(scope, workdir=identity.path, branch=identity.branch),
+            scope,
+        )
         git = Git(identity.path)
         commits = await git._run("rev-list", "--count", f"refs/heads/{self.deps.base_branch}..HEAD")
         if not await git.status_porcelain() and int(commits) == 0:
             raise _Stop(RunState.BLOCKED, ["Implementer made no changes"])
 
-    async def _agent(self, run_id: int, path: Path, prompt: str, scope: str) -> None:
+    async def _agent(self, run_id: int, identity: Identity, prompt: str, scope: str) -> None:
         role_config = self.deps.config.roles[Role.IMPLEMENTER]
         adapter = self.deps.registry.build(role_config)
         session = _session_id(
@@ -485,12 +490,16 @@ class Engine:
         )
         if session is None and scope not in prompt:
             # A new provider conversation needs the scope even when repairing.
-            prompt = implementation_prompt(scope) + "\n\n" + prompt
+            prompt = (
+                implementation_prompt(scope, workdir=identity.path, branch=identity.branch)
+                + "\n\n"
+                + prompt
+            )
         result = await adapter.run(
             AgentRequest(
                 role=Role.IMPLEMENTER,
                 prompt=prompt,
-                cwd=path,
+                cwd=identity.path,
                 access=AccessMode.WORKSPACE_WRITE,
                 session_id=session,
                 model=role_config.model,
@@ -548,7 +557,12 @@ class Engine:
         await self._stage(
             run_id,
             Stage.REPAIR,
-            lambda: self._agent(run_id, identity.path, repair_prompt(failure), scope),
+            lambda: self._agent(
+                run_id,
+                identity,
+                repair_prompt(failure, workdir=identity.path, branch=identity.branch),
+                scope,
+            ),
         )
         self.deps.store.set_run_state(run_id, RunState.RUNNING)
         return False
@@ -710,7 +724,7 @@ class Engine:
             raise _Stop(RunState.BLOCKED, ["CI repair limit reached"])
         store.set_run_state(run_id, RunState.REPAIRING)
         await self._stage(
-            run_id, Stage.REPAIR, lambda: self._agent(run_id, identity.path, prompt, scope)
+            run_id, Stage.REPAIR, lambda: self._agent(run_id, identity, prompt, scope)
         )
         store.set_run_state(run_id, RunState.RUNNING)
         while not await self._verify(run_id, identity, scope):
