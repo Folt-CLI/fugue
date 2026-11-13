@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -97,6 +98,7 @@ class EngineDeps:
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     progress: Callable[[str], None] | None = None
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    repo_lock: asyncio.Lock | None = None
 
 
 @dataclass(frozen=True)
@@ -680,9 +682,10 @@ class Engine:
 
             async def create() -> None:
                 identity.path.parent.mkdir(parents=True, exist_ok=True)
-                await git.fetch()
-                await git.fast_forward(self.deps.base_branch)
-                await git.create_worktree(identity.path, identity.branch, self.deps.base_branch)
+                async with self.deps.repo_lock or nullcontext():
+                    await git.fetch()
+                    await git.fast_forward(self.deps.base_branch)
+                    await git.create_worktree(identity.path, identity.branch, self.deps.base_branch)
 
             await self._operation(run_id, "worktree", {"branch": identity.branch}, create)
         if ticket.status != Status.IN_IMPLEMENTATION:
