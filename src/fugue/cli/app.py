@@ -484,3 +484,51 @@ def question(
         raise _fail(str(error)) from error
     except Exception as error:
         raise _fail(str(error), 4) from error
+
+
+@app.command("children")
+def children(
+    spec_file: Annotated[Path, typer.Argument(help="TOML child specifications.")],
+    apply_changes: Annotated[
+        bool, typer.Option("--apply", help="Apply the plan (default: dry run).")
+    ] = False,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Plan or create children of a decided Question."""
+    from fugue.children import apply, load_children, plan
+    from fugue.store import Store
+
+    async def execute() -> None:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        spec = load_children(spec_file)
+        github = loaded.github
+        if github.project_owner is None or github.project_number is None:
+            raise wiring.WiringError("github.project_owner and github.project_number are required")
+        client = GitHubClient(
+            wiring.resolve_repo(loaded, root_path), github.project_owner, github.project_number
+        )
+        planned = plan(spec, await client.get_ticket(spec.question), loaded.policy)
+        if not apply_changes:
+            for child, body in zip(spec.children, planned.bodies, strict=True):
+                _print(f"{child.key}: {child.title} ({child.size})\n{body}")
+            return
+        state_dir = wiring.resolve_state_dir(loaded, os.environ, Path.home())
+        state_dir.mkdir(parents=True, exist_ok=True)
+        store = Store(state_dir / "fugue.db")
+        try:
+            result = await apply(planned, client, store)
+            for key, number in result.items():
+                _print(f"{key}: #{number}")
+        finally:
+            store.close()
+
+    try:
+        asyncio.run(execute())
+    except (KeyboardInterrupt, asyncio.CancelledError) as error:
+        raise _fail("Child creation interrupted", 6) from error
+    except (ValueError, OSError, StoreError) as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error

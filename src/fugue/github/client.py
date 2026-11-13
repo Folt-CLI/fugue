@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from fugue.github.parse import flatten_pages, parse_ticket, project_items
-from fugue.models import Component, Disposition, Priority, Size, Status, Ticket
+from fugue.models import Component, Disposition, IssueType, Priority, Size, Status, Ticket
 from fugue.process import CommandResult, run_command
 
 if TYPE_CHECKING:
@@ -345,6 +345,73 @@ class GitHubClient:
 
     async def set_status(self, number: int, status: Status) -> None:
         await self._set_single(number, status)
+
+    async def ensure_project(self, number: int) -> None:
+        if await self._item(number) is None:
+            await self._run(
+                "project",
+                "item-add",
+                str(self.project_number),
+                "--owner",
+                self.project_owner,
+                "--url",
+                f"https://github.com/{self.repo}/issues/{number}",
+            )
+
+    async def create_issue(
+        self,
+        title: str,
+        body: str,
+        issue_type: IssueType,
+        parent: int,
+        milestone: str,
+        assignee: str,
+        *,
+        add_to_project: bool = True,
+    ) -> int:
+        output = await self._run(
+            "issue",
+            "create",
+            "--repo",
+            self.repo,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+            "--type",
+            issue_type.value,
+            "--parent",
+            str(parent),
+            "--milestone",
+            milestone,
+            "--assignee",
+            assignee,
+            stdin=body,
+        )
+        number = int(output.strip().splitlines()[-1].rstrip("/").rsplit("/", 1)[1])
+        if add_to_project:
+            await self.ensure_project(number)
+        return number
+
+    async def find_child(self, parent: int, marker: str) -> int | None:
+        issues = await self._paginated(f"repos/{self.repo}/issues/{parent}/sub_issues")
+        matches = [int(issue["number"]) for issue in issues if marker in (issue.get("body") or "")]
+        if len(matches) > 1:
+            raise ValueError("Multiple children match the recorded creation intent")
+        return matches[0] if matches else None
+
+    async def edit_issue_body(self, number: int, body: str) -> None:
+        await self._run(
+            "issue", "edit", str(number), "--repo", self.repo, "--body-file", "-", stdin=body
+        )
+
+    async def block(self, number: int, blocker: int) -> None:
+        endpoint = f"repos/{self.repo}/issues/{number}/dependencies/blocked_by"
+        existing = await self._paginated(endpoint)
+        if any(int(issue["number"]) == blocker for issue in existing):
+            return
+        issue = await self._json("api", f"repos/{self.repo}/issues/{blocker}")
+        await self._run("api", "-X", "POST", endpoint, "-F", f"issue_id={issue['id']}")
 
     async def set_size(self, number: int, size: Size) -> None:
         await self._set_single(number, size)
