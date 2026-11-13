@@ -90,43 +90,67 @@ class FallbackAdapter:
         request: AgentRequest,
         on_event: Callable[[AgentEvent], Awaitable[None]] | None = None,
     ) -> AgentResult:
-        reasons: list[tuple[str, str]] = []
+        # Reason each member did not serve the call, by chain index.
+        outcomes: dict[int, tuple[str, str]] = {}
         unavailable_results: list[AgentResult] = []
         capability_skip: tuple[FallbackMember, Capability] | None = None
         note: str | None = None
-        for index, member in enumerate(self.members):
+        announced: set[int] = set()  # members already reported as switched away from
+
+        async def attempt(index: int, *, force: bool) -> AgentResult | None:
+            """Return a result that ends the call, or None to move on."""
+            nonlocal capability_skip, note
+            member = self.members[index]
             name = member.adapter.name
-            if reasons:
-                # Every earlier member was skipped or unavailable, so reasons[-1] is the
-                # member immediately before this one.
-                self._switch(reasons[-1], name, member)
             member_request = self._request_for(index, request, note)
             missing = check_request(member.adapter, member_request)
             if missing is not None:
-                reasons.append((name, f"capability:{missing.value}"))
+                outcomes[index] = (name, f"capability:{missing.value}")
                 capability_skip = capability_skip or (member, missing)
-                continue
-            if self._cooling(member) and any(
-                not self._cooling(later)
-                and check_request(later.adapter, self._request_for(later_index, request, note))
-                is None
-                for later_index, later in enumerate(self.members[index + 1 :], index + 1)
+                return None
+            if (
+                not force
+                and self._cooling(member)
+                and any(
+                    not self._cooling(later)
+                    and check_request(later.adapter, self._request_for(later_index, request, note))
+                    is None
+                    for later_index, later in enumerate(self.members[index + 1 :], index + 1)
+                )
             ):
-                reasons.append((name, "cool_down"))
-                continue
+                outcomes[index] = (name, "cool_down")
+                return None
+            # Report only switches to a member that is really called, one per member left behind.
+            for earlier in sorted(outcomes):
+                if earlier != index and earlier not in announced:
+                    announced.add(earlier)
+                    self._switch(outcomes[earlier], name, member)
+            outcomes.pop(index, None)
             result = await member.adapter.run(member_request, on_event)
             if result.ok or result.timed_out or result.cancelled:
                 return result
             if result.unsupported is not None:
-                reasons.append((name, f"capability:{result.unsupported.value}"))
+                outcomes[index] = (name, f"capability:{result.unsupported.value}")
                 capability_skip = capability_skip or (member, result.unsupported)
-                continue
+                return None
             if result.unavailable is None:
                 return result
             self._cooldowns[name] = self._clock() + self._cooldown
-            reasons.append((name, result.unavailable.value))
+            outcomes[index] = (name, result.unavailable.value)
             unavailable_results.append(result)
             note = CONTINUATION_NOTE.format(reason=f"{name}: {result.unavailable.value}")
+            return None
+
+        for index in range(len(self.members)):
+            ended = await attempt(index, force=False)
+            if ended is not None:
+                return ended
+        # Members skipped only for cool-down are tried in order once the rest are unavailable.
+        for index in [i for i, (_, reason) in sorted(outcomes.items()) if reason == "cool_down"]:
+            ended = await attempt(index, force=True)
+            if ended is not None:
+                return ended
+        reasons = [outcomes[index] for index in sorted(outcomes)]
         if not unavailable_results:
             # Nothing was served and nothing was unavailable: a capability gap, not a limit.
             assert capability_skip is not None

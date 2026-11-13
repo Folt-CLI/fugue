@@ -15,6 +15,7 @@ from fugue.agents import (
     AgentRequest,
     Capability,
     ClaudeAdapter,
+    Unavailable,
     UsageRecord,
     register_claude,
 )
@@ -187,6 +188,43 @@ def test_rate_limit_events(
     assert result.ok is ok
     other = next(event for event in events if event.kind == "other")
     assert other.data["status"] == status
+
+
+@pytest.mark.parametrize(
+    "scenario, reason",
+    [
+        ("rate_limited", Unavailable.RATE_LIMITED),
+        ("unauthorized", Unavailable.NOT_SIGNED_IN),
+        ("outage", Unavailable.UNREACHABLE),
+        ("error", Unavailable.UNREACHABLE),
+        ("malformed", None),
+        ("exit143", None),
+    ],
+)
+def test_unavailable_classification(
+    adapter: ClaudeAdapter,
+    request_data: AgentRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    reason: Unavailable | None,
+) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", scenario)
+    result = asyncio.run(adapter.run(request_data))
+    assert not result.ok
+    assert result.unavailable == reason
+    assert result.provider_limited is (reason == Unavailable.RATE_LIMITED)
+
+
+def test_spawn_failure_is_unreachable(
+    tmp_path: Path, request_data: AgentRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refuse(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("claude")
+
+    monkeypatch.setattr("fugue.agents.claude.run_command", refuse)
+    result = asyncio.run(ClaudeAdapter(spool_dir=tmp_path).run(request_data))
+    assert not result.ok and result.unavailable == Unavailable.UNREACHABLE
+    assert not result.provider_limited
 
 
 def test_subscription_environment(
