@@ -55,7 +55,9 @@ def mark_selected(
         generated = section.lstrip().startswith(
             "> More details are in the attachment tagged **[Selected Solution]** above:"
         )
-        marked = any(link["name"].startswith("[Selected Solution] ") for link in links)
+        marked = any(
+            link["marker"] or link["name"].startswith("[Selected Solution] ") for link in links
+        )
         if generated or not marked or not matches:
             recommendation = parse_analysis(body).recommendation
             recommended = re.fullmatch(
@@ -93,11 +95,11 @@ def mark_selected(
             if link.start() not in starts:
                 return link[0]
             name = link["name"].removeprefix("[Selected Solution] ")
-            if link.start() == chosen_start:
-                name = "[Selected Solution] " + name
-            relative_start = link.start("name") - link.start()
+            marker = "[Selected Solution] " if link.start() == chosen_start else ""
+            relative_start = link.start("name") - link.start() - 1
             relative_end = link.end("name") - link.start()
-            return link[0][:relative_start] + name + link[0][relative_end:]
+            prefix = link[0][:relative_start].removesuffix("[Selected Solution] ")
+            return prefix + marker + "[" + name + link[0][relative_end:]
 
         return body[:start] + SCOPE_LINK.sub(replace, section) + body[end:]
     raise ValueError("Question has no Solution section")

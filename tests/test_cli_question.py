@@ -14,6 +14,8 @@ from fugue.agents import AccessMode, ScriptedAdapter, ScriptStep
 from fugue.cli import app as cli_app
 from fugue.cli import question as question_module
 from fugue.cli.question import QuestionWalkthrough
+from fugue.engine.facts import scope_url
+from fugue.github.parse import parse_body_sections
 from fugue.models import IssueType, Priority, Role, Size, Status, Ticket
 
 
@@ -249,8 +251,48 @@ def test_cli_fills_pending_solution_and_replaces_selection(
     result = CliRunner().invoke(cli_app.app, arguments)
     assert result.exit_code == 0, result.output
     assert client.body.count("[Selected Solution] [") == 1
-    assert "[Selected Solution] [2-solution-2.md](https://example.test/two)" in client.body
+    assert (
+        "[Selected Solution] [2-solution-2.md](https://github.com/user-attachments/two)"
+        in client.body
+    )
     assert f"**Why this one:** {reason or 'selected by developer'}" in client.body
     assert client.body.split("## Solution")[0] == before
     assert client.body.split("## Details\n")[1] == details
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"] * 3
+
+
+@pytest.mark.parametrize("initial", ["pending", "marked", "legacy", "unmarked"])
+def test_cli_selection_keeps_engine_scope_in_sync(
+    initial: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    body = BODY
+    if initial == "pending":
+        before, rest = body.split("## Solution\n")
+        _, details = rest.split("## Details\n")
+        body = before + "## Solution\n_Pending._\n\n## Details\n" + details
+    elif initial in {"marked", "legacy"}:
+        marker = (
+            "[Selected Solution] [2-solution-1.md]"
+            if initial == "marked"
+            else "[[Selected Solution] 2-solution-1.md]"
+        )
+        body = body.replace(
+            "## Solution\n**Codex scope:** [2-solution-1.md]",
+            "## Solution\n**Codex scope:** " + marker,
+        )
+    client = FakeClient(body)
+    session, _ = walkthrough(client, [])
+    monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
+    for selection in (2, 1, 1, 2):
+        result = CliRunner().invoke(
+            cli_app.app,
+            ["question", "2", "--repo-root", str(tmp_path), "--select", str(selection)],
+        )
+        assert result.exit_code == 0, result.output
+        client.ticket.body_sections = parse_body_sections(client.body)
+        url = "https://github.com/user-attachments/" + ("one" if selection == 1 else "two")
+        assert scope_url(client.ticket) == url
+        solution = client.ticket.body_sections["Solution"]
+        assert solution.count("[Selected Solution] [") == 1
+        assert f"[Selected Solution] [2-solution-{selection}.md]({url})" in solution
+        assert "[[Selected Solution]" not in solution

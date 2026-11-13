@@ -34,6 +34,7 @@ class Analysis:
 
 SCOPE_LINK = re.compile(
     r"\*\*(?:Codex scope|Implementation scope):?\*\*:?\s*"
+    r"(?P<marker>\[Selected Solution\] )?"
     r"\[(?P<name>(?:\[Selected Solution\] )?[^\n]+?)\]\((?P<url>[^\s)]+)\)"
 )
 

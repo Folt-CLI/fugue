@@ -34,7 +34,7 @@ Choose a solution.
 **Watch out**
 - Manual selection.
 
-**Codex scope:** [2-solution-1.md](https://example.test/one)
+**Codex scope:** [2-solution-1.md](https://github.com/user-attachments/one)
 
 ### Option 2: Extend the process
 **You get**
@@ -46,7 +46,7 @@ Choose a solution.
 **Watch out**
 - More code.
 
-**Codex scope:** [2-solution-2.md](https://example.test/two)
+**Codex scope:** [2-solution-2.md](https://github.com/user-attachments/two)
 
 ### Recommendation
 Option 1: smaller scope.
@@ -55,11 +55,11 @@ Option 1: smaller scope.
 > Reply with the option number.
 
 ## Solution
-**Codex scope:** [2-solution-1.md](https://example.test/one)
-**Codex scope:** [2-solution-2.md](https://example.test/two)
+**Codex scope:** [2-solution-1.md](https://github.com/user-attachments/one)
+**Codex scope:** [2-solution-2.md](https://github.com/user-attachments/two)
 
 ## Details
-**Codex scope:** [2-solution-1.md](https://example.test/one)
+**Codex scope:** [2-solution-1.md](https://github.com/user-attachments/one)
 """
 
 
@@ -70,7 +70,7 @@ def test_parse_ticket_layout() -> None:
     assert analysis.option(2).you_get == "- An interactive walkthrough."
     assert analysis.option(2).changes == "- Add a CLI command."
     assert analysis.option(2).watch_out == "- More code."
-    assert analysis.option(2).scope_url == "https://example.test/two"
+    assert analysis.option(2).scope_url == "https://github.com/user-attachments/two"
     assert analysis.recommendation == "Option 1: smaller scope."
     assert "Where we are" in analysis.overview
     assert "Option 1:" not in analysis.overview
@@ -111,7 +111,7 @@ def test_marker_is_idempotent_and_only_changes_solution() -> None:
     analysis = parse_analysis(BODY)
     body = BODY.replace(
         "## Solution\n**Codex scope:** [2-solution-1.md]",
-        "## Solution\n**Codex scope:** [[Selected Solution] 2-solution-1.md]",
+        "## Solution\n**Codex scope:** [Selected Solution] [2-solution-1.md]",
     )
     updated = mark_selected(body, analysis.option(1))
     assert updated == body
@@ -119,7 +119,7 @@ def test_marker_is_idempotent_and_only_changes_solution() -> None:
     assert mark_selected(updated, analysis.option(1)) == updated
     switched = mark_selected(updated, analysis.option(2))
     assert switched.count("[Selected Solution]") == 1
-    assert "[Selected Solution] 2-solution-2.md" in switched
+    assert "[Selected Solution] [2-solution-2.md]" in switched
     assert switched.split("## Solution")[0] == BODY.split("## Solution")[0]
     assert switched.split("## Details")[1] == BODY.split("## Details")[1]
 
@@ -164,7 +164,7 @@ def test_fenced_option_examples_are_not_parsed() -> None:
 
 
 def test_fenced_solution_example_is_not_edited() -> None:
-    example = "```markdown\n## Solution\n**Codex scope:** [2-solution-1.md](https://example.test/one)\n```\n"
+    example = "```markdown\n## Solution\n**Codex scope:** [2-solution-1.md](https://github.com/user-attachments/one)\n```\n"
     body = BODY.replace("## Summary", example + "## Summary")
     updated = mark_selected(body, parse_analysis(body).option(1))
     assert updated.startswith(example)
@@ -172,10 +172,12 @@ def test_fenced_solution_example_is_not_edited() -> None:
 
 
 def test_fenced_duplicate_scope_is_preserved() -> None:
-    example = "```\n**Codex scope:** [2-solution-1.md](https://example.test/one)\n```\n"
+    example = (
+        "```\n**Codex scope:** [2-solution-1.md](https://github.com/user-attachments/one)\n```\n"
+    )
     body = BODY.replace(
         "## Solution\n**Codex scope:** [2-solution-1.md]",
-        "## Solution\n**Codex scope:** [[Selected Solution] 2-solution-1.md]",
+        "## Solution\n**Codex scope:** [Selected Solution] [2-solution-1.md]",
     ).replace("## Details", example + "## Details")
     updated = mark_selected(body, parse_analysis(body).option(1))
     assert example in updated
@@ -194,7 +196,7 @@ def test_pending_solution_is_filled_and_selection_can_change(pending: str, newli
     solution = (
         "## Solution\n\n"
         "> More details are in the attachment tagged **[Selected Solution]** above: "
-        "[Selected Solution] [2-solution-1.md](https://example.test/one)\n\n"
+        "[Selected Solution] [2-solution-1.md](https://github.com/user-attachments/one)\n\n"
         "- Document the workflow.\n\n"
         "**Affected areas:** see the implementation scope\n\n"
         "**Why this one:** smaller scope.\n\n"
@@ -206,7 +208,9 @@ def test_pending_solution_is_filled_and_selection_can_change(pending: str, newli
     assert mark_selected(updated, analysis.option(1)) == updated
     switched = mark_selected(updated, analysis.option(2), reason="Need the walkthrough")
     assert switched.count("[Selected Solution] [") == 1
-    assert "[Selected Solution] [2-solution-2.md](https://example.test/two)" in switched
+    assert (
+        "[Selected Solution] [2-solution-2.md](https://github.com/user-attachments/two)" in switched
+    )
     assert "- Add a CLI command." in switched
     assert "**Why this one:** Need the walkthrough" in switched
     assert switched.split("## Solution")[0] == body.split("## Solution")[0]
