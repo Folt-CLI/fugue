@@ -33,6 +33,21 @@ shows stage attempts, operations, approvals and usage records. Follow the printe
 state, problems and next action; a successful command can still be waiting for
 a human decision.
 
+## Terminal output
+
+On a terminal, output uses colour and a single run shows a live spinner with
+the current stage. When output is piped or captured, or `TERM=dumb` is set, it is
+plain text with one line per stage. Set `NO_COLOR` to turn colour off; meaning
+is always in the text (`error:`, `warning:`, `next:`). `COLUMNS` sets the width;
+tables wrap without cutting run ids or ticket numbers. A batch never uses the
+spinner, and its lines keep their `[#N]` prefix.
+
+The follow-up question in `fugue question` streams the answer as it arrives.
+The chat component also understands `/help` (list commands), `/save PATH`
+(write the transcript to a new UTF-8 file; an existing file is never
+overwritten) and `/quit`. End a line with a backslash to continue it on the
+next line. End of input also ends a chat.
+
 ## Select a solution
 
 Browse a Question interactively, or explicitly select an option with a reason:

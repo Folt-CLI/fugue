@@ -6,15 +6,15 @@ import json
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
 
 import typer
-from rich.console import Console
 
 from fugue import __version__
 from fugue.analysis.stage import AnalysisGitHubClient, analyse
-from fugue.cli import render, wiring
+from fugue.cli import render, terminal, wiring
 from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
@@ -232,11 +232,11 @@ engine_factory: EngineFactory = _real_engine_factory
 
 
 def _print(text: str) -> None:
-    Console().print(text, markup=False, highlight=False, soft_wrap=True)
+    terminal.print_text(text)
 
 
-def _fail(message: str, code: int = EXIT_USAGE) -> typer.Exit:
-    Console(stderr=True).print(f"error: {message}", markup=False, highlight=False, soft_wrap=True)
+def _fail(message: str, code: int = EXIT_USAGE, next_step: str | None = None) -> typer.Exit:
+    terminal.error(message, next_step)
     return typer.Exit(code)
 
 
@@ -355,7 +355,13 @@ def _parse_overrides(
     return all_tier, role_tiers, role_models
 
 
-def _run_single(loaded: FugueConfig, engine: RunEngine, ticket: int, to_green: bool) -> typer.Exit:
+def _run_single(
+    loaded: FugueConfig,
+    engine: RunEngine,
+    ticket: int,
+    to_green: bool,
+    progress: terminal.Progress | None = None,
+) -> typer.Exit:
     wait = loaded.limits.database_wait_seconds
     try:
         with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket) as lock:
@@ -379,7 +385,8 @@ def _run_single(loaded: FugueConfig, engine: RunEngine, ticket: int, to_green: b
                     _print(render.render_roles(loaded, found.size))
                 return await (engine.run_to_green(ticket) if to_green else engine.run_to_pr(ticket))
 
-            outcome = asyncio.run(go())
+            with progress or nullcontext():
+                outcome = asyncio.run(go())
     except TicketLocked as error:
         raise _fail(str(error), _STATE_EXIT_CODES[RunState.BLOCKED]) from error
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
@@ -502,11 +509,12 @@ def run(
             )
         except ValueError as error:
             raise _fail(f"--model: {error}") from error
-        engine = engine_factory(loaded, root_path, _print)
+        progress = terminal.progress_callback(batch=len(tickets) > 1)
+        engine = engine_factory(loaded, root_path, progress)
     except wiring.WiringError as error:
         raise _fail(str(error)) from error
     if len(tickets) == 1:
-        raise _run_single(loaded, engine, tickets[0], to_green)
+        raise _run_single(loaded, engine, tickets[0], to_green, progress)
     raise _run_batch(loaded, root_path, engine, tickets, to_green)
 
 
@@ -530,7 +538,7 @@ def status(
         try:
             detail = wiring.load_run_detail(store, run_id)
         except StoreError as error:
-            raise _fail(f"Unknown run id {run_id}") from error
+            raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
         if ticket is not None and detail.run.ticket_number != ticket:
             raise _fail(f"Run {run_id} is not for ticket #{ticket}")
         _print(render.render_run_detail(detail))
@@ -575,7 +583,7 @@ def timing(
             try:
                 store.get_run(run_id)
             except StoreError as error:
-                raise _fail(f"Unknown run id {run_id}") from error
+                raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
         _print(render.render_timing(store.stage_durations(run_id, repo)))
     finally:
         store.close()

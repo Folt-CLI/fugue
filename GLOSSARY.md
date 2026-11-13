@@ -14,6 +14,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [blocking finding](#blocking-finding)
 - [campaign](#campaign)
 - [capability](#capability)
+- [chat component](#chat-component)
 - [child](#child)
 - [Component](#component)
 - [cool-down](#cool-down)
@@ -45,7 +46,9 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [stack](#stack)
 - [stage](#stage)
 - [Status](#status)
+- [terminal layer](#terminal-layer)
 - [ticket lock](#ticket-lock)
+- [transcript](#transcript)
 - [unavailable provider](#unavailable-provider)
 - [usage record](#usage-record)
 - [work item](#work-item)
@@ -217,6 +220,12 @@ a feature a provider adapter declares (streaming_events, structured_output, sess
 
 Status: decided.
 
+### chat component
+
+the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; the Question walkthrough's follow-up uses it.
+
+Status: decided.
+
 ### cool-down
 
 the interval after an unavailable result during which a later call tries other providers first.
@@ -303,9 +312,21 @@ a named step of a run (load, validate, analyse, select, prepare, implement, veri
 
 Status: decided.
 
+### terminal layer
+
+the one module every command uses for styled status, tables, panels, Markdown and progress; it degrades to plain text when output is piped, captured, or `NO_COLOR` or `TERM=dumb` is set.
+
+Status: decided.
+
 ### ticket lock
 
 the cross-process lock held for the whole run of one ticket.
+
+Status: decided.
+
+### transcript
+
+the UTF-8 text file a chat session saves on request with `/save PATH`; it never overwrites an existing file.
 
 Status: decided.
 

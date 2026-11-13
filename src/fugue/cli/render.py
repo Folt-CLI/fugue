@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fugue.agents import resolve_models
+from fugue.cli import terminal
 from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
 from fugue.engine.review import Finding
@@ -59,12 +60,7 @@ class RunDetail:
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
-    grid = [list(header), *(list(row) for row in rows)]
-    widths = [max(len(row[column]) for row in grid) for column in range(len(header))]
-    return [
-        "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
-        for row in grid
-    ]
+    return terminal.table_text(header, rows)
 
 
 def describe_models(models: Mapping[str, str | None]) -> str:

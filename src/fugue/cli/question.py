@@ -1,7 +1,8 @@
 """Interactive Question walkthrough with injectable terminal functions."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from rich.console import Console, RenderableType
@@ -18,7 +19,8 @@ from fugue.agents import (
     register_codex,
     resolve_models,
 )
-from fugue.cli import wiring
+from fugue.cli import terminal, wiring
+from fugue.cli.chat import ChatSession, default_reader
 from fugue.config import FugueConfig
 from fugue.models import IssueType, Role, Size
 from fugue.questions.decision import QuestionClient, QuestionGitHubClient, record_decision
@@ -33,7 +35,7 @@ class QuestionWalkthrough:
         *,
         adapter: ProviderAdapter | None = None,
         config: FugueConfig | None = None,
-        prompt: Callable[[str], str] = input,
+        prompt: Callable[[str], str] = default_reader,
         print_fn: Callable[[RenderableType], None] | None = None,
     ) -> None:
         self.client = client
@@ -41,7 +43,10 @@ class QuestionWalkthrough:
         self.adapter = adapter
         self.config = config or FugueConfig()
         self.prompt = prompt
-        self.print = print_fn or Console().print
+        self._console = None if print_fn else terminal.console_for()
+        self.print: Callable[[RenderableType], None] = print_fn or (
+            self._console.print if self._console else Console().print
+        )
 
     def _show_option(self, option: Option) -> None:
         self.print(
@@ -116,20 +121,35 @@ class QuestionWalkthrough:
                 role_config = self.config.roles.get(Role.ANALYST)
                 # Every Question is Size L; there is no run, so the choice is not persisted.
                 choice = resolve_models(self.config, Role.ANALYST, Size.L)
-                result = await self.adapter.run(
-                    AgentRequest(
+                console = self._console
+                model = choice.models.get(role_config.provider) if role_config else None
+
+                def make_request(
+                    text: str,
+                    model: str | None = model,
+                    models: Mapping[str, str | None] = choice.models,
+                ) -> AgentRequest:
+                    return AgentRequest(
                         role=Role.ANALYST,
                         prompt=f"Question #{number} Analysis:\n{analysis.text}\n\n"
-                        f"Follow-up question:\n{question}\n\n"
+                        f"Follow-up question:\n{text}\n\n"
                         "Answer read-only; do not modify files.",
                         cwd=self.repo_root,
                         access=AccessMode.READ_ONLY,
-                        model=choice.models.get(role_config.provider) if role_config else None,
-                        models=choice.models,
+                        model=model,
+                        models=models,
                         timeout_seconds=self.config.limits.agent_timeout_seconds,
                     )
+
+                session = ChatSession(
+                    self.adapter,
+                    make_request,
+                    emit=self.print,
+                    write=partial(console.out, end="") if console else None,
+                    console=console,
+                    live=console is not None and terminal.is_interactive(console),
                 )
-                self.print(result.final_text if result.ok else f"Follow-up failed: {result.error}")
+                await session.ask(question)
             elif command.isascii() and command.isdecimal():
                 try:
                     self._show_option(analysis.option(int(command)))
