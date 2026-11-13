@@ -7,15 +7,25 @@ from pathlib import Path
 from fugue.models import Ticket
 
 SOLUTION_LINK_RE = re.compile(
-    r"\[(\d+)-solution-1\.md\]\((https://github\.com/user-attachments/[^\s)]+)\)"
+    r"\[(\d+)-solution-(\d+)\.md\]\((https://github\.com/user-attachments/[^\s)]+)\)"
 )
+SELECTED_MARKER = "[Selected Solution]"
+MARKER_WINDOW = 40
+
+
+def _marked_selected(body: str, match: re.Match[str]) -> bool:
+    line_start = body.rfind("\n", 0, match.start()) + 1
+    before = body[line_start : match.start()][-MARKER_WINDOW:]
+    return before.rstrip().endswith(SELECTED_MARKER)
 
 
 def scope_url(ticket: Ticket) -> str | None:
-    for match in SOLUTION_LINK_RE.finditer(ticket.body_sections.get("Solution", "")):
-        if int(match[1]) == ticket.number:
-            return match[2]
-    return None
+    body = ticket.body_sections.get("Solution", "")
+    matches = [m for m in SOLUTION_LINK_RE.finditer(body) if int(m[1]) == ticket.number]
+    if not matches:
+        return None
+    selected = [m for m in matches if _marked_selected(body, m)]
+    return (selected or matches)[-1][3]
 
 
 def selected_solution(ticket: Ticket) -> bool:

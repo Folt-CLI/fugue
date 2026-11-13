@@ -54,7 +54,6 @@ def ticket(solution: str = "") -> Ticket:
             "https://github.com/user-attachments/files/abc",
         ),
         ("[32-solution-1.md](https://github.com/user-attachments/a)", None),
-        ("[33-solution-2.md](https://github.com/user-attachments/a)", None),
         ("[33-solution-1.md](https://example.com/a)", None),
         ("[33-solution-1.md](https://github.com/user-attachments/)", None),
         ("[33-solution-1.md](https://github.com/user-attachments/a", None),
@@ -63,6 +62,56 @@ def ticket(solution: str = "") -> Ticket:
 def test_scope_url(body: str, expected: str | None) -> None:
     assert scope_url(ticket(body)) == expected
     assert scope_url(ticket().model_copy(update={"body_sections": {"Details": body}})) is None
+
+
+U = "https://github.com/user-attachments/files/"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (f"**Codex scope:** [33-solution-1.md]({U}1)", f"{U}1"),
+        (
+            f"**Codex scope:** [33-solution-1.md]({U}1)\n"
+            f"**Revised Codex scope (x):** [Selected Solution] [33-solution-2.md]({U}2)",
+            f"{U}2",
+        ),
+        (
+            f"> Pick the attachment tagged **[Selected Solution]** above: "
+            f"[Selected Solution] [33-solution-3.md]({U}3)",
+            f"{U}3",
+        ),
+        (
+            f"[33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)\n[33-solution-3.md]({U}3)",
+            f"{U}3",
+        ),
+        (
+            f"[Selected Solution] [33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)",
+            f"{U}1",
+        ),
+        (f"[Selected Solution]\n[33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)", f"{U}2"),
+        (
+            f"[Selected Solution] {'x' * 40} [33-solution-1.md]({U}1)\n[33-solution-2.md]({U}2)",
+            f"{U}2",
+        ),
+        (f"[32-solution-1.md]({U}1)\n[Selected Solution] [32-solution-2.md]({U}2)", None),
+        (f"[33-solution-1.md]({U}1)\n[Selected Solution] [32-solution-2.md]({U}2)", f"{U}1"),
+    ],
+)
+def test_scope_url_prefers_selected_then_latest(body: str, expected: str | None) -> None:
+    assert scope_url(ticket(body)) == expected
+
+
+def test_scope_url_ignores_links_outside_solution() -> None:
+    item = ticket().model_copy(
+        update={
+            "body_sections": {
+                "Analysis": f"[Selected Solution] [33-solution-2.md]({U}2)",
+                "Solution": f"[33-solution-1.md]({U}1)",
+            }
+        }
+    )
+    assert scope_url(item) == f"{U}1"
 
 
 def test_solution_regex() -> None:
