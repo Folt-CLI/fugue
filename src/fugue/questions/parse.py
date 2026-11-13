@@ -15,6 +15,7 @@ class Option:
     watch_out: str
     scope_name: str
     scope_url: str
+    affected_areas: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ def parse_analysis(body: str) -> Analysis:
                 _field(block, "Watch out"),
                 link["name"].removeprefix("[Selected Solution] ") if link else "",
                 link["url"] if link else "",
+                _field(block, "Affected areas"),
             )
         )
     return Analysis(text, text[:first_option].strip(), tuple(options), recommendation)

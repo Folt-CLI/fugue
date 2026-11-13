@@ -82,7 +82,8 @@ def test_current_process_scope_label_and_crlf() -> None:
     assert analysis.option(1).scope_name == "2-solution-1.md"
     updated = mark_selected(body, analysis.option(1))
     assert "\r\n" in updated
-    assert updated.count("[Selected Solution]") == 1
+    assert updated.count("[Selected Solution] [") == 1
+    assert "\n" not in updated.replace("\r\n", "")
 
 
 @pytest.mark.parametrize("body", ["", "## Summary\nNothing", "## Analysis\nPending"])
@@ -108,7 +109,12 @@ def test_duplicate_options_refused() -> None:
 
 def test_marker_is_idempotent_and_only_changes_solution() -> None:
     analysis = parse_analysis(BODY)
-    updated = mark_selected(BODY, analysis.option(1))
+    body = BODY.replace(
+        "## Solution\n**Codex scope:** [2-solution-1.md]",
+        "## Solution\n**Codex scope:** [[Selected Solution] 2-solution-1.md]",
+    )
+    updated = mark_selected(body, analysis.option(1))
+    assert updated == body
     assert updated.count("[Selected Solution]") == 1
     assert mark_selected(updated, analysis.option(1)) == updated
     switched = mark_selected(updated, analysis.option(2))
@@ -123,10 +129,9 @@ def test_marker_is_idempotent_and_only_changes_solution() -> None:
     [
         BODY.split("## Solution")[0],
         BODY.replace("## Solution", "## Other"),
-        BODY.replace("## Solution\n", "## Solution\nPending\n## Other\n"),
     ],
 )
-def test_missing_solution_scope_refused(body: str) -> None:
+def test_missing_solution_section_refused(body: str) -> None:
     with pytest.raises(ValueError):
         mark_selected(body, parse_analysis(BODY).option(1))
 
@@ -163,12 +168,58 @@ def test_fenced_solution_example_is_not_edited() -> None:
     body = BODY.replace("## Summary", example + "## Summary")
     updated = mark_selected(body, parse_analysis(body).option(1))
     assert updated.startswith(example)
-    assert updated.count("[Selected Solution]") == 1
+    assert updated.count("[Selected Solution] [") == 1
 
 
 def test_fenced_duplicate_scope_is_preserved() -> None:
     example = "```\n**Codex scope:** [2-solution-1.md](https://example.test/one)\n```\n"
-    body = BODY.replace("## Details", example + "## Details")
+    body = BODY.replace(
+        "## Solution\n**Codex scope:** [2-solution-1.md]",
+        "## Solution\n**Codex scope:** [[Selected Solution] 2-solution-1.md]",
+    ).replace("## Details", example + "## Details")
     updated = mark_selected(body, parse_analysis(body).option(1))
     assert example in updated
     assert updated.count("[Selected Solution]") == 1
+
+
+@pytest.mark.parametrize("pending", ["_Pending._", "_Not selected yet._"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_pending_solution_is_filled_and_selection_can_change(pending: str, newline: str) -> None:
+    before, rest = BODY.split("## Solution\n")
+    _, details = rest.split("## Details\n")
+    before = before.replace("## Analysis", "## Scope\nSelect the workflow.\n\n## Analysis")
+    body = (before + f"## Solution\n{pending}\n\n## Details\n" + details).replace("\n", newline)
+    analysis = parse_analysis(body)
+    updated = mark_selected(body, analysis.option(1), reason="Ignored for recommendation")
+    solution = (
+        "## Solution\n\n"
+        "> More details are in the attachment tagged **[Selected Solution]** above: "
+        "[Selected Solution] [2-solution-1.md](https://example.test/one)\n\n"
+        "- Document the workflow.\n\n"
+        "**Affected areas:** see the implementation scope\n\n"
+        "**Why this one:** smaller scope.\n\n"
+    ).replace("\n", newline)
+    assert updated == before.replace("\n", newline) + solution + ("## Details\n" + details).replace(
+        "\n", newline
+    )
+    assert updated.count("[Selected Solution] [") == 1
+    assert mark_selected(updated, analysis.option(1)) == updated
+    switched = mark_selected(updated, analysis.option(2), reason="Need the walkthrough")
+    assert switched.count("[Selected Solution] [") == 1
+    assert "[Selected Solution] [2-solution-2.md](https://example.test/two)" in switched
+    assert "- Add a CLI command." in switched
+    assert "**Why this one:** Need the walkthrough" in switched
+    assert switched.split("## Solution")[0] == body.split("## Solution")[0]
+    assert switched.split("## Details")[1] == body.split("## Details")[1]
+
+
+def test_pending_solution_uses_option_affected_areas_and_decision_maker() -> None:
+    body = BODY.replace(
+        "**Changes**\n- Add a CLI command.",
+        "**Changes**\n- Add a CLI command.\n- Add tests.\n\n**Affected areas:** CLI and tests",
+    )
+    body = body.split("## Solution")[0] + "## Solution\n_Pending._\n"
+    updated = mark_selected(body, parse_analysis(body).option(2), by="developer")
+    assert "- Add a CLI command.\n- Add tests." in updated
+    assert "**Affected areas:** CLI and tests" in updated
+    assert "**Why this one:** selected by developer" in updated

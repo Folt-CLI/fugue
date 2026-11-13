@@ -52,7 +52,14 @@ class QuestionWalkthrough:
             )
         )
 
-    async def run(self, number: int, select: int | None = None) -> None:
+    async def run(
+        self,
+        number: int,
+        select: int | None = None,
+        *,
+        reason: str | None = None,
+        by: str | None = None,
+    ) -> None:
         ticket = await self.client.get_ticket(number)
         if ticket.issue_type != IssueType.QUESTION:
             raise ValueError(f"Ticket #{number} is not a Question")
@@ -65,7 +72,9 @@ class QuestionWalkthrough:
             self.print(f"{option.number}: {option.name}")
         self.print(Markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}"))
         if select is not None:
-            await record_decision(self.client, number, body, analysis.option(select))
+            await record_decision(
+                self.client, number, body, analysis.option(select), reason=reason, by=by
+            )
             self.print(f"Selected option {select}.")
             return
         while True:
@@ -127,7 +136,7 @@ class QuestionWalkthrough:
                 except ValueError:
                     self.print("Select an available option using s N.")
                     continue
-                await record_decision(self.client, number, body, selected)
+                await record_decision(self.client, number, body, selected, reason=reason, by=by)
                 self.print(f"Selected option {selected.number}.")
                 return
             else:

@@ -426,6 +426,10 @@ def question(
     select: Annotated[
         int | None, typer.Option("--select", help="Select an option directly.")
     ] = None,
+    reason: Annotated[str | None, typer.Option("--reason", help="Reason for selection.")] = None,
+    by: Annotated[
+        str | None, typer.Option("--by", help="Decision maker (default: OS user).")
+    ] = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -436,7 +440,7 @@ def question(
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
         loaded = _load(config, root_path)
         walkthrough = build_question(loaded, root_path)
-        asyncio.run(walkthrough.run(ticket, select))
+        asyncio.run(walkthrough.run(ticket, select, reason=reason, by=by))
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
         raise _fail("Question walkthrough interrupted", 6) from error
     except ValueError as error:

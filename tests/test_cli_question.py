@@ -81,7 +81,7 @@ def test_browse_compare_select() -> None:
     assert "Compare options" in output.getvalue()
     assert "More code." in output.getvalue()
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
-    assert "[Selected Solution] 2-solution-2.md" in client.body
+    assert "[Selected Solution] [2-solution-2.md]" in client.body
     assert client.calls[1][2].startswith("Selected option 2: Extend the process.")
     assert client.calls[2] == ("status", 2, Status.READY_FOR_IMPLEMENTATION)
 
@@ -168,7 +168,7 @@ def test_cli_registration_and_selection(
     result = CliRunner().invoke(cli_app.app, arguments)
     assert result.exit_code == 0, result.output
     expected = 2 if direct else 1
-    assert f"[Selected Solution] 2-solution-{expected}.md" in client.body
+    assert f"[Selected Solution] [2-solution-{expected}.md]" in client.body
 
 
 def test_cli_refuses_non_question(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -223,3 +223,34 @@ def test_follow_up_answer_or_failure_is_printed_without_mutation(ok: bool) -> No
     expected = "Choose the smaller scope." if ok else "Follow-up failed: Provider unavailable"
     assert expected in output.getvalue()
     assert client.calls == []
+
+
+@pytest.mark.parametrize("reason", [None, "Need the walkthrough"])
+def test_cli_fills_pending_solution_and_replaces_selection(
+    reason: str | None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    before, rest = BODY.split("## Solution\n")
+    _, details = rest.split("## Details\n")
+    client = FakeClient(before + "## Solution\n_Not selected yet._\n\n## Details\n" + details)
+    session, _ = walkthrough(client, [])
+    monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
+    arguments = ["question", "2", "--repo-root", str(tmp_path), "--select", "1"]
+    result = CliRunner().invoke(cli_app.app, arguments)
+    assert result.exit_code == 0, result.output
+    first = client.body
+    assert "**Why this one:** smaller scope." in first
+    result = CliRunner().invoke(cli_app.app, arguments)
+    assert result.exit_code == 0, result.output
+    assert client.body == first
+    arguments[-1] = "2"
+    arguments.extend(["--by", "developer"])
+    if reason is not None:
+        arguments.extend(["--reason", reason])
+    result = CliRunner().invoke(cli_app.app, arguments)
+    assert result.exit_code == 0, result.output
+    assert client.body.count("[Selected Solution] [") == 1
+    assert "[Selected Solution] [2-solution-2.md](https://example.test/two)" in client.body
+    assert f"**Why this one:** {reason or 'selected by developer'}" in client.body
+    assert client.body.split("## Solution")[0] == before
+    assert client.body.split("## Details\n")[1] == details
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"] * 3
