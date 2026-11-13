@@ -7,9 +7,11 @@ from typing import Any
 
 from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
+from fugue.engine.review import Finding
 from fugue.models import AuthenticationMode
 from fugue.store import Run
-from fugue.store.records import StageDuration, UsageTotals
+from fugue.store.records import Approval, StageDuration, UsageTotals
+from fugue.workflow import RunState
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,53 @@ def render_outcome(outcome: RunOutcome) -> str:
     if outcome.head_sha is not None:
         lines.append(f"head SHA: {outcome.head_sha}")
     lines.extend(f"problem: {problem}" for problem in outcome.problems)
+    lines.extend(f"note: {note}" for note in outcome.notes)
+    if outcome.findings:
+        lines.append(render_findings(outcome.findings))
+    hints = {
+        RunState.WAITING_FOR_CI: f"fugue review {outcome.run_id}",
+        RunState.WAITING_FOR_DECISION: (
+            f"fugue decide {outcome.run_id} --accept INDEX --reject 'INDEX:reason text'"
+        ),
+        RunState.WAITING_FOR_MERGE_APPROVAL: (
+            f"fugue request-approval {outcome.run_id}; then "
+            f"fugue approve {outcome.run_id} --reason 'reason text'"
+        ),
+        RunState.INTERRUPTED: f"fugue resume {outcome.run_id}",
+        RunState.PROVIDER_LIMITED: f"fugue resume {outcome.run_id}",
+    }
+    hint = hints.get(outcome.state)
+    if hint is not None:
+        lines.append(f"next: {hint}")
     return "\n".join(lines)
+
+
+def render_findings(findings: Sequence[Finding]) -> str:
+    rows = [
+        [
+            str(f.index),
+            "Blocking" if f.blocking else "Non-blocking",
+            f.severity,
+            f.location or "n/a",
+            f.summary,
+        ]
+        for f in findings
+    ]
+    return "\n".join(_table(["index", "kind", "severity", "location", "summary"], rows))
+
+
+def render_approval(approval: Approval) -> str:
+    return "\n".join(
+        [
+            f"run {approval.run_id}: approval {approval.decision}",
+            f"pull request: #{approval.subject}",
+            f"head SHA: {approval.head_sha}",
+            f"by: {approval.decided_by}",
+            f"reason: {approval.reason}",
+            "Approval is valid only for this exact head SHA.",
+            f"next: fugue merge {approval.run_id}",
+        ]
+    )
 
 
 def render_runs(runs: Sequence[Run]) -> str:
