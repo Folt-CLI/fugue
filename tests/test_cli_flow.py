@@ -93,7 +93,9 @@ def engine(monkeypatch: pytest.MonkeyPatch) -> FakeEngine:
 
 
 def invoke(tmp_path: Path, *args: str) -> tuple[int, str]:
-    result = CliRunner().invoke(cli.app, [*args, "--repo-root", str(tmp_path)])
+    result = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}).invoke(
+        cli.app, [*args, "--repo-root", str(tmp_path)]
+    )
     return result.exit_code, result.output
 
 

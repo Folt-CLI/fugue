@@ -273,8 +273,10 @@ def test_m_child_starts_pending() -> None:
 
 
 def test_cli_registered_and_missing_spec_is_usage_error(tmp_path: Path) -> None:
-    runner = CliRunner()
-    assert "--apply" in runner.invoke(app, ["children", "--help"]).output
+    runner = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"})
+    help_result = runner.invoke(app, ["children", "--help"])
+    assert help_result.exit_code == 0, help_result.output
+    assert "--apply" in help_result.output
     result = runner.invoke(
         app, ["children", str(tmp_path / "missing"), "--repo-root", str(tmp_path)]
     )
@@ -395,7 +397,7 @@ def test_cli_dry_run_does_not_create_store_or_call_mutations(
     )
     monkeypatch.setattr(cli, "GitHubClient", Client)
     monkeypatch.setattr("fugue.children.load_children", lambda path: specification(child()))
-    result = CliRunner().invoke(
+    result = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}).invoke(
         app, ["children", str(spec), "--config", str(config), "--repo-root", str(tmp_path)]
     )
     assert result.exit_code == 0, result.output

@@ -17,7 +17,7 @@ from fugue.models import AuthenticationMode, Role
 from fugue.store import Store
 from fugue.workflow import RunState
 
-runner = CliRunner()
+runner = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"})
 TOKEN = "ghp_secret_token_value"
 
 
