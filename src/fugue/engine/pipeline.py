@@ -22,6 +22,7 @@ from fugue.engine.ci import (
     classify_failure,
     summarize_checks,
 )
+from fugue.engine.closure import close_comment, close_step, gate_passed, review_clean
 from fugue.engine.decision import (
     Block,
     Commit,
@@ -42,7 +43,7 @@ from fugue.engine.facts import (
     selected_solution,
     worktree_path,
 )
-from fugue.engine.ports import CiGitHubPort, GitHubPort, ReviewGitHubPort
+from fugue.engine.ports import CiGitHubPort, GitHubPort, MergeGitHubPort, ReviewGitHubPort
 from fugue.engine.prompts import (
     commit_message,
     fallback_changes,
@@ -69,9 +70,10 @@ from fugue.gate import GateResult, format_failure, run_gate
 from fugue.github import CheckResult, GitHubError, PullRequest
 from fugue.github.client import ResolvePermissionError
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
-from fugue.models import IssueType, Role, Status, Ticket
-from fugue.store import Operation, Run, Store
+from fugue.models import Disposition, IssueType, Role, Status, Ticket
+from fugue.store import Approval, Operation, Run, Store
 from fugue.workflow import RunState, Stage, ready_for_implementation
+from fugue.workflow.guards import can_close, merge_allowed, review_required
 
 
 class GateRunner(Protocol):
@@ -370,6 +372,193 @@ class Engine:
         if problems:
             raise _Stop(RunState.BLOCKED, problems)
         return message
+
+    def _merge_port(self) -> MergeGitHubPort:
+        port = self.deps.github
+        if not isinstance(port, MergeGitHubPort):
+            raise TypeError("The GitHub port does not support merge and closure")
+        return port
+
+    async def _merge_context(self, run_id: int) -> tuple[Ticket, Identity, PullRequest]:
+        run = self.deps.store.get_run(run_id)
+        if run.repo.casefold() != self.deps.github.repo.strip().casefold():
+            raise _Stop(RunState.BLOCKED, ["Run belongs to another repository"])
+        identity = self._saved_identity(run_id)
+        if identity is None:
+            raise _Stop(RunState.BLOCKED, ["No saved worktree for this run"])
+        saved = _operations(self.deps.store, run_id, "merge_request")
+        if saved:
+            data = json.loads(saved[-1][3])
+            pr = PullRequest(data["number"], data["url"])
+        else:
+            found = await self.deps.github.find_pr(identity.branch)
+            if found is None:
+                raise _Stop(RunState.BLOCKED, ["No pull request to merge"])
+            pr = found
+        return await self.deps.github.get_ticket(run.ticket_number), identity, pr
+
+    async def _merge_guards(
+        self,
+        run_id: int,
+        ticket: Ticket,
+        identity: Identity,
+        pr: PullRequest,
+        *,
+        require_approval: bool,
+    ) -> tuple[str, Approval | None]:
+        port = self._merge_port()
+        head = await port.pr_head_sha(pr)
+        subject = str(pr.number)
+        self.deps.store.invalidate_approvals(run_id, subject, head)
+        approval = self.deps.store.valid_approval(run_id, "merge", subject, head)
+        problems = merge_allowed(
+            gate_passed=gate_passed(self.deps.store, run_id, head),
+            ci_green=summarize_checks(await port.checks(pr)).is_green,
+            review_clean_or_not_required=(
+                not review_required(ticket.size, self.deps.config.policy)
+                or review_clean(self.deps.store, run_id, head)
+            ),
+            approval_head_sha=(approval.head_sha if approval else None)
+            if require_approval
+            else head,
+            current_head_sha=head,
+            unresolved_threads=await port.unresolved_thread_count(pr),
+        )
+        if await Git(identity.path).head_sha() != head:
+            problems.append("The worktree head must match the current PR head")
+        if await Git(identity.path).status_porcelain():
+            problems.append("The worktree must be clean")
+        if problems:
+            raise _Stop(RunState.BLOCKED, problems)
+        return head, approval
+
+    async def request_approval(self, run_id: int) -> RunOutcome:
+        """Check delivery guards and wait for an explicit exact-head approval."""
+
+        async def work() -> RunOutcome:
+            ticket, identity, pr = await self._merge_context(run_id)
+            head = await self._merge_port().pr_head_sha(pr)
+            operation = self.deps.store.begin_operation(run_id, "merge_gate", head, {"head": head})
+            self.deps.store.fail_operation(operation.id, "Gate verification in progress")
+            result = await self._stage(
+                run_id, Stage.VERIFY, lambda: self._gate(run_id, identity.path)
+            )
+            if not result.passed:
+                raise _Stop(RunState.BLOCKED, ["The gate must pass"])
+            if await Git(identity.path).head_sha() != head:
+                raise _Stop(RunState.BLOCKED, ["The worktree head must match the current PR head"])
+            self.deps.store.complete_operation(operation.id, {"passed": True})
+            head, _ = await self._merge_guards(run_id, ticket, identity, pr, require_approval=False)
+            request = self.deps.store.begin_operation(
+                run_id,
+                "merge_request",
+                head,
+                {"number": pr.number, "url": pr.url, "head": head},
+            )
+            self.deps.store.complete_operation(request.id, {"ready": True})
+            self.deps.store.set_run_state(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+            return RunOutcome(
+                run_id, RunState.WAITING_FOR_MERGE_APPROVAL, pr.number, head, ci_green=True
+            )
+
+        return await self._guarded(run_id, work)
+
+    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval:
+        """Record a live-guarded approval; call this synchronous API outside an event loop."""
+        if not decided_by.strip() or not reason.strip():
+            raise ValueError("Approval requires decided_by and reason")
+
+        async def check() -> Approval:
+            ticket, identity, pr = await self._merge_context(run_id)
+            head, _ = await self._merge_guards(run_id, ticket, identity, pr, require_approval=False)
+            requests = _operations(self.deps.store, run_id, "merge_request")
+            if not requests or json.loads(requests[-1][3])["head"] != head:
+                raise ValueError("Request approval for the current head first")
+            return self.deps.store.record_approval(
+                run_id, "merge", str(pr.number), head, "approved", decided_by, reason
+            )
+
+        try:
+            return asyncio.run(check())
+        except _Stop as stop:
+            raise ValueError("; ".join(stop.problems)) from stop
+
+    async def merge_and_close(self, run_id: int) -> RunOutcome:
+        """Merge the approved head, verify MERGED, then finish durable closure steps."""
+
+        async def work() -> RunOutcome:
+            ticket, identity, pr = await self._merge_context(run_id)
+            port = self._merge_port()
+            store = self.deps.store
+            state = await port.pr_state(pr)
+            head = state.head_sha
+            approval = store.valid_approval(run_id, "merge", str(pr.number), head)
+            if state.state != "MERGED":
+                if state.state != "OPEN":
+                    raise _Stop(RunState.BLOCKED, ["Pull request is not open or merged"])
+                head, approval = await self._merge_guards(
+                    run_id, ticket, identity, pr, require_approval=True
+                )
+                operation = store.begin_operation(
+                    run_id, "merge", head, {"number": pr.number, "head": head}
+                )
+                await self._stage(run_id, Stage.MERGE, lambda: port.merge(pr, head))
+                started = self.deps.clock()
+                while True:
+                    state = await port.pr_state(pr)
+                    if state.state == "MERGED":
+                        break
+                    remaining = (
+                        self.deps.config.limits.ci_timeout_seconds
+                        - (self.deps.clock() - started).total_seconds()
+                    )
+                    if remaining <= 0 or state.state != "OPEN":
+                        raise _Stop(RunState.BLOCKED, ["Merge has not been confirmed"])
+                    await self.deps.sleep(
+                        min(self.deps.config.limits.ci_poll_interval_seconds, remaining)
+                    )
+                store.complete_operation(operation.id, {"merge_sha": state.merge_sha})
+            if approval is None or state.head_sha != head or not state.merge_sha:
+                raise _Stop(RunState.BLOCKED, ["Verified merge and matching approval required"])
+            problems = can_close(ticket, await port.children(ticket.number), disposition_set=True)
+            if problems:
+                raise _Stop(RunState.BLOCKED, problems)
+
+            async def close() -> None:
+                await close_step(
+                    store,
+                    run_id,
+                    "disposition",
+                    lambda: port.set_disposition(ticket.number, Disposition.MERGED),
+                )
+                await close_step(
+                    store, run_id, "status", lambda: port.set_status(ticket.number, Status.DONE)
+                )
+                assert approval is not None
+                body = (
+                    f"Merged as {state.merge_sha}. Approval #{approval.id}: "
+                    f"{approval.decided_by} approved {approval.head_sha}. "
+                    f"Reason: {approval.reason}. Recorded: {approval.created_at.isoformat()}."
+                )
+                await close_comment(store, run_id, "comment", port, ticket.number, body)
+
+                async def remove() -> None:
+                    if identity.path.exists():
+                        await Git(self.deps.repo_root).remove_worktree(identity.path)
+
+                await close_step(store, run_id, "worktree", remove)
+                await close_step(
+                    store,
+                    run_id,
+                    "remote_branch",
+                    lambda: port.delete_remote_branch(identity.branch, self.deps.repo_root),
+                )
+
+            await self._stage(run_id, Stage.CLOSE, close)
+            store.set_run_state(run_id, RunState.COMPLETED)
+            return RunOutcome(run_id, RunState.COMPLETED, pr.number, head, ci_green=True)
+
+        return await self._guarded(run_id, work)
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         return await self._run(ticket_number, until_green=False)

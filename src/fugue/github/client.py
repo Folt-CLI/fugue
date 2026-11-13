@@ -37,6 +37,13 @@ class PullRequest:
 
 
 @dataclass(frozen=True)
+class PrState:
+    state: str
+    head_sha: str
+    merge_sha: str | None = None
+
+
+@dataclass(frozen=True)
 class CheckResult:
     name: str
     bucket: str
@@ -380,6 +387,10 @@ class GitHubClient:
     async def comment(self, number: int, body: str) -> None:
         await self._run("issue", "comment", str(number), "--repo", self.repo, "--body", body)
 
+    async def comments(self, number: int) -> list[str]:
+        items = await self._paginated(f"repos/{self.repo}/issues/{number}/comments")
+        return [str(item["body"]) for item in items]
+
     async def find_pr(self, branch: str) -> PullRequest | None:
         items = await self._json(
             "pr",
@@ -606,3 +617,30 @@ class GitHubClient:
             "--match-head-commit",
             expected_head_sha,
         )
+
+    async def pr_state(self, pr: PullRequest) -> PrState:
+        value = await self._json(
+            "pr",
+            "view",
+            str(pr.number),
+            "--repo",
+            self.repo,
+            "--json",
+            "state,headRefOid,mergeCommit",
+        )
+        commit = value.get("mergeCommit")
+        return PrState(value["state"], value["headRefOid"], commit["oid"] if commit else None)
+
+    async def children(self, number: int) -> list[Ticket]:
+        items = await self._paginated(f"repos/{self.repo}/issues/{number}/sub_issues")
+        return [await self.get_ticket(item["number"]) for item in items]
+
+    async def delete_remote_branch(self, branch: str, repo_root: Path) -> None:
+        from fugue.gitops import Git
+
+        git = Git(repo_root)
+        await git._validate_branch(branch)
+        await git._validate_remote("origin")
+        ref = f"refs/heads/{branch}"
+        if (await git._run("ls-remote", "--heads", "origin", ref)).strip():
+            await git._run("push", "--delete", "--", "origin", ref)
