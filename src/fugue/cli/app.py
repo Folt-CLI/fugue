@@ -723,6 +723,39 @@ def question(
         raise _fail(str(error), 4) from error
 
 
+@app.command()
+def overview(
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    no_summary: Annotated[
+        bool, typer.Option("--no-summary", help="Skip the analyst summary.")
+    ] = False,
+    refresh: Annotated[
+        bool, typer.Option("--refresh", help="Ignore the cached summary and ask again.")
+    ] = False,
+) -> None:
+    """Report open tickets, pull requests and unfinished runs; changes nothing."""
+    from fugue.cli import overview as overview_command
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        repo = wiring.resolve_repo(loaded, root_path)
+        code = overview_command.run_overview(
+            loaded, root_path, repo=repo, summary=not no_summary, refresh=refresh
+        )
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError) as error:
+        raise _fail("Overview interrupted", 6) from error
+    except ValueError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
+    if code:
+        raise typer.Exit(code)
+
+
 @app.command("children")
 def children(
     spec_file: Annotated[Path, typer.Argument(help="TOML child specifications.")],

@@ -33,6 +33,66 @@ shows stage attempts, operations, approvals and usage records. Follow the printe
 state, problems and next action; a successful command can still be waiting for
 a human decision.
 
+## Overview
+
+```sh
+uv run fugue overview
+uv run fugue overview --no-summary
+uv run fugue overview --refresh
+```
+
+`overview` prints the repository overview: one report of the current
+repository's open tickets, pull requests and unfinished runs. It changes
+nothing: no ticket, Status, comment, pull request or run is created or modified,
+and a missing run store is not created. It needs `github.project_owner` and
+`github.project_number`; outside a Git repository, without an `origin` remote or
+without those settings it prints an `error:` line and exits with 2 before any
+GitHub or agent call.
+
+The report holds, in order: a header, `note:` lines, an optional summary, open
+tickets grouped by Status (ticket, type, size, priority, title), Epic and
+Question progress as `closed/total` children, tickets ready to start with
+`fugue run N`, blocked tickets with `blocked by #A, #B` (closed blockers are not
+counted), items waiting for a decision with their command, open pull requests,
+unfinished runs, the five most recently merged pull requests and the five most
+recently closed tickets. An empty section prints `<title>: none`.
+
+- A ticket is ready to start when it passes the readiness checks of `run`, has
+  Status S0 (XS/S) or S3 (M/L), is not a Question, Epic or XL and has no open
+  blocker.
+- A ticket is waiting for a decision when it is an M/L ticket or Question with
+  an Analysis and no `[Selected Solution]` marker (`fugue question N`), or when
+  a local run is in `waiting_for_selection`, `waiting_for_decision` or
+  `waiting_for_merge_approval`, shown with the exact command that continues it.
+- A pull request shows its CI check counts as `pass/fail/pending`, its GitHub
+  review decision and `approved yes` only when a valid merge approval for that
+  pull request matches its current head SHA (shown as the first 7 characters).
+  After a new head the same pull request shows `approved no`.
+- Unfinished runs are the runs of this repository that are not completed,
+  newest first, at most 20, with the time since their last activity and the
+  `next:` command.
+
+At most `limits.overview_max_tickets` open tickets are read; if more exist the
+report says `note: showing N of more than N open tickets`. A ticket that cannot
+be read (for example absent from the project) is listed as `note: could not
+read #N: reason` and the rest still prints. When GitHub cannot be reached the
+report prints `note: GitHub unreachable (...); showing local runs only`, still
+lists the unfinished runs, skips the summary and exits with 0.
+
+Unless `--no-summary` is given, the analyst role writes a short summary of the
+gathered facts. The request is read-only, runs in an empty temporary directory
+rather than the repository, uses the small model tier when `model_tiers` is
+configured and sees only a bounded text of the facts. A reply that cites a
+`#N` not in the facts is dropped. The summary is skipped, with the reason in a
+`note:` line and the rest of the report unchanged, when the adapter cannot be
+built or lacks read-only mode, the call fails, times out or is limited, or the
+reply is empty. A reported usage record is shown as reported values, not a bill.
+
+The summary is cached in `overview-OWNER-NAME.json` in the state directory for
+`limits.overview_cache_seconds`; it is reused only while the gathered facts are
+identical. `--refresh` ignores the cache and asks again. The cache file is the
+only file the command writes, and only when a summary was produced.
+
 ## Terminal output
 
 On a terminal, output uses colour and a single run shows a live spinner with

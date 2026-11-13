@@ -29,6 +29,8 @@ class Limits(BaseModel):
     ci_poll_interval_seconds: int = Field(default=20, gt=0)
     ci_timeout_seconds: int = Field(default=3600, gt=0)
     provider_cooldown_seconds: int = Field(default=300, gt=0)
+    overview_max_tickets: int = Field(default=100, gt=0)
+    overview_cache_seconds: int = Field(default=300, gt=0)
     infrastructure_markers: list[str] = Field(
         default_factory=lambda: [
             "runner lost",

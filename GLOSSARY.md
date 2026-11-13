@@ -11,6 +11,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [authentication mode](#authentication-mode)
 - [autonomy exceptions](#autonomy-exceptions)
 - [batch](#batch)
+- [blocked ticket](#blocked-ticket)
 - [blocking finding](#blocking-finding)
 - [campaign](#campaign)
 - [capability](#capability)
@@ -34,8 +35,10 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [provider adapter](#provider-adapter)
 - [provider fallback](#provider-fallback)
 - [Question](#question)
+- [ready to start](#ready-to-start)
 - [reconcile](#reconcile)
 - [repair limit](#repair-limit)
+- [repository overview](#repository-overview)
 - [repository lock](#repository-lock)
 - [role](#role)
 - [run](#run)
@@ -50,7 +53,9 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [ticket lock](#ticket-lock)
 - [transcript](#transcript)
 - [unavailable provider](#unavailable-provider)
+- [unfinished run](#unfinished-run)
 - [usage record](#usage-record)
+- [waiting for a decision](#waiting-for-a-decision)
 - [work item](#work-item)
 - [worktree](#worktree)
 
@@ -214,6 +219,12 @@ one `fugue run` invocation naming several tickets.
 
 Status: decided.
 
+### blocked ticket
+
+an open ticket with at least one open native blocker; distinct from the run state blocked.
+
+Status: decided.
+
 ### capability
 
 a feature a provider adapter declares (streaming_events, structured_output, session_resume, cancellation, read_only_mode, workspace_write_mode, usage_tokens, usage_cost_estimate).
@@ -270,6 +281,12 @@ an ordered list of providers for one role, tried in order, whole calls only.
 
 Status: unresolved.
 
+### ready to start
+
+an open ticket with no readiness problems, Status S0 (XS/S) or S3 (M/L), not a Question or XL, and no open blockers.
+
+Status: decided.
+
 ### reconcile
 
 compare recorded operation intents with the live external state after an interruption and reuse or complete existing objects instead of repeating them.
@@ -285,6 +302,12 @@ Status: decided.
 ### repository lock
 
 the cross-process lock held around the shared Git steps in the primary checkout.
+
+Status: decided.
+
+### repository overview
+
+the single report of open tickets, pull requests and unfinished runs for the current repository, gathered without an agent.
 
 Status: decided.
 
@@ -336,8 +359,20 @@ a provider whose call ended rate or usage limited, unreachable or not signed in,
 
 Status: unresolved.
 
+### unfinished run
+
+a run whose state is not completed.
+
+Status: decided.
+
 ### usage record
 
 tokens, elapsed time and, where the provider reports it, a cost estimate for one agent call; never presented as a bill.
+
+Status: decided.
+
+### waiting for a decision
+
+an M/L ticket or Question with Analysis and no [Selected Solution], or a run in waiting_for_selection, waiting_for_decision or waiting_for_merge_approval.
 
 Status: decided.

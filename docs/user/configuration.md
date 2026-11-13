@@ -87,6 +87,11 @@ After a provider is unavailable it is skipped for `limits.provider_cooldown_seco
 call. When every provider is in cool-down they are tried in order anyway. The
 cool-down is kept in memory for the current process only.
 
+`fugue overview` reads at most `limits.overview_max_tickets` open tickets
+(default 100, must be positive) and reuses a cached analyst summary for
+`limits.overview_cache_seconds` (default 300, must be positive) while the
+gathered facts are unchanged.
+
 ## GitHub
 
 | Field under `[github]` | Default and meaning |
@@ -128,6 +133,8 @@ All integer fields under `[limits]` must be greater than zero.
 | `max_output_bytes` | `65536` | Output capture limit |
 | `ci_poll_interval_seconds` | `20` | CI polling interval |
 | `ci_timeout_seconds` | `3600` | CI waiting timeout |
+| `overview_max_tickets` | `100` | Most open tickets `fugue overview` reads |
+| `overview_cache_seconds` | `300` | Seconds a cached `fugue overview` summary stays valid |
 | `infrastructure_markers` | See below | Strings used to recognize infrastructure failures |
 
 Default infrastructure markers are `runner lost`,

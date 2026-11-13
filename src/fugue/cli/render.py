@@ -3,14 +3,17 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from fugue.agents import resolve_models
+from fugue.agents import UsageRecord, resolve_models
 from fugue.cli import terminal
 from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
+from fugue.engine.locks import format_elapsed
 from fugue.engine.review import Finding
-from fugue.models import AuthenticationMode, Role, Size
+from fugue.models import AuthenticationMode, Role, Size, Status
+from fugue.overview import Overview, SummaryResult
+from fugue.overview.collect import WAITING_RUN_STATES
 from fugue.store import Run
 from fugue.store.db import RepoStageDuration, RepoUsageTotals
 from fugue.store.records import Approval
@@ -119,21 +122,46 @@ def render_outcome(outcome: RunOutcome) -> str:
     return "\n".join(lines)
 
 
-def next_step(outcome: RunOutcome) -> str | None:
-    """Return the command that continues a run in this state, if any."""
-    hints = {
-        RunState.WAITING_FOR_CI: f"fugue review {outcome.run_id}",
+_OUTCOME_HINT_STATES = frozenset(
+    {
+        RunState.WAITING_FOR_CI,
+        RunState.WAITING_FOR_DECISION,
+        RunState.WAITING_FOR_MERGE_APPROVAL,
+        RunState.INTERRUPTED,
+        RunState.PROVIDER_LIMITED,
+    }
+)
+
+
+def next_step_for(state: str, run_id: int, ticket_number: int) -> str | None:
+    """Return the exact command that continues a run in this state, if any."""
+    resume = f"fugue resume {run_id}"
+    hints: dict[str, str] = {
+        RunState.WAITING_FOR_CI: f"fugue review {run_id}",
         RunState.WAITING_FOR_DECISION: (
-            f"fugue decide {outcome.run_id} --accept INDEX --reject 'INDEX:reason text'"
+            f"fugue decide {run_id} --accept INDEX --reject 'INDEX:reason text'"
         ),
         RunState.WAITING_FOR_MERGE_APPROVAL: (
-            f"fugue request-approval {outcome.run_id}; then "
-            f"fugue approve {outcome.run_id} --reason 'reason text'"
+            f"fugue request-approval {run_id}; then fugue approve {run_id} --reason 'reason text'"
         ),
-        RunState.INTERRUPTED: f"fugue resume {outcome.run_id}",
-        RunState.PROVIDER_LIMITED: f"fugue resume {outcome.run_id}",
+        RunState.WAITING_FOR_SELECTION: f"fugue question {ticket_number}",
+        RunState.INTERRUPTED: resume,
+        RunState.PROVIDER_LIMITED: resume,
+        RunState.RUNNING: resume,
+        RunState.CHECKING: resume,
+        RunState.REPAIRING: resume,
+        RunState.BLOCKED: resume,
+        RunState.FAILED: resume,
+        "created": resume,
     }
-    return hints.get(outcome.state)
+    return hints.get(state)
+
+
+def next_step(outcome: RunOutcome) -> str | None:
+    """Return the command that continues a run in this state, if any."""
+    if outcome.state not in _OUTCOME_HINT_STATES:
+        return None
+    return next_step_for(outcome.state, outcome.run_id, 0)
 
 
 @dataclass(frozen=True)
@@ -341,3 +369,175 @@ def render_config(config: FugueConfig) -> str:
     """Render the effective configuration; it holds no secrets."""
     data = config.model_dump(mode="json", exclude_none=True)
     return "\n".join(_toml_lines([], data)).strip()
+
+
+@dataclass(frozen=True)
+class OverviewSection:
+    """One printable part of the repository overview: plain lines, a table or a panel."""
+
+    kind: Literal["lines", "table", "panel"]
+    title: str = ""
+    header: tuple[str, ...] = ()
+    rows: tuple[tuple[str, ...], ...] = ()
+    lines: tuple[str, ...] = ()
+
+
+def _table_section(
+    title: str, header: Sequence[str], rows: Sequence[Sequence[str]]
+) -> OverviewSection:
+    if not rows:
+        return OverviewSection("lines", lines=(f"{title}: none",))
+    return OverviewSection("table", title, tuple(header), tuple(tuple(row) for row in rows))
+
+
+def _usage_line(usage: UsageRecord) -> str:
+    return (
+        "usage (reported values, not a bill): "
+        f"input {_usage_value(usage.input_tokens)}, "
+        f"cached input {_usage_value(usage.cached_input_tokens)}, "
+        f"output {_usage_value(usage.output_tokens)}, "
+        f"reasoning {_usage_value(usage.reasoning_tokens)}, "
+        f"cost estimate USD {_usage_value(usage.cost_estimate_usd)}, "
+        f"duration ms {_usage_value(usage.duration_ms)}"
+    )
+
+
+def _overview_notes(overview: Overview, summary: SummaryResult | None) -> list[str]:
+    notes: list[str] = []
+    if overview.offline is not None:
+        notes.append(f"note: GitHub unreachable ({overview.offline}); showing local runs only")
+    if overview.truncated:
+        notes.append(f"note: showing {overview.limit} of more than {overview.limit} open tickets")
+    notes.extend(f"note: could not read #{n}: {message}" for n, message in overview.unreadable)
+    if summary is not None:
+        if summary.skipped is not None:
+            notes.append(f"note: summary skipped ({summary.skipped})")
+        if summary.note is not None:
+            notes.append(f"note: {summary.note}")
+    return notes
+
+
+def render_overview(overview: Overview, summary: SummaryResult | None) -> list[OverviewSection]:
+    """The repository overview as ordered sections; empty sections read `<title>: none`."""
+    header = [
+        f"repository: {overview.repo}",
+        f"generated: {overview.generated_at.isoformat(timespec='seconds')}",
+        *_overview_notes(overview, summary),
+    ]
+    sections = [OverviewSection("lines", lines=tuple(header))]
+    if summary is not None and summary.text is not None:
+        body = summary.text
+        if summary.usage is not None:
+            body = f"{body}\n{_usage_line(summary.usage)}"
+        sections.append(
+            OverviewSection(
+                "panel", "summary (cached)" if summary.cached else "summary", lines=(body,)
+            )
+        )
+    if not overview.tickets:
+        sections.append(OverviewSection("lines", lines=("open tickets by Status: none",)))
+    for status in Status:
+        rows = [
+            [f"#{t.number}", t.issue_type, t.size, t.priority, t.title]
+            for t in overview.tickets
+            if t.status == status
+        ]
+        if rows:
+            sections.append(
+                _table_section(
+                    f"open tickets, {status} ({len(rows)})",
+                    ["ticket", "type", "size", "priority", "title"],
+                    rows,
+                )
+            )
+    sections.append(
+        _table_section(
+            "Epic and Question progress (closed/total)",
+            ["ticket", "type", "progress", "title"],
+            [
+                [f"#{p.number}", p.issue_type, f"{p.closed}/{p.total}", p.title]
+                for p in overview.progress
+            ],
+        )
+    )
+    sections.append(
+        _table_section(
+            "ready to start",
+            ["ticket", "size", "title", "next"],
+            [[f"#{r.number}", r.size, r.title, f"fugue run {r.number}"] for r in overview.ready],
+        )
+    )
+    sections.append(
+        _table_section(
+            "blocked tickets",
+            ["ticket", "title", "blocked by"],
+            [
+                [f"#{b.number}", b.title, "blocked by " + ", ".join(f"#{n}" for n in b.blockers)]
+                for b in overview.blocked
+            ],
+        )
+    )
+    waiting = [
+        [f"#{w.number}", "-", w.title, f"fugue question {w.number}"] for w in overview.waiting
+    ]
+    waiting += [
+        [
+            f"#{r.ticket_number}",
+            str(r.id),
+            r.state,
+            next_step_for(r.state, r.id, r.ticket_number) or "-",
+        ]
+        for r in overview.runs
+        if r.state in WAITING_RUN_STATES
+    ]
+    sections.append(
+        _table_section("waiting for a decision", ["ticket", "run", "what", "next"], waiting)
+    )
+    sections.append(
+        _table_section(
+            "open pull requests",
+            ["id", "title", "ci (pass/fail/pending)", "review", "approved", "head"],
+            [
+                [
+                    f"#{p.number}",
+                    p.title,
+                    f"{p.passing}/{p.failing}/{p.pending}",
+                    p.review_decision,
+                    "yes" if p.approved else "no",
+                    p.head_sha[:7],
+                ]
+                for p in overview.pull_requests
+            ],
+        )
+    )
+    sections.append(
+        _table_section(
+            "unfinished runs",
+            ["run", "ticket", "state", "since last activity", "next"],
+            [
+                [
+                    str(r.id),
+                    f"#{r.ticket_number}",
+                    r.state,
+                    format_elapsed(r.age_seconds),
+                    "next: " + (next_step_for(r.state, r.id, r.ticket_number) or "-"),
+                ]
+                for r in overview.runs
+            ],
+        )
+    )
+    sections.append(
+        _table_section(
+            "recently merged pull requests",
+            ["id", "title", "merged"],
+            [[f"#{m.number}", m.title, m.merged_at] for m in overview.merged],
+        )
+    )
+    sections.append(
+        _table_section(
+            "recently closed tickets",
+            ["ticket", "title"],
+            [[f"#{c.number}", c.title] for c in overview.closed],
+        )
+    )
+    return sections

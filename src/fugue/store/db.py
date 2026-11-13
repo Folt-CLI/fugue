@@ -308,6 +308,18 @@ class Store:
         ).fetchone()
         return _record(Approval, row) if row is not None else None
 
+    def merge_approvals(self, repo: str) -> list[Approval]:
+        """Valid merge approvals of runs in one repository; reads only."""
+        return [
+            _record(Approval, row)
+            for row in self._connection.execute(
+                "SELECT a.* FROM approvals a JOIN runs r ON r.id = a.run_id "
+                "WHERE r.repo = ? AND a.kind = 'merge' AND a.decision = 'approved' "
+                "AND a.invalidated_at IS NULL ORDER BY a.id",
+                (repo,),
+            )
+        ]
+
     def invalidate_approvals(self, run_id: int, subject: str, except_head_sha: str) -> None:
         with self._connection:
             self._connection.execute(
