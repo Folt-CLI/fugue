@@ -15,6 +15,7 @@ from fugue.agents.base import (
     AgentRequest,
     AgentResult,
     Capability,
+    Unavailable,
     UsageRecord,
     check_request,
     unsupported_result,
@@ -136,16 +137,34 @@ class CodexAdapter:
             for key in os.environ:
                 if key.endswith("_API_KEY"):
                     clean_env += ["-u", key]
-            result = await run_command(
-                [*clean_env, *argv],
-                cwd=cwd,
-                stdin=request.prompt,
-                timeout=request.timeout_seconds,
-                max_output_bytes=0,
-                max_line_bytes=None,
-                spool_dir=spool_dir,
-                on_stdout_line=receive,
-            )
+            try:
+                result = await run_command(
+                    [*clean_env, *argv],
+                    cwd=cwd,
+                    stdin=request.prompt,
+                    timeout=request.timeout_seconds,
+                    max_output_bytes=0,
+                    max_line_bytes=None,
+                    spool_dir=spool_dir,
+                    on_stdout_line=receive,
+                )
+            except OSError as exc:
+                # A spawn failure is a structured condition: the CLI cannot be reached.
+                return AgentResult(
+                    ok=False,
+                    final_text="",
+                    structured_output=None,
+                    session_id=session_id,
+                    usage=None,
+                    provider=self.name,
+                    authentication_mode=self.authentication_mode,
+                    error=f"Codex command could not start: {exc}",
+                    timed_out=False,
+                    cancelled=False,
+                    log_path=None,
+                    unsupported=None,
+                    unavailable=Unavailable.UNREACHABLE,
+                )
             final_text = (
                 final_file.read_text(encoding="utf-8") if final_file.exists() else last_message
             )
@@ -176,6 +195,11 @@ class CodexAdapter:
                 cost_estimate_usd=None,
                 duration_ms=int(result.duration_seconds * 1000),
             )
+        limited = provider_limited or bool(
+            re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error or "", re.I)
+        )
+        # No structured signed-out signal is evidenced for Codex, so only rate limits
+        # and spawn failures are classified as unavailable.
         return AgentResult(
             ok=error is None and result.returncode == 0 and not result.timed_out,
             final_text=final_text,
@@ -189,10 +213,8 @@ class CodexAdapter:
             cancelled=result.cancelled,
             log_path=log_path,
             unsupported=None,
-            provider_limited=provider_limited
-            or bool(
-                re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error or "", re.I)
-            ),
+            provider_limited=limited,
+            unavailable=Unavailable.RATE_LIMITED if limited else None,
         )
 
 

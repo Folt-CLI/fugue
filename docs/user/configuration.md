@@ -62,6 +62,31 @@ when explicitly set in TOML, but both adapters reject it when invoked. Credentia
 belong in the provider's supported environment or sign-in mechanism, not in this
 file. There is no automatic fallback to metered authentication.
 
+### Provider fallback
+
+A role may list further providers, tried in order when the role's own provider is
+unavailable (rate or usage limited, not signed in, or unreachable):
+
+```toml
+[roles.implementer]
+provider = "codex"
+
+[[roles.implementer.fallback]]
+provider = "claude"
+model = "example-model"
+```
+
+Each `[[roles.<role>.fallback]]` entry accepts `provider` (`claude` or `codex`),
+an optional `model` and `authentication_mode`. A provider must not repeat within
+one role, and an entry never accepts `api_key`: fallback never uses metered
+authentication. The whole call moves to the next provider; a provider is skipped
+without a call when it lacks a capability the call needs.
+
+After a provider is unavailable it is skipped for `limits.provider_cooldown_seconds`
+(default 300, must be positive) while a later provider in the chain can serve the
+call. When every provider is in cool-down they are tried in order anyway. The
+cool-down is kept in memory for the current process only.
+
 ## GitHub
 
 | Field under `[github]` | Default and meaning |

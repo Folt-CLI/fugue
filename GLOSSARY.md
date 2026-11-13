@@ -16,6 +16,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [capability](#capability)
 - [child](#child)
 - [Component](#component)
+- [cool-down](#cool-down)
 - [Disposition](#disposition)
 - [Epic](#epic)
 - [gate](#gate)
@@ -28,6 +29,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [orchestrator](#orchestrator)
 - [parent](#parent)
 - [provider adapter](#provider-adapter)
+- [provider fallback](#provider-fallback)
 - [Question](#question)
 - [reconcile](#reconcile)
 - [repair limit](#repair-limit)
@@ -42,6 +44,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [stage](#stage)
 - [Status](#status)
 - [ticket lock](#ticket-lock)
+- [unavailable provider](#unavailable-provider)
 - [usage record](#usage-record)
 - [work item](#work-item)
 - [worktree](#worktree)
@@ -212,6 +215,12 @@ a feature a provider adapter declares (streaming_events, structured_output, sess
 
 Status: decided.
 
+### cool-down
+
+the interval after an unavailable result during which a later call tries other providers first.
+
+Status: unresolved.
+
 ### handoff
 
 the schema-validated structured input or output passed between roles at a stage boundary.
@@ -231,6 +240,12 @@ the module that drives one provider's unmodified command-line tool as a child pr
 Also called adapter.
 
 Status: decided.
+
+### provider fallback
+
+an ordered list of providers for one role, tried in order, whole calls only.
+
+Status: unresolved.
 
 ### reconcile
 
@@ -279,6 +294,12 @@ Status: decided.
 the cross-process lock held for the whole run of one ticket.
 
 Status: decided.
+
+### unavailable provider
+
+a provider whose call ended rate or usage limited, unreachable or not signed in, reported as a structured reason.
+
+Status: unresolved.
 
 ### usage record
 

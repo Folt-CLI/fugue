@@ -12,9 +12,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 
-from fugue.agents import AccessMode, AdapterRegistry, AgentRequest
+from fugue.agents import AccessMode, AdapterRegistry, AgentRequest, ProviderAdapter, ProviderSwitch
 from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
-from fugue.config import FugueConfig
+from fugue.config import FugueConfig, ProviderEntry, RoleConfig
 from fugue.engine.ci import (
     FailureKind,
     actions_run_key,
@@ -158,6 +158,38 @@ def _session_id(store: Store, run_id: int, provider: str, authentication_mode: s
         run_id, role=Role.IMPLEMENTER, provider=provider, authentication_mode=authentication_mode
     )
     return sessions[-1].session_id if sessions else None
+
+
+def role_adapter(
+    deps: EngineDeps, run_id: int, role: Role, role_config: RoleConfig
+) -> ProviderAdapter:
+    """Build a role's adapter; each provider switch is recorded and reported."""
+
+    def on_switch(switch: ProviderSwitch) -> None:
+        number = len(_operations(deps.store, run_id, "provider_switch")) + 1
+        key = f"{number}:{role}:{switch.from_provider}->{switch.to_provider}:{switch.reason}"
+        operation = deps.store.begin_operation(
+            run_id,
+            "provider_switch",
+            key,
+            {
+                "role": str(role),
+                "from": switch.from_provider,
+                "to": switch.to_provider,
+                "reason": switch.reason,
+                "authentication_mode": str(switch.authentication_mode),
+            },
+        )
+        deps.store.complete_operation(operation.id, {"done": True})
+        if deps.progress is not None:
+            deps.progress(f"{role}: {switch.describe()}")
+
+    return deps.registry.build_for_role(
+        role_config,
+        clock=deps.clock,
+        cooldown_seconds=deps.config.limits.provider_cooldown_seconds,
+        on_switch=on_switch,
+    )
 
 
 async def _common_dir(path: Path) -> Path:
@@ -708,17 +740,30 @@ class Engine:
 
     async def _agent(self, run_id: int, identity: Identity, prompt: str, scope: str) -> None:
         role_config = self.deps.config.roles[Role.IMPLEMENTER]
-        adapter = self.deps.registry.build(role_config)
-        session = _session_id(
-            self.deps.store, run_id, adapter.name, str(adapter.authentication_mode)
-        )
-        if session is None and scope not in prompt:
+        adapter = role_adapter(self.deps, run_id, Role.IMPLEMENTER, role_config)
+        # Each chain member resumes only its own session; none is passed between providers.
+        members: list[RoleConfig | ProviderEntry] = [role_config, *role_config.fallback]
+        sessions: dict[str, str] = {
+            member.provider: found
+            for member in members
+            if (
+                found := _session_id(
+                    self.deps.store, run_id, member.provider, str(member.authentication_mode)
+                )
+            )
+            is not None
+        }
+        session = sessions.get(role_config.provider)
+        fresh_prompt = prompt
+        if scope not in prompt:
             # A new provider conversation needs the scope even when repairing.
-            prompt = (
+            fresh_prompt = (
                 implementation_prompt(scope, workdir=identity.path, branch=identity.branch)
                 + "\n\n"
                 + prompt
             )
+        if session is None:
+            prompt = fresh_prompt
         result = await adapter.run(
             AgentRequest(
                 role=Role.IMPLEMENTER,
@@ -726,6 +771,8 @@ class Engine:
                 cwd=identity.path,
                 access=AccessMode.WORKSPACE_WRITE,
                 session_id=session,
+                sessions=sessions,
+                fresh_prompt=fresh_prompt,
                 model=role_config.model,
                 timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
             )
@@ -1186,7 +1233,7 @@ class Engine:
         self, run_id: int, identity: Identity, scope: str, ci_result: str
     ) -> list[Finding]:
         role_config = self.deps.config.roles[Role.REVIEWER]
-        adapter = self.deps.registry.build(role_config)
+        adapter = role_adapter(self.deps, run_id, Role.REVIEWER, role_config)
         prompt = review_prompt(
             scope=scope,
             ci_result=ci_result,
@@ -1213,6 +1260,9 @@ class Engine:
                 result.authentication_mode,
                 **asdict(result.usage),
             )
+        implementers = self.deps.store.agent_sessions(run_id, role=Role.IMPLEMENTER)
+        if implementers and implementers[-1].provider == result.provider:
+            self._report("review: same provider as implementation")
         if not result.ok:
             error = result.error or "Reviewer failed"
             self._artifact(run_id, "review-error", error)

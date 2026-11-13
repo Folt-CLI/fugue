@@ -20,6 +20,14 @@ class Capability(StrEnum):
     USAGE_COST_ESTIMATE = "usage_cost_estimate"
 
 
+class Unavailable(StrEnum):
+    """Structured reason a provider call could not be served."""
+
+    RATE_LIMITED = "rate_limited"
+    UNREACHABLE = "unreachable"
+    NOT_SIGNED_IN = "not_signed_in"
+
+
 class AccessMode(StrEnum):
     READ_ONLY = "read_only"
     WORKSPACE_WRITE = "workspace_write"
@@ -35,6 +43,11 @@ class AgentRequest:
     output_schema: Mapping[str, Any] | None = None
     timeout_seconds: float | None = None
     model: str | None = None
+    # Provider name to session id, subscription_login only; provider fallback gives
+    # each member only its own session.
+    sessions: Mapping[str, str] = field(default_factory=dict)
+    # Prompt for a member without a session of its own; None means use prompt.
+    fresh_prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +82,7 @@ class AgentResult:
     log_path: Path | None
     unsupported: Capability | None
     provider_limited: bool = False
+    unavailable: Unavailable | None = None
 
 
 class ProviderAdapter(Protocol):

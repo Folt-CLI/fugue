@@ -13,6 +13,7 @@ from fugue.agents import AccessMode, AgentRequest
 from fugue.analysis.render import render_analysis, render_attachments, render_body, render_details
 from fugue.analysis.schema import Handoff, handoff_schema
 from fugue.engine import Engine, EngineDeps, RunOutcome
+from fugue.engine.pipeline import role_adapter
 from fugue.github import GitHubClient
 from fugue.github.attachments import UploadedAttachment
 from fugue.models import Role, Size, Status, Ticket
@@ -78,7 +79,7 @@ async def analyse(deps: EngineDeps, ticket: Ticket, *, run_id: int | None = None
         saved = deps.artifacts.open_ref(run_id, "analysis-handoff.json")
         if saved is None:
             role = deps.config.roles[Role.ANALYST]
-            adapter = deps.registry.build(role)
+            adapter = role_adapter(deps, run_id, Role.ANALYST, role)
             request = AgentRequest(
                 role=Role.ANALYST,
                 prompt=(

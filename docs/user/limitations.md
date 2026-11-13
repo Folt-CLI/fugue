@@ -15,9 +15,14 @@ GitHub Projects or repository process metadata. See
   usage differ; a session can be resumed only where the provider supports it.
 - Both bundled provider adapters require `subscription_login`, using your own
   sign-in to the unmodified provider CLI. The schema accepts `api_key` when
-  explicitly set in TOML, but both adapters reject it when invoked. There is no
-  automatic fallback to metered authentication. Provider restrictions, quota
-  limits, missing credentials and billing requirements need intervention.
+  explicitly set in TOML, but both adapters reject it when invoked. Provider
+  fallback (`[[roles.<role>.fallback]]`) moves a whole call to the next listed
+  provider when one is rate limited, not signed in or unreachable, but never to
+  metered authentication and never carries a session between providers. Only
+  structured signals count: Claude reports signed-out and outage through numeric
+  API statuses; Codex has no signed-out signal, so only its rate limits and spawn
+  failures switch. When every provider is unavailable the run ends
+  provider-limited and `fugue resume` continues it.
 - Workflow commands require a GitHub repository and Project configuration,
   ticket metadata and suitable permissions. A non-GitHub origin cannot be used
   to infer the repository; set `github.repo` explicitly when needed.
@@ -54,8 +59,11 @@ GitHub Projects or repository process metadata. See
   lock-conflicted tickets exit with code 3.
 - Shared Git steps in the primary checkout are serialised across processes by a
   repository lock; agent work is not.
-- Concurrent runs share no provider throttle, backoff or fallback. A run that
-  hits a provider limit ends provider-limited (exit code 5) while others go on.
+- Concurrent runs in one process share the provider cool-down, so one run's
+  limit makes the next call in another run start with the next provider. The
+  cool-down is not shared across processes or kept across restarts, and there is
+  no throttle or backoff. A run whose providers are all unavailable ends
+  provider-limited (exit code 5) while others go on.
 - `resume`, `review`, `decide`, `approve` and `merge` do not take the ticket
   lock.
 
