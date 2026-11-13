@@ -2,6 +2,8 @@
 
 For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](process.md#autonomous-development-campaign-exceptions) for the campaign.
 
+Record campaign technical decisions as **autonomous orchestrator decisions**.
+
 Use GitHub Issues as the durable record of a change. Keep the issue body current
 as the work becomes clearer; use comments for short decisions and handoffs, and
 link substantial design notes or evidence instead of copying long material into

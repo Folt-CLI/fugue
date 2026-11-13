@@ -1,8 +1,8 @@
 # Getting started
 
 Fugue is a local-first CLI that coordinates coding agents from a GitHub ticket to
-review, approval and delivery. It is under development; no release is available.
-This guide uses a source checkout.
+review, approval and delivery. The current release is **0.1.0**.
+This guide uses the installed wheel.
 
 ## Prerequisites
 
@@ -19,12 +19,13 @@ This guide uses a source checkout.
   [ticket planning](../dev/ticket-planning.md) for that contract. Fugue does not
   provision a GitHub Project or its fields for you.
 
-From the Fugue source checkout, install the existing dependencies and inspect
-help:
+Download `fugue-0.1.0-py3-none-any.whl` from the
+[0.1.0 release](https://github.com/Folt-CLI/fugue/releases/tag/v0.1.0),
+then install it and inspect help:
 
 ```sh
-uv sync
-uv run fugue --help
+uv tool install /path/to/fugue-0.1.0-py3-none-any.whl
+fugue --help
 ```
 
 ## Configure the target repository
@@ -45,11 +46,11 @@ runs Python tooling, so configure `policy.gate_commands` for the target reposito
 before a run. See [configuration](configuration.md) for all fields, defaults and
 storage locations.
 
-When using Fugue from its source checkout, pass the target repository explicitly:
+Pass the target repository explicitly when running outside its checkout:
 
 ```sh
-uv run fugue config show --repo-root /path/to/repository
-uv run fugue run 47 --repo-root /path/to/repository
+fugue config show --repo-root /path/to/repository
+fugue run 47 --repo-root /path/to/repository
 ```
 
 These examples assume ticket 47 exists and is ready for the workflow. `run` can
@@ -63,9 +64,9 @@ The output gives a run id. A ticket number identifies the GitHub issue; a run id
 identifies the local execution. For an example run id of 1:
 
 ```sh
-uv run fugue status 1 --repo-root /path/to/repository
-uv run fugue usage --by run --repo-root /path/to/repository
-uv run fugue timing 1 --repo-root /path/to/repository
+fugue status 1 --repo-root /path/to/repository
+fugue usage --by run --repo-root /path/to/repository
+fugue timing 1 --repo-root /path/to/repository
 ```
 
 Use the same configuration and state directory for later commands. Read the

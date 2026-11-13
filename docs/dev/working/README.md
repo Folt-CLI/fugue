@@ -2,6 +2,8 @@
 
 For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](../process.md#autonomous-development-campaign-exceptions) for the campaign.
 
+Record campaign technical decisions as **autonomous orchestrator decisions**.
+
 Use these templates to work a ticket by size and issue type. They record the
 Fugue policy decided in [Question #2](https://github.com/Folt-CLI/fugue/issues/2), Option 1.
 
