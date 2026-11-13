@@ -3,6 +3,7 @@
 import asyncio
 import getpass
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,8 +13,11 @@ import pytest
 from typer.testing import CliRunner
 
 from fugue.cli import app as cli
+from fugue.cli import render
 from fugue.engine import Engine, EngineDeps, RunOutcome
+from fugue.engine.pipeline import Identity
 from fugue.engine.review import Decision, Finding
+from fugue.gitops import Git
 from fugue.store import Store
 from fugue.store.records import Approval
 from fugue.workflow import RunState
@@ -26,6 +30,9 @@ class FakeEngine:
         self.error: BaseException | None = None
         self.closed = False
         self.deps = SimpleNamespace()
+
+    def _saved_identity(self, run_id: int) -> Identity:
+        return Identity("issue-41", Path("."))
 
     async def call(self, name: str, value: object) -> RunOutcome:
         self.calls.append((name, value))
@@ -250,6 +257,11 @@ def test_resume_durable_progress(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, progress: str, expected: str | None
 ) -> None:
     fake = FakeEngine()
+
+    async def head_sha(self: object) -> str:
+        return "abc123"
+
+    monkeypatch.setattr(Git, "head_sha", head_sha)
     monkeypatch.setattr(cli, "_ResumeEngine", lambda deps, run_id: fake)
     with Store(tmp_path / "store.db") as store:
         run = store.create_run(41, "owner/repo")
@@ -278,6 +290,85 @@ def test_resume_durable_progress(
         assert [name for name, _ in fake.calls] == ([] if expected is None else [expected])
         if progress == "decision":
             assert fake.calls[0][1] == (run.id, {1: Decision(False, "saved reason")})
+
+
+@pytest.mark.parametrize("pending_decision", [False, True])
+@pytest.mark.parametrize("merge_started", [False, True])
+@pytest.mark.parametrize("approval_head", ["head-a", "head-b"])
+def test_resume_current_review_before_historical_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pending_decision: bool,
+    merge_started: bool,
+    approval_head: str,
+) -> None:
+    async def head_sha(self: object) -> str:
+        return "head-b"
+
+    monkeypatch.setattr(Git, "head_sha", head_sha)
+    fake = FakeEngine()
+    finding = Finding(1, "High", "Wrong result at head B", "src/example.py", 8, 9, None, True)
+    with Store(tmp_path / "store.db") as store:
+        run = store.create_run(41, "owner/repo")
+        request = store.begin_operation(run.id, "merge_request", "head-a", {"head": "head-a"})
+        store.complete_operation(request.id, {"ready": True})
+        store.record_approval(run.id, "merge", "12", approval_head, "approved", "user", "ready")
+        if merge_started:
+            store.begin_operation(run.id, "merge", "head-a", {"head": "head-a"})
+        review = store.begin_operation(
+            run.id,
+            "review",
+            "round-2",
+            {"round": 2, "head": "head-b", "findings": [asdict(finding)]},
+        )
+        store.complete_operation(review.id, {"threads": {}})
+        store.set_run_state(run.id, RunState.WAITING_FOR_DECISION)
+        if pending_decision:
+            store.begin_operation(
+                run.id,
+                "decision",
+                "round-2",
+                {"decisions": {"1": {"accept": True}}},
+            )
+        fake.deps = SimpleNamespace(store=store)
+        fake.outcome = RunOutcome(
+            run.id, RunState.WAITING_FOR_DECISION, head_sha="head-b", findings=(finding,)
+        )
+        wrapper = cli._StoreClosingEngine(cast(Engine, fake))
+        for _ in range(2):
+            outcome = asyncio.run(wrapper.resume(run.id))
+            assert outcome.findings == (finding,)
+            assert "Wrong result at head B" in render.render_outcome(outcome)
+        expected = "decide" if pending_decision else "review"
+        assert [name for name, _ in fake.calls] == [expected, expected]
+        if pending_decision:
+            assert fake.calls[0][1] == (run.id, {1: Decision(True)})
+
+
+@pytest.mark.parametrize("current_request", [False, True])
+def test_resume_ignores_old_merge_records_after_clean_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current_request: bool
+) -> None:
+    async def head_sha(self: object) -> str:
+        return "head-b"
+
+    monkeypatch.setattr(Git, "head_sha", head_sha)
+    fake = FakeEngine()
+    with Store(tmp_path / "store.db") as store:
+        run = store.create_run(41, "owner/repo")
+        for kind in ["merge_gate", "merge_request", "merge"]:
+            store.begin_operation(run.id, kind, "head-a", {"head": "head-a"})
+        store.record_approval(run.id, "merge", "12", "head-a", "approved", "user", "ready")
+        review = store.begin_operation(
+            run.id, "review", "round-2", {"round": 2, "head": "head-b", "findings": []}
+        )
+        store.complete_operation(review.id, {"threads": {}})
+        if current_request:
+            store.begin_operation(run.id, "merge_gate", "head-b", {"head": "head-b"})
+        fake.deps = SimpleNamespace(store=store)
+        wrapper = cli._StoreClosingEngine(cast(Engine, fake))
+        asyncio.run(wrapper.resume(run.id))
+        assert fake.calls == [("request-approval" if current_request else "review", run.id)]
 
 
 def test_resume_keeps_requested_run_when_ticket_has_newer_run(tmp_path: Path) -> None:

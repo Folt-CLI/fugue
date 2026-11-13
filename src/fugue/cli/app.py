@@ -16,6 +16,7 @@ from fugue.cli import render, wiring
 from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.review import Decision
+from fugue.gitops import Git
 from fugue.store import Run, StoreError
 from fugue.store.records import Approval
 from fugue.workflow import RunState
@@ -107,12 +108,6 @@ class _StoreClosingEngine:
         if run.state == RunState.COMPLETED:
             return RunOutcome(run_id, RunState.COMPLETED)
         detail = wiring.load_run_detail(store, run_id)
-        if any(o.kind == "merge" for o in detail.operations) or any(
-            a.kind == "merge" and a.valid for a in detail.approvals
-        ):
-            return await self.merge_and_close(run_id)
-        if any(o.kind in {"merge_request", "merge_gate"} for o in detail.operations):
-            return await self.request_approval(run_id)
         # Reuse the durable decision intent after an interrupted repair or thread reply.
         pending = store._connection.execute(
             "SELECT intent_json FROM operations WHERE run_id = ? AND kind = 'decision' "
@@ -123,6 +118,33 @@ class _StoreClosingEngine:
             saved = json.loads(pending[0])["decisions"]
             decisions = {int(index): Decision(**value) for index, value in saved.items()}
             return await self.decide(run_id, decisions)
+        identity = self._engine._saved_identity(run_id)
+        head = await Git(identity.path).head_sha() if identity is not None else None
+        latest_review = store._connection.execute(
+            "SELECT status, intent_json FROM operations WHERE run_id = ? AND kind = 'review' "
+            "AND json_extract(intent_json, '$.head') = ? ORDER BY id DESC LIMIT 1",
+            (run_id, head),
+        ).fetchone()
+        if latest_review is not None:
+            review = json.loads(latest_review["intent_json"])
+            decision = store._connection.execute(
+                "SELECT status FROM operations WHERE run_id = ? AND kind = 'decision' AND key = ?",
+                (run_id, f"round-{review['round']}"),
+            ).fetchone()
+            if latest_review["status"] != "done" or (
+                review["findings"]
+                and (decision is None or any(f["blocking"] for f in review["findings"]))
+            ):
+                return await self.run_review(run_id)
+        if any(o.kind == "merge" and o.key == head for o in detail.operations) or any(
+            a.kind == "merge" and a.valid and a.decision == "approved" and a.head_sha == head
+            for a in detail.approvals
+        ):
+            return await self.merge_and_close(run_id)
+        if any(
+            o.kind in {"merge_request", "merge_gate"} and o.key == head for o in detail.operations
+        ):
+            return await self.request_approval(run_id)
         if run.state == RunState.WAITING_FOR_MERGE_APPROVAL:
             return await self.request_approval(run_id)
         if any(o.kind == "review" for o in detail.operations) or any(
