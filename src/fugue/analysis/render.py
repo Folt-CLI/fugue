@@ -1,5 +1,6 @@
 """Pure Markdown renderers for analysis and implementation scope attachments."""
 
+import re
 from collections.abc import Mapping, Sequence
 
 from fugue.analysis.schema import Handoff, Option
@@ -7,6 +8,14 @@ from fugue.analysis.schema import Handoff, Option
 
 def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
+
+
+def _path(item: str) -> str:
+    return item if "`" in item else f"`{item}`"
+
+
+def _scenario(item: str) -> str:
+    return re.sub(r"^\s*\d+[.)]\s+", "", item)
 
 
 def _cell(value: str) -> str:
@@ -76,11 +85,13 @@ def render_scope(number: int, index: int, option: Option) -> str:
     ]
     parts = [f"# {number} solution {index}: {option.name}"]
     for heading, items in sections:
-        content = (
-            "\n".join(f"{i}. {item}" for i, item in enumerate(items, 1))
-            if heading.endswith("scenarios")
-            else _bullets(items)
-        )
+        if heading.endswith("scenarios"):
+            content = "\n".join(f"{i}. {_scenario(item)}" for i, item in enumerate(items, 1))
+        else:
+            content = _bullets(items)
+        if heading == "Standing rules":
+            files = _bullets([_path(item) for item in scope.allowed_files])
+            content += f"\n- You may touch only these files (create them if new):\n{files}"
         parts.extend([f"## {heading}", content])
     return "\n\n".join(parts) + "\n"
 

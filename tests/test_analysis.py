@@ -24,6 +24,7 @@ from fugue.artifacts import ArtifactStore
 from fugue.cli.app import _StoreClosingEngine
 from fugue.config import FugueConfig
 from fugue.engine import Engine, EngineDeps
+from fugue.engine.facts import allowed_files
 from fugue.github.attachments import UploadedAttachment
 from fugue.models import AuthenticationMode, IssueType, Priority, Role, Size, Status, Ticket
 from fugue.store import Store
@@ -47,6 +48,7 @@ def handoff() -> Handoff:
                     "scope": {
                         "standing_rules": ["Implement only."],
                         "source_of_truth": ["GLOSSARY.md."],
+                        "allowed_files": ["src/fugue/analysis/stage.py"],
                         "file_changes": ["Update stage.py."],
                         "in_scope": ["Restart reuses uploads."],
                         "out_of_scope": ["Merge approval."],
@@ -161,6 +163,8 @@ def test_scope_and_findings_exact_text() -> None:
 ## Standing rules
 
 - Implement only.
+- You may touch only these files (create them if new):
+- `src/fugue/analysis/stage.py`
 
 ## Source of truth
 
@@ -199,6 +203,27 @@ def test_scope_and_findings_exact_text() -> None:
         "43-code-findings.md": "# Findings\n\nstage.py:1 needs analysis.\n",
         "43-solution-1.md": expected,
     }
+
+
+def test_allowed_files_round_trip_and_numbering() -> None:
+    data = handoff().model_dump()
+    scope = data["options"][0]["scope"]
+    scope["allowed_files"] = ["a.py", "`b/c.py`"]
+    scope["in_scope"] = ["1. Foo", "Bar", "2) Baz"]
+    text = render_scope(43, 1, Handoff.model_validate(data).options[0])
+    assert allowed_files(text) == ["a.py", "b/c.py"]
+    assert "1. Foo\n2. Bar\n3. Baz" in text
+    assert "1. 1." not in text
+
+
+def test_schema_requires_allowed_files() -> None:
+    data = handoff().model_dump()
+    del data["options"][0]["scope"]["allowed_files"]
+    with pytest.raises(ValidationError):
+        Handoff.model_validate(data)
+    data["options"][0]["scope"]["allowed_files"] = []
+    with pytest.raises(ValidationError):
+        Handoff.model_validate(data)
 
 
 def test_comparison_required_and_rendered() -> None:
