@@ -97,7 +97,11 @@ class RoundEntry:
 _SECTION = re.compile(r"[#*\s]*(non[- ]?blocking|blocking)(?:\s+findings)?\s*[:*]*\s*", re.I)
 _ITEM = re.compile(r"\s{0,1}(?:\d+[.)]|[-*+])\s+(.*\S)\s*$")
 _SEVERITY = re.compile(r"\**(High|Medium|Low)\**\s*[:\-\u2013\u2014]\s*", re.I)
-_LOCATION = re.compile(r"`?(?P<path>[\w./-]*\w\.\w+):(?P<start>\d+)(?:-(?P<end>\d+))?`?")
+_LOCATION = re.compile(
+    r"(?<![A-Za-z0-9_./+\[\]:-])`?"
+    r"(?P<path>(?=[A-Za-z0-9_./+\[\]-]*[A-Za-z_./+\[\]-])[A-Za-z0-9_./+\[\]-]+)"
+    r":(?P<start>\d+)(?:-(?P<end>\d+))?`?"
+)
 _NOTHING = frozenset({"none", "n/a", "no findings", "nothing"})
 
 
@@ -265,20 +269,33 @@ def marked_finding(body: str) -> tuple[int, int] | None:
     return None if match is None else (int(match[1]), int(match[2]))
 
 
-def diff_ranges(diff: str) -> dict[str, list[tuple[int, int]]]:
-    """Right-side line ranges of each hunk, per file, from a unified diff."""
-    ranges: dict[str, list[tuple[int, int]]] = {}
+@dataclass
+class DiffLines:
+    """Right-side hunk ranges and added lines of one file."""
+
+    hunks: list[tuple[int, int]]
+    added: list[int]
+
+
+def diff_ranges(diff: str) -> dict[str, DiffLines]:
+    """Right-side hunk ranges and added lines, per file, from a unified diff."""
+    ranges: dict[str, DiffLines] = {}
     path: str | None = None
     old_left = new_left = 0
+    next_line = 0
     for line in diff.splitlines():
         if old_left > 0 or new_left > 0:
             if line.startswith("+"):
+                if path is not None:
+                    ranges[path].added.append(next_line)
                 new_left -= 1
+                next_line += 1
             elif line.startswith("-"):
                 old_left -= 1
             elif not line.startswith("\\"):
                 old_left -= 1
                 new_left -= 1
+                next_line += 1
             continue
         if line.startswith("+++ "):
             target = line[4:].strip().strip('"')
@@ -290,8 +307,9 @@ def diff_ranges(diff: str) -> dict[str, list[tuple[int, int]]]:
         old_left = int(header[1]) if header[1] is not None else 1
         new_left = int(header[3]) if header[3] is not None else 1
         start = int(header[2])
+        next_line = start
         if new_left > 0:
-            ranges.setdefault(path, []).append((start, start + new_left - 1))
+            ranges.setdefault(path, DiffLines([], [])).hunks.append((start, start + new_left - 1))
     return ranges
 
 
@@ -300,22 +318,25 @@ def _label(finding: Finding) -> str:
     return f"**{finding.severity} ({kind}):** {finding.summary}"
 
 
-def _nearest(hunks: Sequence[tuple[int, int]], line: int) -> int:
-    candidates = (min(max(line, low), high) for low, high in hunks)
-    return min(candidates, key=lambda candidate: (abs(candidate - line), candidate))
+def _nearest(added: Sequence[int], line: int) -> int:
+    return min(added, key=lambda candidate: (abs(candidate - line), candidate))
 
 
 def place_finding(
-    finding: Finding, ranges: Mapping[str, Sequence[tuple[int, int]]], round_number: int
+    finding: Finding, ranges: Mapping[str, DiffLines], round_number: int
 ) -> ReviewComment | None:
-    """The inline comment for a finding, or None when it belongs in the review body."""
+    """Keep locations wholly inside a hunk, including context lines, without a note.
+
+    Otherwise attach to the nearest added line in the same file (ties use the earlier
+    line), with a note. Without an added line, put the finding in the review body.
+    """
     if finding.path is None or finding.start_line is None or finding.path not in ranges:
         return None
-    hunks = ranges[finding.path]
+    lines = ranges[finding.path]
     start = finding.start_line
     end = finding.end_line if finding.end_line is not None else start
     marker = finding_marker(round_number, finding.index)
-    inside = any(low <= start and end <= high for low, high in hunks)
+    inside = any(low <= start and end <= high for low, high in lines.hunks)
     if inside:
         body = _label(finding)
         if finding.suggestion is not None:
@@ -327,7 +348,9 @@ def place_finding(
             start_line=start if end > start else None,
             start_side="RIGHT" if end > start else None,
         )
-    line = _nearest(hunks, start)
+    if not lines.added:
+        return None
+    line = _nearest(lines.added, start)
     body = (
         f"{_label(finding)}\n\nReported at `{finding.location}`, which is not part of the "
         "diff; attached to the nearest changed line."
@@ -348,7 +371,7 @@ class BuiltReview:
 
 def build_review(
     findings: Sequence[Finding],
-    ranges: Mapping[str, Sequence[tuple[int, int]]],
+    ranges: Mapping[str, DiffLines],
     round_number: int,
     *,
     separate_identity: bool,

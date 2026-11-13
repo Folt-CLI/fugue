@@ -4,6 +4,7 @@ import asyncio
 import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from difflib import unified_diff
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from fugue.engine.facts import branch_name, worktree_path
 from fugue.engine.review import (
     CLEAN,
     Decision,
+    DiffLines,
     Finding,
     RoundEntry,
     build_review,
@@ -140,6 +142,32 @@ def test_parse_reversed_range_is_ordered() -> None:
     assert (finding.start_line, finding.end_line) == (3, 9)
 
 
+@pytest.mark.parametrize(
+    ("location", "path", "start", "end"),
+    [
+        ("Dockerfile:1", "Dockerfile", 1, 1),
+        (".gitignore:2", ".gitignore", 2, 2),
+        ("src/Makefile:3-5", "src/Makefile", 3, 5),
+        ("src/a_[id]+1-file.py:7", "src/a_[id]+1-file.py", 7, 7),
+    ],
+)
+def test_parse_extensionless_dotfile_and_path_characters(
+    location: str, path: str, start: int, end: int
+) -> None:
+    [item] = parsed(f"## Blocking\n1. High: Bad. `{location}`\n")
+    assert (item.path, item.start_line, item.end_line) == (path, start, end)
+    built = build_review([item], {path: DiffLines([(1, 10)], [start])}, 1, separate_identity=False)
+    [comment] = built.comments
+    assert (comment.path, comment.line) == (path, end)
+
+
+@pytest.mark.parametrize("text", ["at 12:30", "https://x/y:80"])
+def test_parse_times_and_urls_are_not_locations(text: str) -> None:
+    [item] = parsed(f"## Blocking\n1. High: Bad {text}\n")
+    assert item.path is None and item.start_line is None and item.end_line is None
+    assert text in item.summary
+
+
 DIFF = """\
 diff --git a/src/a.py b/src/a.py
 --- a/src/a.py
@@ -161,7 +189,7 @@ diff --git a/gone.py b/gone.py
 
 
 def test_diff_ranges_cover_right_side_hunks_only() -> None:
-    assert diff_ranges(DIFF) == {"src/a.py": [(1, 3), (21, 22)]}
+    assert diff_ranges(DIFF) == {"src/a.py": DiffLines([(1, 3), (21, 22)], [2, 21, 22])}
 
 
 def finding(**changes: object) -> Finding:
@@ -179,7 +207,7 @@ def finding(**changes: object) -> Finding:
     return Finding(**values)  # type: ignore[arg-type]
 
 
-RANGES = {"src/a.py": [(1, 3), (21, 22)]}
+RANGES = diff_ranges(DIFF)
 
 
 def test_place_finding_inline_single_line() -> None:
@@ -206,7 +234,41 @@ def test_place_finding_outside_diff_moves_to_nearest_changed_line_with_note() ->
     assert "```suggestion" not in comment.body
     # A range crossing two hunks is not one block, so it moves too.
     crossing = place_finding(finding(start_line=3, end_line=21), RANGES, 1)
-    assert crossing is not None and crossing.start_line is None and crossing.line == 3
+    assert crossing is not None and crossing.start_line is None and crossing.line == 2
+
+
+@pytest.mark.parametrize(("reported", "attached", "note"), [(50, 10, True), (12, 12, False)])
+def test_place_finding_distinguishes_added_lines_from_context(
+    reported: int, attached: int, note: bool
+) -> None:
+    before = [f"line {number}\n" for number in range(1, 101)]
+    after = before.copy()
+    after[9] = "changed line 10\n"
+    diff = "".join(unified_diff(before, after, fromfile="a/src/a.py", tofile="b/src/a.py", n=3))
+    ranges = diff_ranges(diff)
+    assert ranges == {"src/a.py": DiffLines([(7, 13)], [10])}
+    comment = place_finding(finding(start_line=reported, end_line=reported), ranges, 1)
+    assert comment is not None and comment.line == attached
+    assert ("attached to the nearest changed line" in comment.body) == note
+    assert ("not part of the diff" in comment.body) == note
+
+
+def test_place_finding_nearest_added_line_ties_use_earlier_same_file_line() -> None:
+    ranges = {
+        "src/a.py": DiffLines([(7, 13), (27, 33)], [10, 30]),
+        "other.py": DiffLines([(20, 20)], [20]),
+    }
+    comment = place_finding(finding(start_line=20, end_line=20), ranges, 1)
+    assert comment is not None and (comment.path, comment.line) == ("src/a.py", 10)
+
+
+def test_place_finding_outside_deletion_only_hunk_goes_to_body() -> None:
+    diff = "--- a/src/a.py\n+++ b/src/a.py\n@@ -9,3 +9,2 @@\n keep\n-removed\n keep\n"
+    ranges = diff_ranges(diff)
+    assert ranges == {"src/a.py": DiffLines([(9, 10)], [])}
+    assert place_finding(finding(start_line=50, end_line=50), ranges, 1) is None
+    built = build_review([finding(start_line=50, end_line=50)], ranges, 1, separate_identity=False)
+    assert built.comments == () and "src/a.py:50" in built.body
 
 
 @pytest.mark.parametrize(
