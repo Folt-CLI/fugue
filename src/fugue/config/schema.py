@@ -1,9 +1,16 @@
 """Validated repository policy and local configuration."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from fugue.models import AuthenticationMode, Role, Size, SizeRule
 
@@ -18,6 +25,7 @@ class Limits(BaseModel):
     max_output_bytes: int = Field(default=65536, gt=0)
     ci_poll_interval_seconds: int = Field(default=20, gt=0)
     ci_timeout_seconds: int = Field(default=3600, gt=0)
+    provider_cooldown_seconds: int = Field(default=300, gt=0)
     infrastructure_markers: list[str] = Field(
         default_factory=lambda: [
             "runner lost",
@@ -38,12 +46,37 @@ class Limits(BaseModel):
         return markers
 
 
+class ProviderEntry(BaseModel):
+    """One provider tried after the role's own provider is unavailable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["claude", "codex"]
+    model: str | None = None
+    authentication_mode: AuthenticationMode = AuthenticationMode.SUBSCRIPTION_LOGIN
+
+    @field_validator("authentication_mode")
+    @classmethod
+    def forbid_api_key(cls, value: AuthenticationMode) -> AuthenticationMode:
+        if value == AuthenticationMode.API_KEY:
+            raise ValueError("provider fallback never uses api_key")
+        return value
+
+
 class RoleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: Literal["claude", "codex"]
     model: str | None = None
     authentication_mode: AuthenticationMode = AuthenticationMode.SUBSCRIPTION_LOGIN
+    fallback: list[ProviderEntry] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_distinct_providers(self) -> Self:
+        providers = [self.provider, *(entry.provider for entry in self.fallback)]
+        if len(set(providers)) != len(providers):
+            raise ValueError("a provider must not repeat within one role")
+        return self
 
     @field_validator("authentication_mode")
     @classmethod

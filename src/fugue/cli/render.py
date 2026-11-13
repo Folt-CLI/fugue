@@ -58,7 +58,11 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
 
 def render_roles(config: FugueConfig) -> str:
     rows = [
-        [str(role), role_config.provider, str(role_config.authentication_mode)]
+        [
+            str(role),
+            " > ".join([role_config.provider, *(entry.provider for entry in role_config.fallback)]),
+            str(role_config.authentication_mode),
+        ]
         for role, role_config in config.roles.items()
     ]
     lines = _table(["role", "provider", "authentication mode"], rows)
@@ -274,12 +278,28 @@ def _toml_scalar(value: object) -> str:
 
 
 def _toml_lines(path: Sequence[str], table: Mapping[str, Any]) -> list[str]:
-    scalars = {key: value for key, value in table.items() if not isinstance(value, dict)}
+    def is_table_list(value: object) -> bool:
+        return (
+            isinstance(value, list)
+            and bool(value)
+            and all(isinstance(item, dict) for item in value)
+        )
+
+    scalars = {
+        key: value
+        for key, value in table.items()
+        if not isinstance(value, dict) and not is_table_list(value)
+    }
     tables = {key: value for key, value in table.items() if isinstance(value, dict)}
+    table_lists = {key: value for key, value in table.items() if is_table_list(value)}
     lines = [f"{key} = {_toml_scalar(value)}" for key, value in scalars.items()]
     for key, value in tables.items():
         child = [*path, key]
         lines.extend(["", f"[{'.'.join(child)}]", *_toml_lines(child, value)])
+    for key, items in table_lists.items():
+        child = [*path, key]
+        for item in items:
+            lines.extend(["", f"[[{'.'.join(child)}]]", *_toml_lines(child, item)])
     return lines
 
 

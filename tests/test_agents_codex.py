@@ -16,6 +16,7 @@ from fugue.agents import (
     AgentRequest,
     Capability,
     CodexAdapter,
+    Unavailable,
     register_codex,
 )
 from fugue.config import RoleConfig
@@ -400,5 +401,18 @@ def test_explicit_provider_limit_flag(
     result = asyncio.run(adapter.run(request_data))
     assert not result.ok
     assert result.provider_limited is expected
+    assert (result.unavailable == Unavailable.RATE_LIMITED) is expected
     assert result.session_id == "limited-session"
     assert result.error == "turn failed"
+
+
+def test_spawn_failure_is_unreachable(
+    request_data: AgentRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refuse(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("codex")
+
+    monkeypatch.setattr("fugue.agents.codex.run_command", refuse)
+    result = asyncio.run(CodexAdapter(spool_dir=tmp_path / "logs").run(request_data))
+    assert not result.ok and result.unavailable == Unavailable.UNREACHABLE
+    assert not result.provider_limited

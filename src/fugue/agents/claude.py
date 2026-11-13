@@ -13,6 +13,7 @@ from fugue.agents.base import (
     AgentRequest,
     AgentResult,
     Capability,
+    Unavailable,
     UsageRecord,
 )
 from fugue.agents.registry import AdapterRegistry
@@ -49,6 +50,14 @@ class _Stream:
     result: dict[str, Any] | None = None
     errors: list[str] = field(default_factory=list)
     provider_limited: bool = False
+    unavailable: Unavailable | None = None
+
+    def mark(self, reason: Unavailable) -> None:
+        # A rate limit is the most specific reason; otherwise keep the first one seen.
+        if self.unavailable is None or reason == Unavailable.RATE_LIMITED:
+            self.unavailable = reason
+        if reason == Unavailable.RATE_LIMITED:
+            self.provider_limited = True
 
     def parse(self, line: str) -> list[AgentEvent]:
         try:
@@ -56,8 +65,13 @@ class _Stream:
         except json.JSONDecodeError:
             self.errors.append("Invalid Claude stream-json event")
             return [AgentEvent("error", self.errors[-1])]
-        if item.get("api_error_status") == 429:
-            self.provider_limited = True
+        status = _integer(item.get("api_error_status"))
+        if status == 429:
+            self.mark(Unavailable.RATE_LIMITED)
+        elif status in {401, 403}:
+            self.mark(Unavailable.NOT_SIGNED_IN)
+        elif status is not None and status >= 500:
+            self.mark(Unavailable.UNREACHABLE)
         kind = item.get("type")
         if kind == "system" and item.get("subtype") == "init":
             session_id = item.get("session_id")
@@ -93,7 +107,7 @@ class _Stream:
             info = _object(item.get("rate_limit_info"))
             status = info.get("status", item.get("status"))
             if status not in {"allowed", "allowed_warning"}:
-                self.provider_limited = True
+                self.mark(Unavailable.RATE_LIMITED)
                 self.errors.append(f"Claude provider-limited: {status}")
             return [AgentEvent("other", data={**item, "status": status})]
         if kind == "result":
@@ -183,16 +197,34 @@ class ClaudeAdapter:
                     await on_event(event)
 
         args = ["/usr/bin/env", *(arg for key in _SUBSCRIPTION_UNSET for arg in ("-u", key))]
-        command = await run_command(
-            [*args, *self._argv(request)],
-            cwd=request.cwd,
-            stdin=request.prompt,
-            timeout=request.timeout_seconds,
-            spool_dir=self.spool_dir,
-            max_output_bytes=0,
-            max_line_bytes=None,
-            on_stdout_line=receive,
-        )
+        try:
+            command = await run_command(
+                [*args, *self._argv(request)],
+                cwd=request.cwd,
+                stdin=request.prompt,
+                timeout=request.timeout_seconds,
+                spool_dir=self.spool_dir,
+                max_output_bytes=0,
+                max_line_bytes=None,
+                on_stdout_line=receive,
+            )
+        except OSError as error:
+            # A spawn failure is a structured condition: the CLI cannot be reached.
+            return AgentResult(
+                ok=False,
+                final_text="",
+                structured_output=None,
+                session_id=stream.session_id,
+                usage=None,
+                provider=self.name,
+                authentication_mode=self.authentication_mode,
+                error=f"Claude command could not start: {error}",
+                timed_out=False,
+                cancelled=False,
+                log_path=None,
+                unsupported=None,
+                unavailable=Unavailable.UNREACHABLE,
+            )
         log_path = command.full_output_path
         if log_path is None:
             self.spool_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +240,8 @@ class ClaudeAdapter:
             errors.append(f"Claude command exited with status {command.returncode}")
         if stream.result is None:
             errors.append("Claude stream ended without a result")
+            if command.returncode is None and not command.timed_out and not command.cancelled:
+                stream.mark(Unavailable.UNREACHABLE)
         if result.get("is_error") is True or result.get("api_error_status") == 429:
             errors.append(
                 f"Claude result error: {result.get('result', result.get('errors', ''))}; "
@@ -218,7 +252,7 @@ class ClaudeAdapter:
             errors.append("Claude result is missing requested structured_output")
         final_text = result.get("result", "")
         return AgentResult(
-            ok=not errors and not stream.provider_limited,
+            ok=not errors and stream.unavailable is None,
             final_text=final_text if isinstance(final_text, str) else "",
             structured_output=structured if isinstance(structured, dict) else None,
             session_id=stream.session_id,
@@ -231,6 +265,7 @@ class ClaudeAdapter:
             log_path=log_path,
             unsupported=None,
             provider_limited=stream.provider_limited,
+            unavailable=stream.unavailable,
         )
 
 

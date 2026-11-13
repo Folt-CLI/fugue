@@ -1,6 +1,7 @@
 """Interactive Question walkthrough with injectable terminal functions."""
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console, RenderableType
@@ -159,6 +160,14 @@ def build_question(config: FugueConfig, repo_root: Path) -> QuestionWalkthrough:
             resolve_token_env=github.resolve_token_env,
         ),
         repo_root,
-        adapter=registry.build(role_config) if role_config else None,
+        adapter=(
+            registry.build_for_role(
+                role_config,
+                clock=lambda: datetime.now(UTC),
+                cooldown_seconds=config.limits.provider_cooldown_seconds,
+            )
+            if role_config
+            else None
+        ),
         config=config,
     )
