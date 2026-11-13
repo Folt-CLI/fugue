@@ -49,6 +49,29 @@ class ReviewComment:
     line: int
     body: str
     side: str = "RIGHT"
+    start_line: int | None = None
+    start_side: str | None = None
+
+
+@dataclass(frozen=True)
+class PostedReview:
+    id: int
+    commit_id: str
+    state: str
+    body: str
+
+
+@dataclass(frozen=True)
+class ThreadComment:
+    id: int
+    body: str
+
+
+@dataclass(frozen=True)
+class ReviewThread:
+    id: str
+    resolved: bool
+    comments: tuple[ThreadComment, ...]
 
 
 @dataclass
@@ -72,12 +95,31 @@ class GitHubError(RuntimeError):
         super().__init__(f"{self.argv!r} failed:\n{self.stderr_tail}")
 
 
+class ResolvePermissionError(GitHubError):
+    """Resolving a review thread was refused for lack of permission."""
+
+
+REVIEW_EVENTS = frozenset({"COMMENT", "APPROVE", "REQUEST_CHANGES"})
+_PERMISSION_MARKERS = ("resource not accessible", "permission", "forbidden", "403")
+
+
 class HeadChanged(RuntimeError):
     def __init__(self, expected: str, actual: str) -> None:
         self.expected = expected
         self.actual = actual
         super().__init__(f"Pull request head changed: {actual} != {expected}")
 
+
+_THREADS_QUERY = (
+    "query($o:String!,$r:String!,$n:Int!,$endCursor:String){"
+    "repository(owner:$o,name:$r){pullRequest(number:$n){"
+    "reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} "
+    "nodes{id isResolved comments(first:100){nodes{databaseId body}}}}}}}"
+)
+
+_RESOLVE_MUTATION = (
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"
+)
 
 _ITEM_QUERY = (
     "query($o:String!,$r:String!,$n:Int!,$endCursor:String){"
@@ -89,6 +131,15 @@ _ITEM_QUERY = (
     'size:fieldValueByName(name:"Size"){... on ProjectV2ItemFieldSingleSelectValue{name}}'
     "}}}}}"
 )
+
+
+def _posted_review(item: Mapping[str, Any]) -> PostedReview:
+    return PostedReview(
+        int(item["id"]),
+        str(item.get("commit_id") or ""),
+        str(item.get("state") or ""),
+        str(item.get("body") or ""),
+    )
 
 
 class GitHubClient:
@@ -104,7 +155,9 @@ class GitHubClient:
         gh_executable: Sequence[str] = ("gh",),
         max_output_bytes: int = 16 * 1024 * 1024,
         project_field_limit: int = 200,
+        resolve_token_env: str | None = None,
     ) -> None:
+        self.resolve_token_env = resolve_token_env
         if max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be positive")
         self.max_output_bytes = max_output_bytes
@@ -128,16 +181,22 @@ class GitHubClient:
         stdin: str | None = None,
         allowed_codes: Sequence[int] = (0,),
         tail_on_truncation: bool = False,
+        extra_env: Mapping[str, str] | None = None,
     ) -> str:
         argv = (*self.gh_executable, *args)
         env = dict(os.environ)
         command = argv
         if self.strip_tokens:
+            kept = extra_env or {}
+            unset: list[str] = []
             for token in ("GITHUB_TOKEN", "GH_TOKEN"):
                 env.pop(token, None)
+                if token not in kept:
+                    unset.extend(("-u", token))
             # run_command overlays env onto the parent environment. Remove tokens
             # in the launched process too, without mutating global os.environ.
-            command = ("env", "-u", "GITHUB_TOKEN", "-u", "GH_TOKEN", *argv)
+            command = ("env", *unset, *argv)
+        env.update(extra_env or {})
         result: CommandResult = await self.runner(
             command, env=env, stdin=stdin, max_output_bytes=self.max_output_bytes
         )
@@ -445,8 +504,11 @@ class GitHubClient:
         head_sha: str,
         body: str,
         comments: Sequence[ReviewComment] = (),
-    ) -> None:
-        await self._run(
+        event: str = "COMMENT",
+    ) -> PostedReview:
+        if event not in REVIEW_EVENTS:
+            raise ValueError(f"Unsupported review event: {event!r}")
+        output = await self._run(
             "api",
             f"repos/{self.repo}/pulls/{pr.number}/reviews",
             "--input",
@@ -454,12 +516,81 @@ class GitHubClient:
             stdin=json.dumps(
                 {
                     "commit_id": head_sha,
-                    "event": "COMMENT",
+                    "event": event,
                     "body": body,
-                    "comments": [asdict(comment) for comment in comments],
+                    "comments": [
+                        {key: value for key, value in asdict(comment).items() if value is not None}
+                        for comment in comments
+                    ],
                 }
             ),
         )
+        return _posted_review(json.loads(output))
+
+    async def reviews(self, pr: PullRequest) -> list[PostedReview]:
+        items = await self._paginated(f"repos/{self.repo}/pulls/{pr.number}/reviews")
+        return [_posted_review(item) for item in items]
+
+    async def review_threads(self, pr: PullRequest) -> list[ReviewThread]:
+        pages = await self._paginated(
+            "graphql",
+            "-f",
+            f"query={_THREADS_QUERY}",
+            "-f",
+            f"o={self.owner}",
+            "-f",
+            f"r={self.name}",
+            "-F",
+            f"n={pr.number}",
+        )
+        return [
+            ReviewThread(
+                node["id"],
+                bool(node["isResolved"]),
+                tuple(
+                    ThreadComment(int(comment["databaseId"]), comment["body"])
+                    for comment in node["comments"]["nodes"]
+                ),
+            )
+            for page in pages
+            for node in page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        ]
+
+    async def unresolved_thread_count(self, pr: PullRequest) -> int:
+        return sum(1 for thread in await self.review_threads(pr) if not thread.resolved)
+
+    async def reply_to_thread(self, pr: PullRequest, comment_id: int, body: str) -> None:
+        await self._run(
+            "api",
+            "-X",
+            "POST",
+            f"repos/{self.repo}/pulls/{pr.number}/comments/{comment_id}/replies",
+            "--input",
+            "-",
+            stdin=json.dumps({"body": body}),
+        )
+
+    async def resolve_thread(self, thread_id: str) -> None:
+        extra_env: dict[str, str] = {}
+        if self.resolve_token_env is not None:
+            token = os.environ.get(self.resolve_token_env)
+            if not token:
+                raise ValueError(f"Environment variable {self.resolve_token_env} is not set")
+            extra_env["GH_TOKEN"] = token
+        try:
+            await self._run(
+                "api",
+                "graphql",
+                "-f",
+                f"query={_RESOLVE_MUTATION}",
+                "-f",
+                f"id={thread_id}",
+                extra_env=extra_env,
+            )
+        except GitHubError as error:
+            if any(marker in error.stderr_tail.casefold() for marker in _PERMISSION_MARKERS):
+                raise ResolvePermissionError(error.argv, error.stderr_tail) from error
+            raise
 
     async def merge(self, pr: PullRequest, expected_head_sha: str) -> None:
         actual = await self.pr_head_sha(pr)

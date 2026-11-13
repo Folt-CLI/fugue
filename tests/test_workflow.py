@@ -80,6 +80,7 @@ def test_transition_table_and_enum_values() -> None:
     assert [state.value for state in RunState] == [
         "running",
         "waiting_for_selection",
+        "waiting_for_decision",
         "waiting_for_merge_approval",
         "waiting_for_ci",
         "checking",

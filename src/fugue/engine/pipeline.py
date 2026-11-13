@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -42,7 +42,7 @@ from fugue.engine.facts import (
     selected_solution,
     worktree_path,
 )
-from fugue.engine.ports import CiGitHubPort, GitHubPort
+from fugue.engine.ports import CiGitHubPort, GitHubPort, ReviewGitHubPort
 from fugue.engine.prompts import (
     commit_message,
     fallback_changes,
@@ -51,8 +51,23 @@ from fugue.engine.prompts import (
     pr_body,
     repair_prompt,
 )
+from fugue.engine.review import (
+    Clean,
+    Decision,
+    Finding,
+    RoundEntry,
+    build_review,
+    diff_ranges,
+    marked_finding,
+    parse_findings,
+    review_marker,
+    review_prompt,
+    review_repair_prompt,
+    validate_decisions,
+)
 from fugue.gate import GateResult, format_failure, run_gate
-from fugue.github import CheckResult, GitHubError
+from fugue.github import CheckResult, GitHubError, PullRequest
+from fugue.github.client import ResolvePermissionError
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
 from fugue.models import IssueType, Role, Status, Ticket
 from fugue.store import Operation, Run, Store
@@ -90,6 +105,8 @@ class RunOutcome:
     head_sha: str | None = None
     problems: tuple[str, ...] = ()
     ci_green: bool = False
+    findings: tuple[Finding, ...] = ()
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -717,3 +734,455 @@ class Engine:
             pass
         await self._execute(Commit(), run_id, ticket, scope, identity)
         await self._execute(Push(), run_id, ticket, scope, identity)
+
+    # Independent review stage ------------------------------------------------------------
+
+    def _review_port(self) -> ReviewGitHubPort:
+        port = self.deps.github
+        if not isinstance(port, ReviewGitHubPort):
+            raise TypeError("The GitHub port does not support posting reviews and threads")
+        return port
+
+    async def _guarded(self, run_id: int, work: Callable[[], Awaitable[RunOutcome]]) -> RunOutcome:
+        store = self.deps.store
+        store.set_run_state(run_id, RunState.RUNNING)
+        try:
+            return await work()
+        except asyncio.CancelledError:
+            store.set_run_state(run_id, RunState.INTERRUPTED)
+            raise
+        except _Stop as stop:
+            store.set_run_state(run_id, stop.state)
+            return RunOutcome(run_id, stop.state, problems=stop.problems)
+        except Exception:
+            store.set_run_state(run_id, RunState.BLOCKED)
+            raise
+
+    async def run_review(self, run_id: int) -> RunOutcome:
+        """Wait for green checks, then post one review of the head; wait for decisions on findings.
+
+        A clean round proceeds toward merge approval.
+        """
+        self._review_port()  # fail fast, before any work is done
+        number = self.deps.store.get_run(run_id).ticket_number
+
+        async def work() -> RunOutcome:
+            ticket, scope = await self._load(run_id, number)
+            return await self._review_round(run_id, ticket, scope)
+
+        return await self._guarded(run_id, work)
+
+    async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome:
+        """Apply decisions to the findings of the open round, then review again if needed.
+
+        Accepted findings go to the implementer as a repair, then the gate, commit, push, CI and
+        a new round. Rejected and deferred findings get a reply and are resolved. Decisions
+        recorded by an earlier, interrupted call take precedence over the ones passed now.
+        """
+        self._review_port()
+        number = self.deps.store.get_run(run_id).ticket_number
+        latest, started = self._open_round(run_id)
+        if not started:
+            problems = validate_decisions(latest.findings, decisions)
+            if problems:
+                raise ValueError("; ".join(problems))
+
+        async def work() -> RunOutcome:
+            ticket, scope = await self._load(run_id, number)
+            return await self._decide(run_id, ticket, scope, latest, decisions)
+
+        return await self._guarded(run_id, work)
+
+    async def _load(self, run_id: int, number: int) -> tuple[Ticket, str]:
+        ticket = await self._stage(run_id, Stage.LOAD, lambda: self.deps.github.get_ticket(number))
+        scope = await self._stage(run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket))
+        return ticket, scope
+
+    def _open_round(self, run_id: int) -> tuple["_ReviewRecord", bool]:
+        """The posted round with findings still to decide, and whether deciding has started."""
+        rows = _operations(self.deps.store, run_id, "review")
+        latest = _review_record(rows[-1]) if rows else None
+        if latest is None or latest.status != "done" or not latest.findings:
+            raise ValueError("No review round is waiting for a decision")
+        decision = _operation_by_key(self.deps.store, run_id, "decision", f"round-{latest.round}")
+        if decision is not None and decision[2] == "done":
+            raise ValueError("No review round is waiting for a decision")
+        return latest, decision is not None
+
+    async def _review_round(self, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
+        port = self._review_port()
+        identity = self._saved_identity(run_id)
+        pr = None if identity is None else await port.find_pr(identity.branch)
+        if identity is None or pr is None:
+            raise _Stop(RunState.BLOCKED, ["No pull request to review"])
+        await self._stage(
+            run_id, Stage.MONITOR, lambda: self._wait_for_green(run_id, ticket, scope)
+        )
+        git = Git(identity.path)
+        head = await git.head_sha()
+        remote = await git._run("ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}")
+        if not remote.strip() or remote.split()[0] != head:
+            raise _Stop(RunState.BLOCKED, ["The head to review has not been pushed"])
+        ci_result = _ci_result(await port.checks(pr))
+        return await self._stage(
+            run_id,
+            Stage.REVIEW,
+            lambda: self._review(run_id, scope, identity, pr, head, ci_result),
+        )
+
+    def _round_for(self, run_id: int, head: str) -> tuple[int, "_ReviewRecord | None"]:
+        """The round number to run at this head and the posted round to resume, if any."""
+        store = self.deps.store
+        rows = _operations(store, run_id, "review")
+        if not rows:
+            return 1, None
+        latest = _review_record(rows[-1])
+        decision = _operation_by_key(store, run_id, "decision", f"round-{latest.round}")
+        if decision is not None and decision[2] != "done":
+            raise _Stop(
+                RunState.BLOCKED,
+                [f"Decisions for round {latest.round} are partly applied; call decide again"],
+            )
+        if decision is None and latest.head == head:
+            return latest.round, latest
+        return latest.round + 1, None
+
+    async def _review(
+        self,
+        run_id: int,
+        scope: str,
+        identity: Identity,
+        pr: PullRequest,
+        head: str,
+        ci_result: str,
+    ) -> RunOutcome:
+        store = self.deps.store
+        number, record = self._round_for(run_id, head)
+        if record is None:
+            findings = await self._run_reviewer(run_id, identity, scope, ci_result)
+            intent = {"round": number, "head": head, "findings": [asdict(f) for f in findings]}
+            operation = store.begin_operation(run_id, "review", f"round-{number}", intent)
+            self._artifact(run_id, "review-findings", json.dumps(intent, indent=2), ".json")
+            record = _review_record(
+                (operation.id, operation.key, operation.status, operation.intent_json, None)
+            )
+        if record.status != "done":
+            threads = await self._post_review(run_id, identity, pr, head, record)
+            store.complete_operation(
+                record.operation_id,
+                {
+                    "threads": {
+                        str(index): {"comment_id": comment_id, "thread_id": thread_id}
+                        for index, (comment_id, thread_id) in threads.items()
+                    }
+                },
+            )
+            record = replace(record, status="done", threads=threads)
+        notes = self._review_notes()
+        if record.findings:
+            store.set_run_state(run_id, RunState.WAITING_FOR_DECISION)
+            return RunOutcome(
+                run_id,
+                RunState.WAITING_FOR_DECISION,
+                pr.number,
+                head,
+                findings=record.findings,
+                notes=notes,
+            )
+        return await self._ready_for_approval(run_id, pr, head, notes)
+
+    def _review_notes(self) -> tuple[str, ...]:
+        if self.deps.config.github.reviewer_identity_separate:
+            return ()
+        return (
+            "Approvals are not available: reviews are posted as COMMENT because "
+            "reviewer_identity_separate is false.",
+        )
+
+    async def _ready_for_approval(
+        self, run_id: int, pr: PullRequest, head: str, notes: tuple[str, ...]
+    ) -> RunOutcome:
+        unresolved = await self._review_port().unresolved_thread_count(pr)
+        if unresolved:
+            notes = (*notes, f"{unresolved} review thread(s) remain unresolved")
+        self.deps.store.set_run_state(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+        return RunOutcome(
+            run_id, RunState.WAITING_FOR_MERGE_APPROVAL, pr.number, head, ci_green=True, notes=notes
+        )
+
+    def _round_log(self, run_id: int) -> list[RoundEntry]:
+        store = self.deps.store
+        entries: list[RoundEntry] = []
+        for row in _operations(store, run_id, "review"):
+            record = _review_record(row)
+            decision = _operation_by_key(store, run_id, "decision", f"round-{record.round}")
+            if decision is None or decision[2] != "done":
+                continue
+            decided = _decisions(decision[3])
+            for finding in record.findings:
+                chosen = decided[finding.index]
+                if chosen.accept:
+                    entries.append(RoundEntry(record.round, finding, "accepted"))
+                elif chosen.deferred_to is not None:
+                    reason = f"Deferred to #{chosen.deferred_to}"
+                    entries.append(RoundEntry(record.round, finding, "deferred", reason))
+                else:
+                    entries.append(RoundEntry(record.round, finding, "rejected", chosen.reason))
+        return entries
+
+    async def _run_reviewer(
+        self, run_id: int, identity: Identity, scope: str, ci_result: str
+    ) -> list[Finding]:
+        role_config = self.deps.config.roles[Role.REVIEWER]
+        adapter = self.deps.registry.build(role_config)
+        prompt = review_prompt(
+            scope=scope,
+            ci_result=ci_result,
+            rounds=self._round_log(run_id),
+            base_ref=f"refs/heads/{self.deps.base_branch}",
+        )
+        # Every round is a fresh, read-only conversation so the review stays independent.
+        result = await adapter.run(
+            AgentRequest(
+                role=Role.REVIEWER,
+                prompt=prompt,
+                cwd=identity.path,
+                access=AccessMode.READ_ONLY,
+                model=role_config.model,
+                timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
+            )
+        )
+        self._artifact(run_id, "review-output", result.final_text)
+        if result.usage is not None:
+            self.deps.store.record_usage(
+                run_id,
+                Role.REVIEWER,
+                result.provider,
+                result.authentication_mode,
+                **asdict(result.usage),
+            )
+        if not result.ok:
+            error = result.error or "Reviewer failed"
+            self._artifact(run_id, "review-error", error)
+            state = RunState.PROVIDER_LIMITED if result.provider_limited else RunState.FAILED
+            raise _Stop(state, [error])
+        parsed = parse_findings(result.final_text)
+        return [] if isinstance(parsed, Clean) else parsed
+
+    async def _diff(self, path: Path) -> str:
+        git = Git(path)
+        base = f"refs/heads/{self.deps.base_branch}"
+        merge_base = (await git._run("merge-base", base, "HEAD")).strip()
+        return await git._run("diff", "--no-renames", "-U3", merge_base, "HEAD", "--")
+
+    async def _post_review(
+        self,
+        run_id: int,
+        identity: Identity,
+        pr: PullRequest,
+        head: str,
+        record: "_ReviewRecord",
+    ) -> dict[int, tuple[int, str]]:
+        """Post the round once for this head, then map its findings to their threads."""
+        port = self._review_port()
+        built = build_review(
+            record.findings,
+            diff_ranges(await self._diff(identity.path)),
+            record.round,
+            separate_identity=self.deps.config.github.reviewer_identity_separate,
+        )
+        marker = review_marker(record.round)
+        posted = [r for r in await port.reviews(pr) if r.commit_id == head and marker in r.body]
+        if not posted:
+            await self._operation(
+                run_id,
+                "review_post",
+                {"round": record.round, "event": built.event, "comments": len(built.comments)},
+                lambda: port.post_review(pr, head, built.body, built.comments, built.event),
+            )
+        threads: dict[int, tuple[int, str]] = {}
+        for thread in await port.review_threads(pr):
+            marked = marked_finding(thread.comments[0].body) if thread.comments else None
+            if marked is not None and marked[0] == record.round:
+                threads[marked[1]] = (thread.comments[0].id, thread.id)
+        return threads
+
+    async def _decide(
+        self,
+        run_id: int,
+        ticket: Ticket,
+        scope: str,
+        latest: "_ReviewRecord",
+        decisions: Mapping[int, Decision],
+    ) -> RunOutcome:
+        store = self.deps.store
+        port = self._review_port()
+        identity = self._saved_identity(run_id)
+        pr = None if identity is None else await port.find_pr(identity.branch)
+        if identity is None or pr is None:
+            raise _Stop(RunState.BLOCKED, ["No pull request to update"])
+        intent = {
+            "round": latest.round,
+            "decisions": {str(index): asdict(item) for index, item in decisions.items()},
+        }
+        operation = store.begin_operation(run_id, "decision", f"round-{latest.round}", intent)
+        decided = _decisions(operation.intent_json)
+        accepted = [finding for finding in latest.findings if decided[finding.index].accept]
+        what = ""
+        if accepted:
+            await self._apply_fixes(run_id, ticket, scope, identity, latest, accepted)
+            names = await Git(identity.path)._run(
+                "diff", "--name-only", "--no-renames", "-z", latest.head, "HEAD", "--"
+            )
+            what = "; ".join(self._changes(run_id, [p for p in names.split("\0") if p]))
+        head = await Git(identity.path).head_sha()
+        await self._stage(
+            run_id,
+            Stage.REVIEW,
+            lambda: self._answer_threads(run_id, pr, latest, decided, head, what),
+        )
+        store.complete_operation(operation.id, {"done": True})
+        if accepted or any(finding.blocking for finding in latest.findings):
+            return await self._review_round(run_id, ticket, scope)
+        return await self._ready_for_approval(run_id, pr, head, self._review_notes())
+
+    async def _apply_fixes(
+        self,
+        run_id: int,
+        ticket: Ticket,
+        scope: str,
+        identity: Identity,
+        latest: "_ReviewRecord",
+        accepted: Sequence[Finding],
+    ) -> None:
+        """Repair, run the gate, commit and push; each step resumes where it stopped."""
+        store = self.deps.store
+        git = Git(identity.path)
+        repair = store.begin_operation(
+            run_id,
+            "review_repair",
+            f"round-{latest.round}",
+            {"findings": [item.index for item in accepted]},
+        )
+        if repair.status != "done":
+            if _repairs_used(store, run_id) >= self.deps.config.limits.max_repair_attempts:
+                raise _Stop(RunState.BLOCKED, ["Repair limit reached"])
+            store.set_run_state(run_id, RunState.REPAIRING)
+            prompt = review_repair_prompt(accepted)
+            await self._stage(
+                run_id, Stage.REPAIR, lambda: self._agent(run_id, identity.path, prompt, scope)
+            )
+            store.complete_operation(repair.id, {"done": True})
+            store.set_run_state(run_id, RunState.RUNNING)
+        if await git.status_porcelain():
+            while not await self._verify(run_id, identity, scope):
+                pass
+            await self._execute(Commit(), run_id, ticket, scope, identity)
+        head = await git.head_sha()
+        if head == latest.head:
+            raise _Stop(
+                RunState.BLOCKED, ["The implementer made no changes for the accepted findings"]
+            )
+        remote = await git._run("ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}")
+        if not remote.strip() or remote.split()[0] != head:
+            await self._execute(Push(), run_id, ticket, scope, identity)
+
+    async def _answer_threads(
+        self,
+        run_id: int,
+        pr: PullRequest,
+        latest: "_ReviewRecord",
+        decided: Mapping[int, Decision],
+        head: str,
+        what: str,
+    ) -> None:
+        """Reply on each finding's thread and resolve it; report threads that cannot be resolved."""
+        store = self.deps.store
+        port = self._review_port()
+        resolved = {thread.id for thread in await port.review_threads(pr) if thread.resolved}
+        refused: list[str] = []
+        for finding in latest.findings:
+            target = latest.threads.get(finding.index)
+            if target is None:
+                continue  # Posted in the review body, so there is no thread to answer.
+            comment_id, thread_id = target
+            chosen = decided[finding.index]
+            if chosen.accept:
+                body = f"Fixed in {head}: {what or 'the accepted finding was addressed'}"
+            elif chosen.deferred_to is not None:
+                body = f"Deferred to #{chosen.deferred_to}"
+            else:
+                body = f"Rejected: {chosen.reason}"
+            reply = store.begin_operation(
+                run_id,
+                "thread_reply",
+                f"round-{latest.round}:f{finding.index}",
+                {"thread": thread_id, "body": body},
+            )
+            if reply.status != "done":
+                await port.reply_to_thread(pr, comment_id, body)
+                store.complete_operation(reply.id, {"done": True})
+            if thread_id in resolved:
+                continue
+            try:
+                await port.resolve_thread(thread_id)
+            except ResolvePermissionError:
+                refused.append(thread_id)
+        if refused:
+            raise _Stop(
+                RunState.BLOCKED,
+                [f"Cannot resolve review threads (permission denied): {', '.join(refused)}"],
+            )
+
+
+@dataclass(frozen=True)
+class _ReviewRecord:
+    operation_id: int
+    status: str
+    round: int
+    head: str
+    findings: tuple[Finding, ...]
+    threads: dict[int, tuple[int, str]]
+
+
+_OperationRow = tuple[int, str, str, str, str | None]
+
+
+def _operations(store: Store, run_id: int, kind: str) -> list[_OperationRow]:
+    rows = store._connection.execute(
+        "SELECT id, key, status, intent_json, result_json FROM operations "
+        "WHERE run_id = ? AND kind = ? ORDER BY id",
+        (run_id, kind),
+    ).fetchall()
+    return [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
+
+
+def _operation_by_key(store: Store, run_id: int, kind: str, key: str) -> _OperationRow | None:
+    return next((row for row in _operations(store, run_id, kind) if row[1] == key), None)
+
+
+def _review_record(row: _OperationRow) -> _ReviewRecord:
+    intent = json.loads(row[3])
+    result = json.loads(row[4]) if row[4] else {}
+    return _ReviewRecord(
+        row[0],
+        row[2],
+        int(intent["round"]),
+        str(intent["head"]),
+        tuple(Finding(**item) for item in intent["findings"]),
+        {
+            int(index): (int(value["comment_id"]), str(value["thread_id"]))
+            for index, value in result.get("threads", {}).items()
+        },
+    )
+
+
+def _decisions(intent_json: str) -> dict[int, Decision]:
+    stored = json.loads(intent_json)["decisions"]
+    return {int(index): Decision(**item) for index, item in stored.items()}
+
+
+def _ci_result(checks: Sequence[CheckResult]) -> str:
+    summary = summarize_checks(checks)
+    header = "CI is green." if summary.is_green else "CI is not green."
+    return "\n".join([header, *(f"- {check.name}: {check.bucket}" for check in checks)])

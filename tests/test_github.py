@@ -20,6 +20,7 @@ from fugue.github import (
     PullRequest,
     ReviewComment,
 )
+from fugue.github.client import PostedReview, ResolvePermissionError
 from fugue.github.parse import parse_body_sections, parse_ticket
 from fugue.models import Component, Disposition, Priority, Size, Status
 
@@ -397,7 +398,10 @@ def test_issue_fields_comments_reviews_and_logs(fake: Fake) -> None:
                 ),
             ),
             (["api", "-X", "POST"], {}),
-            (["api", f"repos/{REPO}/pulls/27/reviews"], {}),
+            (
+                ["api", f"repos/{REPO}/pulls/27/reviews"],
+                response({"id": 9, "commit_id": "sha", "state": "COMMENTED", "body": "Review"}),
+            ),
             (["issue", "comment"], {}),
             (["run", "view"], {"stdout": "first\nsecond\nthird\n"}),
         ]
@@ -784,6 +788,140 @@ def test_paginated_project_items_and_issue_field_values(fake: Fake) -> None:
     assert "$endCursor:String" in calls()[2]["argv"][3]
     assert "first:100,after:$endCursor" in calls()[2]["argv"][3]
     assert "pageInfo{hasNextPage endCursor}" in calls()[2]["argv"][3]
+
+
+def test_post_review_sends_event_ranges_and_returns_the_review(fake: Fake) -> None:
+    client, calls = fake(
+        [
+            (
+                ["api", f"repos/{REPO}/pulls/27/reviews"],
+                response({"id": 5, "commit_id": "abc", "state": "CHANGES_REQUESTED", "body": "b"}),
+            )
+        ]
+    )
+    comment = ReviewComment("a.py", 9, "Fix", start_line=7, start_side="RIGHT")
+    posted = asyncio.run(client.post_review(PR, "abc", "b", [comment], "REQUEST_CHANGES"))
+    assert posted == PostedReview(5, "abc", "CHANGES_REQUESTED", "b")
+    assert json.loads(calls()[0]["stdin"]) == {
+        "commit_id": "abc",
+        "event": "REQUEST_CHANGES",
+        "body": "b",
+        "comments": [
+            {
+                "path": "a.py",
+                "line": 9,
+                "body": "Fix",
+                "side": "RIGHT",
+                "start_line": 7,
+                "start_side": "RIGHT",
+            }
+        ],
+    }
+
+
+def test_post_review_rejects_unknown_event_without_calling_gh(fake: Fake) -> None:
+    client, calls = fake([])
+    with pytest.raises(ValueError, match="review event"):
+        asyncio.run(client.post_review(PR, "abc", "b", event="DISMISS"))
+    assert calls() == []
+
+
+def test_reviews_lists_pages(fake: Fake) -> None:
+    pages = [
+        [{"id": 1, "commit_id": "a", "state": "COMMENTED", "body": "x"}],
+        [{"id": 2, "commit_id": "b", "state": "APPROVED", "body": None}],
+    ]
+    client, _ = fake([(["api", f"repos/{REPO}/pulls/27/reviews"], response(pages))])
+    assert asyncio.run(client.reviews(PR)) == [
+        PostedReview(1, "a", "COMMENTED", "x"),
+        PostedReview(2, "b", "APPROVED", ""),
+    ]
+
+
+def thread_page(*resolved: bool) -> dict[str, Any]:
+    nodes = [
+        {
+            "id": f"T{index}",
+            "isResolved": value,
+            "comments": {"nodes": [{"databaseId": 100 + index, "body": f"body {index}"}]},
+        }
+        for index, value in enumerate(resolved)
+    ]
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": nodes}}}}}
+
+
+def test_review_threads_and_unresolved_count(fake: Fake) -> None:
+    client, calls = fake(
+        [(["api", "graphql"], response([thread_page(True, False), thread_page(False)]))]
+    )
+    threads = asyncio.run(client.review_threads(PR))
+    assert [(t.id, t.resolved, t.comments[0].id) for t in threads] == [
+        ("T0", True, 100),
+        ("T1", False, 101),
+        ("T0", False, 100),
+    ]
+    assert asyncio.run(client.unresolved_thread_count(PR)) == 2
+    assert "reviewThreads(first:100,after:$endCursor)" in calls()[0]["argv"][3]
+    assert "n=27" in calls()[0]["argv"]
+
+
+def test_reply_to_thread_posts_to_the_comment(fake: Fake) -> None:
+    client, calls = fake([(["api", "-X", "POST"], {})])
+    asyncio.run(client.reply_to_thread(PR, 77, "Fixed in abc: done"))
+    assert calls()[0]["argv"][:4] == [
+        "api",
+        "-X",
+        "POST",
+        f"repos/{REPO}/pulls/27/comments/77/replies",
+    ]
+    assert json.loads(calls()[0]["stdin"]) == {"body": "Fixed in abc: done"}
+
+
+def test_resolve_thread_runs_the_mutation(fake: Fake) -> None:
+    client, calls = fake([(["api", "graphql"], {})])
+    asyncio.run(client.resolve_thread("T9"))
+    argv = calls()[0]["argv"]
+    assert "resolveReviewThread" in argv[3]
+    assert "id=T9" in argv
+
+
+def test_resolve_thread_uses_the_configured_token_environment(
+    fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ambient")
+    monkeypatch.setenv("RESOLVE_TOKEN", "resolver")
+    client, calls = fake([(["api", "graphql"], {"expect_env": {"GH_TOKEN": True}})])
+    client.resolve_token_env = "RESOLVE_TOKEN"
+    asyncio.run(client.resolve_thread("T9"))
+    assert len(calls()) == 1
+    # Other calls still run without any token.
+    client2, _ = fake([(["api", "graphql"], {"expect_env": {"GH_TOKEN": False}})])
+    asyncio.run(client2.resolve_thread("T9"))
+
+
+def test_resolve_thread_requires_the_configured_variable(
+    fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RESOLVE_TOKEN", raising=False)
+    client, calls = fake([(["api", "graphql"], {})])
+    client.resolve_token_env = "RESOLVE_TOKEN"
+    with pytest.raises(ValueError, match="RESOLVE_TOKEN"):
+        asyncio.run(client.resolve_thread("T9"))
+    assert calls() == []
+
+
+@pytest.mark.parametrize("stderr", ["Resource not accessible by integration", "HTTP 403"])
+def test_resolve_thread_permission_failure_is_distinct(fake: Fake, stderr: str) -> None:
+    client, _ = fake([(["api", "graphql"], {"stderr": stderr, "exit_code": 1})])
+    with pytest.raises(ResolvePermissionError):
+        asyncio.run(client.resolve_thread("T9"))
+
+
+def test_resolve_thread_other_failure_is_plain(fake: Fake) -> None:
+    client, _ = fake([(["api", "graphql"], {"stderr": "Could not resolve node", "exit_code": 1})])
+    with pytest.raises(GitHubError) as error:
+        asyncio.run(client.resolve_thread("T9"))
+    assert not isinstance(error.value, ResolvePermissionError)
 
 
 def test_rerun_failed_reruns_only_failed_jobs(fake: Fake) -> None:
