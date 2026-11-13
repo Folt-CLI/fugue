@@ -182,6 +182,19 @@ def parse_findings(text: str) -> list[Finding] | Clean:
     """Parse reviewer output; an exact `No findings.` is clean, unparseable text is one finding."""
     if text.strip() == CLEAN_TEXT:
         return CLEAN
+    lines = text.splitlines()
+    first = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if first is not None and lines[first].strip() == CLEAN_TEXT:
+        rest = lines[first + 1 :]
+        structured = any(
+            _SECTION.fullmatch(line.strip()) or _ITEM.match(line) or line.strip().startswith("```")
+            for line in rest
+        )
+        if not structured:
+            return CLEAN
+        remainder = parse_findings("\n".join(rest))
+        if isinstance(remainder, list) and remainder:
+            return remainder
     raws, saw_section = _raw_items(text)
     blocking: list[Finding] = []
     non_blocking: list[Finding] = []
