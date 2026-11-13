@@ -1,6 +1,7 @@
 # Limitations and failure handling
 
-Fugue is under development with no release available. Its CLI coordinates local
+The current Fugue release is **0.1.0**, available as an installable wheel; see
+[wheel installation](getting-started.md#prerequisites). Its CLI coordinates local
 Git worktrees, GitHub and the unmodified Claude and Codex CLIs; it requires those
 tools and their credentials. It does not provision provider subscriptions,
 GitHub Projects or repository process metadata. See

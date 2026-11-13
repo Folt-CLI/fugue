@@ -2,23 +2,31 @@
 
 A local-first CLI that coordinates coding agents through a structured ticket-to-delivery workflow. Like independent voices in a fugue, agents contribute distinct work within a shared structure.
 
-Status: Under development; no release is available.
+Current release: **0.1.0**.
 
 ## Usage
 
-From this source checkout, inspect the CLI and effective configuration:
+Download `fugue-0.1.0-py3-none-any.whl` from the
+[0.1.0 release](https://github.com/Folt-CLI/fugue/releases/tag/v0.1.0)
+and install it with Python 3.12 or newer and uv:
 
 ```sh
-uv run fugue --help
-uv run fugue config show
+uv tool install /path/to/fugue-0.1.0-py3-none-any.whl
+```
+
+Inspect the installed CLI and effective configuration:
+
+```sh
+fugue --help
+fugue config show
 ```
 
 After configuring the target repository and signing in to the required CLIs,
 start a ticket and inspect the returned run id:
 
 ```sh
-uv run fugue run 47 --repo-root /path/to/repository
-uv run fugue status 1 --repo-root /path/to/repository
+fugue run 47 --repo-root /path/to/repository
+fugue status 1 --repo-root /path/to/repository
 ```
 
 Replace ticket 47, run id 1 and the path with your own values. A run can invoke

@@ -4,12 +4,12 @@
 
 For developing Fugue under `prompt.md` only:
 
-- Claude takes the developer's technical decision role: answers Questions,
+- The orchestrator takes the developer's technical decision role: answers Questions,
   selects M/L solutions and decides review disputes from evidence. Record each
-  as an **autonomous Claude decision**.
-- Codex implements and fixes; a separate Codex session reviews read-only.
-  Claude does not write application code.
-- Claude may authorize and execute merges after the gate, CI and clean required
+  as an **autonomous orchestrator decision**.
+- The implementation agent implements and fixes; a separate reviewer session
+  reviews read-only. The orchestrator does not write application code.
+- The orchestrator may authorize and execute merges after the gate, CI and clean required
   review. Record authorization against the exact head SHA; any new commit
   invalidates it. No blanket auto-merge is enabled.
 - Real consent, missing credentials, billing and provider restrictions remain
