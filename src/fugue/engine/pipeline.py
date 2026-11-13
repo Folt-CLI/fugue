@@ -308,20 +308,37 @@ class Engine:
         return identity
 
     def _changes(self, run_id: int, paths: Sequence[str]) -> list[str]:
-        """Bullets from the last implementer or repair message with a Changes section."""
+        """Use the last qualifying message from the latest implement attempt and its repairs."""
+        row = self.deps.store._connection.execute(
+            "SELECT MAX(id) FROM stage_attempts WHERE run_id = ? AND stage = ?",
+            (run_id, Stage.IMPLEMENT),
+        ).fetchone()
+        if row[0] is None:
+            return fallback_changes(paths)
+        latest_implement_id = int(row[0])
         gate = {" ".join(command) for command in self.deps.config.policy.gate_commands}
-        parsed: list[str] = []
+        messages: list[tuple[int, str]] = []
         for artifact in self.deps.store.list_artifacts(run_id):
             if not artifact.name.startswith("agent-") or artifact.name.startswith("agent-error-"):
+                continue
+            attempt_id = artifact.name.split("-", 2)[1]
+            if not attempt_id.isdecimal():
                 continue
             try:
                 text = Path(artifact.path).read_text(encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
+            messages.append((int(attempt_id), text))
+        parsed: list[str] = []
+        for message_attempt_id, text in messages:
+            if message_attempt_id < latest_implement_id:
+                continue
             found = parse_changes(text)
+            if any("no files changed" in change.casefold() for change in found):
+                continue
+            found = [c for c in found if c.partition(":")[0].strip().strip("`") not in gate]
             if found:
                 parsed = found
-        parsed = [c for c in parsed if c.partition(":")[0].strip().strip("`") not in gate]
         return parsed or fallback_changes(paths)
 
     def _message(
