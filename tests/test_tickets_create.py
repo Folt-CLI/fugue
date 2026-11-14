@@ -253,6 +253,32 @@ def test_s_creation_sets_every_field_and_round_trips_the_body(tmp_path: Path) ->
     assert draft.created_number == 100
 
 
+@pytest.mark.parametrize("size", [Size.XS, Size.S])
+def test_uploaded_scope_preserves_confirmed_requirements(tmp_path: Path, size: Size) -> None:
+    """Scenario 1: the implementer receives the confirmed behavior and boundaries."""
+    draft, store, github = make(
+        tmp_path,
+        size=size,
+        title="Add export",
+        scope_text="CSV only; never overwrite existing output",
+        decision="Add a --csv command",
+        changes=["src/export.py: refuse an existing output path before writing CSV"],
+    )
+    run(draft, github, store)
+    scope = github.uploads["100-solution-1.md"].decode("utf-8")
+    assert draft.scope_text in scope
+    assert draft.decision in scope
+    for requirement in (
+        *draft.changes,
+        *draft.agreed,
+        *draft.you_get,
+        *draft.not_changed,
+        *draft.watch_out,
+    ):
+        assert requirement in scope
+    assert allowed_files(scope) == draft.allowed_files
+
+
 def test_agreed_in_names_a_question_parent(tmp_path: Path) -> None:
     draft, store, github = make(tmp_path, parent=89, parent_is_question=True)
     github.states[89] = "open"

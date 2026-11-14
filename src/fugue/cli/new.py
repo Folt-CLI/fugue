@@ -108,6 +108,7 @@ def run_new(
 ) -> int:
     """Run the guided session and return the exit code."""
     _require_project(config)
+    wiring.resolve_repo_root(None, root)
     repo = wiring.resolve_repo(config, root)
     state_dir = wiring.resolve_state_dir(config, os.environ, Path.home())
     drafts = DraftStore(state_dir)
