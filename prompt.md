@@ -87,7 +87,7 @@ Ordinary work-item bodies contain exactly these top-level sections, in order:
 
 Fill Summary and Scope at creation. Mark inapplicable Analysis clearly for S/XS; do not invent research for them. Do not add Acceptance criteria, Implementation plan, or Closeout top-level sections. Delivery and actual verification belong in the PR.
 
-Release Epics contain only `## Objective`; use `<version> -- Fugue` as the title. Incident reports record observed impact and evidence, with separate linked investigation, mitigation, or fix tickets.
+Release Epics contain only `## Objective`; use `<version> - Fugue` as the title. Incident reports record observed impact and evidence, with separate linked investigation, mitigation, or fix tickets.
 
 Required ticket metadata: assignee, Fugue Project membership, milestone, Priority, Size, Status, and native parent where applicable. The release Epic is the root. Derived work belongs under the Question that decided it; otherwise use an existing delivery group or Epic #1. Do not repeat parent relationships in descriptions.
 

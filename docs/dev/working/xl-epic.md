@@ -6,7 +6,7 @@ XL is a release; it only groups the work and is always an Epic.
 
 ## The ticket must contain
 
-Title it `<version> -- Fugue`. The body contains only `## Objective` and a short release explanation.
+Title it `<version> - Fugue`. The body contains only `## Objective` and a short release explanation.
 Set type Epic and the milestone, Priority, Size, Status and ownership from the [shared steps](README.md#shared-steps).
 
 ## Analysis and review
