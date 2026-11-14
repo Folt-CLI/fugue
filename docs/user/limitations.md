@@ -32,7 +32,8 @@ GitHub Projects or repository process metadata. See
   A waiting state is not consent. Any new head commit invalidates approval.
 - In single-account GitHub use, reviews use COMMENT because the author cannot
   approve their own pull request. A clean required review and Fugue approval
-  still have distinct purposes.
+  still have distinct purposes. See [reviewer identity setup](reviewer-identity.md)
+  for the separate identity setting.
 - Stacks require native `gh stack`, gh >= 2.90.0, Git >= 2.36, the
   `github/gh-stack` extension and repository enablement. An unavailable stack
   probe stops dependent runs before worktree or PR creation and reports
@@ -40,8 +41,9 @@ GitHub Projects or repository process metadata. See
   Fugue does not emulate stacks with chained plain PR bases. A dependent run
   requires a sole open blocker with an open PR. Divergence stops submission;
   stack merging still requires a developer instruction for that stack and head.
-- A reviewer identity setup command is deferred to
-  [issue #77](https://github.com/Folt-CLI/fugue/issues/77).
+- `fugue reviewer-app setup` registers a private reviewer app and saves its key
+  locally; see [reviewer identity setup](reviewer-identity.md). Fugue does not yet
+  post reviews as the reviewer app.
 - Branch protection enforcing approvals is deferred to
   [issue #78](https://github.com/Folt-CLI/fugue/issues/78).
 - Follow-up hardening work remains deferred and is collected in
