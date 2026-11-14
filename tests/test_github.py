@@ -963,3 +963,24 @@ def test_rerun_failed_reports_gh_failure(fake: Fake) -> None:
     client, _ = fake([(["run", "rerun"], {"stderr": "cannot rerun", "exit_code": 1})])
     with pytest.raises(GitHubError, match="cannot rerun"):
         asyncio.run(client.rerun_failed("https://github.com/example/fugue/actions/runs/123"))
+
+
+@pytest.mark.parametrize("is_open", [True, False])
+def test_stack_lower_branch_requires_open_pr(fake: Fake, is_open: bool) -> None:
+    from fugue.engine.facts import branch_name
+    from fugue.github.stack import lower_branch
+
+    lower = parse_ticket(ISSUE, VALUES, ITEM, [])
+    dependent = lower.model_copy(update={"number": 17, "blocked_by": [16]})
+    client, calls = fake(
+        [
+            (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
+            (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
+            (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([])),
+            (["pr", "list"], response([{"number": 27, "url": PR.url}] if is_open else [])),
+        ]
+    )
+    assert asyncio.run(lower_branch(dependent, client)) == (branch_name(lower) if is_open else None)
+    assert calls()[-1]["argv"][calls()[-1]["argv"].index("--head") + 1] == branch_name(lower)
+    assert "--state" in calls()[-1]["argv"] and "open" in calls()[-1]["argv"]

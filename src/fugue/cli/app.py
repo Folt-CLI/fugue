@@ -21,6 +21,7 @@ from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
 from fugue.engine.review import Decision
 from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
+from fugue.github.stack import StackClient, lower_branch
 from fugue.gitops import Git
 from fugue.models import ModelTier, Role, Size, Status, Ticket
 from fugue.store import Run, Store, StoreError
@@ -420,6 +421,7 @@ def _run_batch(
     wait = loaded.limits.database_wait_seconds
     rows: dict[int, render.BatchRow] = {}
     engines: dict[int, RunEngine] = {}
+    stack_reasons: dict[int, str] = {}
 
     def labelled(number: int) -> Callable[[str], None]:
         return lambda line: _print(f"[#{number}] {line}")
@@ -433,6 +435,8 @@ def _run_batch(
         number = ticket.number
         if result is None:
             message = render.render_skip(number, ticket.blocked_by)
+            if number in stack_reasons:
+                message += f"; gh stack unavailable: {stack_reasons[number]}"
             rows[number] = render.BatchRow(number, _BATCH_SKIPPED, None, message)
             _print(f"ticket #{number}\n{message}")
         elif isinstance(result, TicketLocked):
@@ -460,6 +464,15 @@ def _run_batch(
             for number in numbers:
                 try:
                     found = await probe.get_ticket(number)
+                    if (
+                        len(found.blocked_by) == 1
+                        and await lower_branch(found, probe.deps.github) is not None
+                    ):
+                        result = await StackClient(root_path).probe(probe.deps.github.repo)
+                        if result.available:
+                            found = found.model_copy(update={"blocked_by": []})
+                        else:
+                            stack_reasons[number] = str(result.reason)
                     tickets.append(found)
                     _print(f"ticket #{number}\n{render.render_roles(loaded, found.size)}")
                 except Exception as error:
