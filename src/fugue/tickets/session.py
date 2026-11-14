@@ -301,7 +301,8 @@ class NewSession:
             idea = await self._answer("Describe your idea:", required=True)
             assert idea is not None
             draft.idea = redact(idea)
-            draft.apply_patch({"title": idea.splitlines()[0][:72], "summary": idea}, "agent")
+            draft.apply_patch({"title": idea.splitlines()[0][:72]}, "agent")
+            draft.apply_patch({"summary": idea}, "person")
         await self._show_related()
         draft.step = Step.OUTCOME.value
 

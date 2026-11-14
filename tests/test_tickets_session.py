@@ -182,6 +182,25 @@ def test_answers_become_person_owned_fields(tmp_path: Path) -> None:
     assert draft.owners["title"] == "agent"
 
 
+def test_initial_idea_summary_keeps_person_wording_when_followups_are_skipped(
+    tmp_path: Path,
+) -> None:
+    """Scenario 7: keeping the initial Summary preserves its ownership and wording."""
+    idea = "Export CSV without overwriting existing files"
+    h = Harness(
+        tmp_path,
+        [idea, "", "/skip", "CSV only", "S", "/quit"],
+        steps=[reply({"summary": "Export CSV"})],
+    )
+    assert h.run() == 0
+    saved = h.saved()
+    assert saved.summary == idea
+    assert saved.owners["summary"] == "person"
+    assert "kept your wording for summary" in h.text
+    assert any(turn.speaker == "you" and turn.text == idea for turn in saved.turns)
+    assert h.github.calls == []
+
+
 def test_every_analyst_request_is_read_only_in_the_repository(tmp_path: Path) -> None:
     h = Harness(tmp_path, [*FULL, "/quit"], steps=[reply(FILL)])
     h.run()
