@@ -4,12 +4,13 @@
 
 ### Overview
 
-Fugue 0.2.0 makes working with Fugue more comfortable and safer: tickets can be created and questions answered through guided conversations, runs can be started in parallel, roles can fall back between providers and choose models by ticket size, and a new overview shows where a repository stands.
+Fugue 0.2.0 makes working with Fugue more comfortable and safer: tickets can be created and questions answered through guided conversations, runs can be started in parallel, roles can fall back between providers and choose models by ticket size, and a new overview shows where a repository stands. Pushes now stop with a clear reason when the remote branch has moved on, and repair attempts start fresh when the scope changes.
 
 ### Included in this release
 
 #### Features
 
+- [#53] : Branch pushes check whether the remote branch is ahead or diverged and stop with a clear reason, and repair attempts are counted per implementation.
 - [#77] : `fugue reviewer-app setup` creates your own reviewer GitHub App through the manifest flow and stores its key privately.
 - [#78] : `fugue protection` reports whether branch protection matches the review rules, with guidance for enabling them.
 - [#89] : `fugue new` turns an idea into a valid ticket through a guided conversation, with a live preview and explicit confirmation before anything is created.
