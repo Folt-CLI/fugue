@@ -77,6 +77,7 @@ class TicketDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    repo: str = ""
     mode: Mode = "idea"
     step: str = "start"
     idea: str = ""

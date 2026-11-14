@@ -103,13 +103,14 @@ def test_turns_are_redacted_when_added() -> None:
 
 def test_store_round_trips_fields_owners_and_turns_with_mode_0600(tmp_path: Path) -> None:
     store = DraftStore(tmp_path)
-    draft = draft_s()
+    draft = draft_s(repo="o/r")
     draft.apply_patch({"summary": "Mine"}, "person")
     path = store.save(draft)
     assert path == tmp_path / "drafts" / f"{draft.id}.json"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     loaded = store.load(draft.id)
     assert loaded == draft
+    assert loaded.repo == "o/r"
     assert loaded.owners["summary"] == "person"
     assert [turn.text for turn in loaded.turns] == ["Describe your idea:", "Export tickets"]
     assert store.list() == [draft.id]

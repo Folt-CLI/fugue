@@ -654,9 +654,7 @@ class NewSession:
             data = self._structured(result)
             if data is None:
                 reason = "analyst returned no structured output"
-            elif check_grounding and not grounded(
-                json.dumps(data), f"{facts}\n#{self.draft.parent}\n{self.draft.model_dump_json()}"
-            ):
+            elif check_grounding and not grounded(json.dumps(data), facts):
                 reason = UNGROUNDED
             else:
                 return data

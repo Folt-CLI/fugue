@@ -114,8 +114,12 @@ def run_new(
     drafts = DraftStore(state_dir)
     if resume is not None:
         draft = drafts.load(resume)
+        if not draft.repo:
+            raise ValueError(f"Draft {resume} has no repository identity; cannot safely resume")
+        if draft.repo.casefold() != repo.casefold():
+            raise ValueError(f"Draft {resume} belongs to {draft.repo}, not {repo}; cannot resume")
     else:
-        draft = TicketDraft(mode="suggest" if suggest else "idea")
+        draft = TicketDraft(repo=repo, mode="suggest" if suggest else "idea")
     patch: dict[str, object] = {}
     if parent is not None:
         patch["parent"] = parent

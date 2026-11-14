@@ -378,6 +378,44 @@ def test_agent_trouble_is_printed_changes_nothing_and_the_session_continues(
     assert "Preview:" in h.text
 
 
+@pytest.mark.parametrize("source", ["turn", "field", "parent"])
+def test_draft_citations_do_not_ground_analyst_output(tmp_path: Path, source: str) -> None:
+    """Scenario 12: only gathered facts can ground an analyst citation."""
+    draft = TicketDraft()
+    if source == "turn":
+        draft.add_turn("you", "refer to #999")
+    elif source == "field":
+        draft.apply_patch({"watch_out": ["refer to #999"]}, "person")
+    else:
+        draft.parent = 999
+    h = Harness(
+        tmp_path,
+        [*FULL, "/quit"],
+        draft=draft,
+        steps=[reply({"decision": "Follow #999", "components": ["Source Code"]})],
+    )
+    assert h.run() == 0
+    assert "not in the gathered facts" in h.text
+    assert h.saved().decision == ""
+    assert h.saved().components == []
+    assert h.github.calls == []
+
+
+def test_gathered_ticket_citations_remain_usable(tmp_path: Path) -> None:
+    """Scenario 12: a citation present in gathered facts permits the patch."""
+    github = FakeGitHub()
+    github.tickets[999] = known_ticket(999, "Existing work")
+    h = Harness(
+        tmp_path,
+        [*FULL, "/quit"],
+        github=github,
+        steps=[reply({"decision": "Follow #999"})],
+    )
+    assert h.run() == 0
+    assert h.saved().decision == "Follow #999"
+    assert "not in the gathered facts" not in h.text
+
+
 def test_manual_drafting_works_when_the_adapter_lacks_a_capability(tmp_path: Path) -> None:
     adapter = ScriptedAdapter([], capabilities=frozenset({Capability.STRUCTURED_OUTPUT}))
     answers = [
