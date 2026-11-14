@@ -756,6 +756,44 @@ def overview(
         raise typer.Exit(code)
 
 
+@app.command()
+def new(
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    suggest: Annotated[
+        bool, typer.Option("--suggest", help="Start from analyst-suggested candidates.")
+    ] = False,
+    resume: Annotated[
+        str | None, typer.Option("--resume", help="Resume a saved draft by its id.")
+    ] = None,
+    parent: Annotated[
+        int | None, typer.Option("--parent", help="Parent issue number (default 1).")
+    ] = None,
+    assignee: Annotated[
+        str | None, typer.Option("--assignee", help="Assignee login (default: you).")
+    ] = None,
+) -> None:
+    """Create a ticket through a guided conversation; nothing is created without 'yes'."""
+    from fugue.cli import new as new_command
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        code = new_command.run_new(
+            loaded, root_path, suggest=suggest, resume=resume, parent=parent, assignee=assignee
+        )
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError) as error:
+        raise _fail("New ticket interrupted", 6) from error
+    except ValueError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
+    if code:
+        raise typer.Exit(code)
+
+
 @app.command("children")
 def children(
     spec_file: Annotated[Path, typer.Argument(help="TOML child specifications.")],
