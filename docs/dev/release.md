@@ -7,7 +7,7 @@ Use the [glossary](../../GLOSSARY.md) terms in release documentation.
 
 1. Prepare the release on an issue branch from `develop`, in its dedicated
    worktree. Set the same version in `pyproject.toml` and
-   `src/fugue/__init__.py`; for this release both must be `0.1.0`.
+   `src/fugue/__init__.py`; for a release both must be the release version.
    Run `uv lock --offline` to update the project's own version in `uv.lock`.
    Confirm that only the `fugue` version changed in the lockfile. Do not add
    dependencies as part of release preparation. Add the release entry to

@@ -8,7 +8,7 @@ from fugue import __version__
 
 
 def test_release_version() -> None:
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.2.0"
 
 
 def test_version_matches_project_metadata() -> None:
@@ -35,4 +35,4 @@ def test_module_version_output() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout == "fugue 0.1.0\n"
+    assert result.stdout == "fugue 0.2.0\n"
