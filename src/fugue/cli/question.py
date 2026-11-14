@@ -22,9 +22,18 @@ from fugue.agents import (
 from fugue.cli import terminal, wiring
 from fugue.cli.chat import ChatSession, default_reader
 from fugue.config import FugueConfig
-from fugue.models import IssueType, Role, Size
+from fugue.models import IssueType, Role, Size, Status, Ticket
 from fugue.questions.decision import QuestionClient, QuestionGitHubClient, record_decision
 from fugue.questions.parse import Option, parse_analysis
+
+
+def analysis_pending(ticket: Ticket, body: str) -> bool:
+    """Whether a Question can begin or continue its interview."""
+    return (
+        ticket.issue_type == IssueType.QUESTION
+        and ticket.status in {Status.TO_DO, Status.IN_ANALYSIS}
+        and not parse_analysis(body).options
+    )
 
 
 class QuestionWalkthrough:

@@ -64,7 +64,7 @@ from fugue.models import (
                 "Won't Do",
             ],
         ),
-        (Role, ["analyst", "implementer", "reviewer"]),
+        (Role, ["analyst", "implementer", "reviewer", "stand_in"]),
         (AuthenticationMode, ["subscription_login", "api_key"]),
     ],
 )

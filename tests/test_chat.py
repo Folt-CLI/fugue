@@ -198,3 +198,51 @@ def test_live_markdown_on_a_terminal() -> None:
     assert asyncio.run(session.ask("q"))
     assert "Title" in shown.getvalue() and "body" in shown.getvalue()
     assert session.turns == [("q", "# Title\n\nbody")]
+
+
+def test_extra_commands_help_and_turn_limit() -> None:
+    harness = Harness(
+        [ScriptStep(result=result(text="answer"))],
+        [
+            "/help",
+            "/continue no",
+            "question",
+            "ignored",
+            "/continue yes",
+            "never read",
+        ],
+    )
+    arguments: list[str] = []
+
+    async def extra(argument: str) -> bool:
+        arguments.append(argument)
+        return argument == "yes"
+
+    harness.session.commands = {"/continue": extra}
+    harness.session.max_turns = 1
+    harness.run()
+    assert arguments == ["no", "yes"]
+    assert len(harness.adapter.requests) == 1
+    assert "/continue" in harness.shown.getvalue()
+    assert "Turn limit reached" in harness.shown.getvalue()
+
+
+def test_callbacks_and_unrecorded_exchange() -> None:
+    harness = Harness(
+        [
+            ScriptStep(result=result(text="initial")),
+            ScriptStep(result=result(text="answer")),
+            ScriptStep(result=result(ok=False, error="Unavailable")),
+        ],
+        [],
+    )
+    results: list[AgentResult] = []
+    turns: list[tuple[str, str]] = []
+    harness.session.on_result = results.append
+    harness.session.on_turn = lambda question, answer: turns.append((question, answer))
+    assert asyncio.run(harness.session.ask("initial", record=False))
+    assert harness.session.turns == [] and turns == []
+    assert asyncio.run(harness.session.ask("question"))
+    assert not asyncio.run(harness.session.ask("failed"))
+    assert turns == [("question", "answer")]
+    assert len(results) == 3

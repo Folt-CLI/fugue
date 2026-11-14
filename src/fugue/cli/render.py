@@ -76,10 +76,12 @@ def _policy_text(config: FugueConfig, role: Role) -> str:
     return " ".join(f"{size}:{rules[size]}" for size in Size if size in rules) or "-"
 
 
-def render_roles(config: FugueConfig, size: Size | None = None) -> str:
+def render_roles(config: FugueConfig, size: Size | None = None, *, interview: bool = False) -> str:
     """The role table; with a Size it shows the tier and models that Size resolves to."""
     rows = []
     for role, role_config in config.roles.items():
+        if role == Role.STAND_IN and not interview:
+            continue
         if size is None:
             tier, model = _policy_text(config, role), "-"
         else:
@@ -102,6 +104,7 @@ def render_roles(config: FugueConfig, size: Size | None = None) -> str:
         f"warning: role {role} uses api_key authentication (metered)"
         for role, role_config in config.roles.items()
         if role_config.authentication_mode == AuthenticationMode.API_KEY
+        and (interview or role != Role.STAND_IN)
     )
     return "\n".join(lines)
 

@@ -25,6 +25,8 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [gate](#gate)
 - [handoff](#handoff)
 - [incident](#incident)
+- [interview](#interview)
+- [interview record](#interview-record)
 - [issue type](#issue-type)
 - [milestone](#milestone)
 - [model override](#model-override)
@@ -49,6 +51,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [Size](#size)
 - [stack](#stack)
 - [stage](#stage)
+- [stand-in](#stand-in)
 - [Status](#status)
 - [terminal layer](#terminal-layer)
 - [ticket draft](#ticket-draft)
@@ -235,13 +238,13 @@ Status: decided.
 
 ### chat component
 
-the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; the Question walkthrough's follow-up uses it.
+the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; the interview and the Question walkthrough's follow-up use it.
 
 Status: decided.
 
 ### conversation attachment
 
-the `<N>-conversation.md` file uploaded to a ticket created with `fugue new`: the verbatim turns of the creation conversation, the final preview and the decision, with strings matching known token patterns redacted.
+the `<N>-conversation.md` file uploaded by `fugue new` or `fugue question`: verbatim turns with strings matching known token patterns redacted. The creation form holds the final preview and decision; the Question form holds the mode and decision.
 
 Status: decided.
 
@@ -254,6 +257,18 @@ Status: unresolved.
 ### handoff
 
 the schema-validated structured input or output passed between roles at a stage boundary.
+
+Status: decided.
+
+### interview
+
+the guided conversation between an analyst and a person (or a stand-in) that precedes the analysis of a Question.
+
+Status: decided.
+
+### interview record
+
+the local state of one interview at `<state_dir>/interviews/<owner>__<name>__<N>.json`: turns, mode, status, usage; never uploaded as a whole.
 
 Status: decided.
 
@@ -321,7 +336,7 @@ Status: decided.
 
 ### role
 
-a named job for an agent in a run: analyst, implementer or reviewer.
+a named job for an agent in a run: analyst, implementer, reviewer or stand-in.
 
 Status: decided.
 
@@ -334,6 +349,12 @@ Status: decided.
 ### session
 
 the provider-side conversation identifier a provider adapter retains so work can be resumed.
+
+Status: decided.
+
+### stand-in
+
+the agent that answers in the person's place under `--automatic`, labelled automatic.
 
 Status: decided.
 
