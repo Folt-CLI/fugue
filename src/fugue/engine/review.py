@@ -14,6 +14,7 @@ MAX_BLOCKING = 3
 MAX_NON_BLOCKING = 5
 CLEAN_TEXT = "No findings."
 MAX_QUOTED = 1000
+MAX_PROMPT_DIFF = 200_000
 
 REVIEW_CONTRACT = """\
 Report two lists, Blocking and Non-blocking, judged against the scope and its scenarios.
@@ -181,6 +182,19 @@ def parse_findings(text: str) -> list[Finding] | Clean:
     """Parse reviewer output; an exact `No findings.` is clean, unparseable text is one finding."""
     if text.strip() == CLEAN_TEXT:
         return CLEAN
+    lines = text.splitlines()
+    first = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if first is not None and lines[first].strip() == CLEAN_TEXT:
+        rest = lines[first + 1 :]
+        structured = any(
+            _SECTION.fullmatch(line.strip()) or _ITEM.match(line) or line.strip().startswith("```")
+            for line in rest
+        )
+        if not structured:
+            return CLEAN
+        remainder = parse_findings("\n".join(rest))
+        if isinstance(remainder, list) and remainder:
+            return remainder
     raws, saw_section = _raw_items(text)
     blocking: list[Finding] = []
     non_blocking: list[Finding] = []
@@ -206,7 +220,7 @@ def parse_findings(text: str) -> list[Finding] | Clean:
             if part.lstrip().startswith("```"):
                 if prose:
                     summary_parts.append(
-                        " ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]`")
+                        " ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]")
                     )
                     prose = []
                 summary_parts.append(part)
@@ -221,7 +235,7 @@ def parse_findings(text: str) -> list[Finding] | Clean:
                 part = part[: match.start()] + " " + part[match.end() :]
             prose.append(part)
         if prose:
-            summary_parts.append(" ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]`"))
+            summary_parts.append(" ".join(" ".join(prose).split()).strip(" -\u2013\u2014:;,()[]"))
         summary = "\n".join(summary_parts) or joined
         suggestion = "\n".join(raw.suggestion) if raw.suggestion is not None else None
         if len(target) < limit:
@@ -425,9 +439,22 @@ def build_review(
     return BuiltReview(event, "\n\n".join(lines), tuple(comments))
 
 
-def review_prompt(
-    *, scope: str, ci_result: str, rounds: Sequence[RoundEntry], base_ref: str
-) -> str:
+def _diff_block(diff: str) -> str:
+    note = ""
+    if len(diff) > MAX_PROMPT_DIFF:
+        diff = diff[:MAX_PROMPT_DIFF]
+        note = (
+            f"\n\nThe diff was truncated to its first {MAX_PROMPT_DIFF} characters; "
+            "the rest is not shown."
+        )
+    if not diff.strip():
+        return "The diff is empty."
+    longest = max((len(run) for run in re.findall(r"`+", diff)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}diff\n{diff.rstrip(chr(10))}\n{fence}{note}"
+
+
+def review_prompt(*, scope: str, ci_result: str, rounds: Sequence[RoundEntry], diff: str) -> str:
     """The read-only reviewer's instructions for one round."""
     if rounds:
         log = "\n".join(
@@ -440,11 +467,11 @@ def review_prompt(
     else:
         log = "No earlier rounds."
     return (
-        "Review the pull request read-only. Compare the diff of HEAD against the merge base "
-        f"with `{base_ref}` (for example `git diff $(git merge-base {base_ref} HEAD) HEAD`). "
+        "Review the pull request read-only. The diff of HEAD against the merge base is below. "
         "Do not change files, run builds or use the network.\n\n"
         f"## Review contract\n\n{REVIEW_CONTRACT}\n\n"
         f"## Output format\n\n{OUTPUT_FORMAT}\n\n"
+        f"## Diff\n\n{_diff_block(diff)}\n\n"
         f"## Scope\n\n{scope}\n\n"
         f"## CI result\n\n{ci_result}\n\n"
         f"## Rounds log\n\n{log}\n"

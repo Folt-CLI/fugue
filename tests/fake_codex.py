@@ -50,6 +50,22 @@ def main() -> None:
             "item": {"type": "file_change", "changes": [{"path": "example", "kind": "add"}]},
         }
     )
+    if scenario in {"usage_limit", "usage_limit_code"}:
+        error: dict[str, Any] = {
+            "message": (
+                "You\u2019ve hit your usage limit. Upgrade to Pro "
+                "(https://chatgpt.com/explore/pro), "
+                "visit https://chatgpt.com/settings/usage to purchase more credits "
+                "or try again at 7:00 PM."
+                if scenario == "usage_limit"
+                else "provider error"
+            )
+        }
+        if scenario == "usage_limit_code":
+            error["codex_error_info"] = "usage_limit_exceeded"
+        emit({"type": "error", **error})
+        emit({"type": "turn.failed", "error": error})
+        sys.exit(1)
     if scenario == "failure":
         emit({"type": "error", "message": "provider error"})
         emit({"type": "turn.failed", "error": {"message": "turn failed"}})

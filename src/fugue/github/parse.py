@@ -68,8 +68,10 @@ def parse_ticket(
 ) -> Ticket:
     """Combine the REST issue, issue fields, project item and native blockers."""
     fields = {
-        entry["issue_field_name"]: (entry.get("single_select_option") or {}).get(
-            "name", entry.get("value")
+        entry["issue_field_name"]: (
+            [option["name"] for option in entry["multi_select_options"]]
+            if "multi_select_options" in entry
+            else (entry.get("single_select_option") or {}).get("name", entry.get("value"))
         )
         for entry in field_values
     }
@@ -89,7 +91,7 @@ def parse_ticket(
             "milestone": (issue.get("milestone") or {}).get("title"),
             "assignees": [entry["login"] for entry in issue.get("assignees", [])],
             "parent": int(parent_url.rstrip("/").rsplit("/", 1)[1]) if parent_url else None,
-            "blocked_by": [entry["number"] for entry in blockers],
+            "blocked_by": [entry["number"] for entry in blockers if entry.get("state") != "closed"],
             "components": components,
             "body_sections": parse_body_sections(issue.get("body") or ""),
         }

@@ -4,18 +4,26 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from itertools import count
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
-from fugue.agents import AccessMode, AdapterRegistry, AgentRequest
+from fugue.agents import (
+    AccessMode,
+    AdapterRegistry,
+    AgentRequest,
+    ModelChoice,
+    ProviderAdapter,
+    ProviderSwitch,
+    resolve_models,
+)
 from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
-from fugue.config import FugueConfig
+from fugue.config import FugueConfig, ProviderEntry, RoleConfig
 from fugue.engine.ci import (
     FailureKind,
     actions_run_key,
@@ -44,6 +52,7 @@ from fugue.engine.facts import (
     selected_solution,
     worktree_path,
 )
+from fugue.engine.locks import RepoLock
 from fugue.engine.ports import CiGitHubPort, GitHubPort, MergeGitHubPort, ReviewGitHubPort
 from fugue.engine.prompts import (
     commit_message,
@@ -70,8 +79,9 @@ from fugue.engine.review import (
 from fugue.gate import GateResult, format_failure, run_gate
 from fugue.github import CheckResult, GitHubError, PullRequest
 from fugue.github.client import ResolvePermissionError
+from fugue.github.stack import StackClient, lower_branch
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
-from fugue.models import Disposition, IssueType, Role, Status, Ticket
+from fugue.models import Disposition, IssueType, Role, Size, Status, Ticket
 from fugue.store import Approval, Operation, Run, Store
 from fugue.workflow import RunState, Stage, ready_for_implementation
 from fugue.workflow.guards import can_close, merge_allowed, review_required
@@ -98,7 +108,8 @@ class EngineDeps:
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     progress: Callable[[str], None] | None = None
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
-    repo_lock: asyncio.Lock | None = None
+    repo_lock: RepoLock | None = None
+    stack_factory: Callable[[Path], StackClient] = StackClient
 
 
 @dataclass(frozen=True)
@@ -133,32 +144,103 @@ def _sha256(text: str) -> str:
 
 
 def _implemented_sha256(store: Store, run_id: int) -> str | None:
-    # Store has no public attempt reader; the latest finished implement attempt
-    # records the scope digest it implemented in its detail.
-    row = store._connection.execute(
-        "SELECT detail FROM stage_attempts WHERE run_id = ? AND stage = ? "
-        "AND status = 'completed' ORDER BY id DESC LIMIT 1",
-        (run_id, Stage.IMPLEMENT),
-    ).fetchone()
-    return None if row is None else row[0]
+    # The latest finished implement attempt records the scope digest it implemented.
+    completed = [
+        attempt
+        for attempt in store.stage_attempts(run_id, Stage.IMPLEMENT)
+        if attempt.status == "completed"
+    ]
+    return completed[-1].detail if completed else None
 
 
 def _repairs_used(store: Store, run_id: int) -> int:
-    row = store._connection.execute(
-        "SELECT COUNT(*) FROM stage_attempts WHERE run_id = ? AND stage = ? "
-        "AND status = 'completed'",
-        (run_id, Stage.REPAIR),
-    ).fetchone()
-    return int(row[0])
+    # A new implement attempt (a replaced scope) starts a fresh repair budget.
+    implements = store.stage_attempts(run_id, Stage.IMPLEMENT)
+    latest_implement = implements[-1].id if implements else 0
+    return sum(
+        1
+        for attempt in store.stage_attempts(run_id, Stage.REPAIR)
+        if attempt.status == "completed" and attempt.id > latest_implement
+    )
 
 
 def _session_id(store: Store, run_id: int, provider: str, authentication_mode: str) -> str | None:
-    row = store._connection.execute(
-        "SELECT session_id FROM agent_sessions WHERE run_id = ? AND role = ? "
-        "AND provider = ? AND authentication_mode = ? ORDER BY id DESC LIMIT 1",
-        (run_id, Role.IMPLEMENTER, provider, authentication_mode),
-    ).fetchone()
-    return None if row is None else row[0]
+    sessions = store.agent_sessions(
+        run_id, role=Role.IMPLEMENTER, provider=provider, authentication_mode=authentication_mode
+    )
+    return sessions[-1].session_id if sessions else None
+
+
+def role_adapter(
+    deps: EngineDeps, run_id: int, role: Role, role_config: RoleConfig
+) -> ProviderAdapter:
+    """Build a role's adapter; each provider switch is recorded and reported."""
+
+    def on_switch(switch: ProviderSwitch) -> None:
+        number = len(_operations(deps.store, run_id, "provider_switch")) + 1
+        key = f"{number}:{role}:{switch.from_provider}->{switch.to_provider}:{switch.reason}"
+        operation = deps.store.begin_operation(
+            run_id,
+            "provider_switch",
+            key,
+            {
+                "role": str(role),
+                "from": switch.from_provider,
+                "to": switch.to_provider,
+                "reason": switch.reason,
+                "authentication_mode": str(switch.authentication_mode),
+            },
+        )
+        deps.store.complete_operation(operation.id, {"done": True})
+        if deps.progress is not None:
+            deps.progress(f"{role}: {switch.describe()}")
+
+    return deps.registry.build_for_role(
+        role_config,
+        clock=deps.clock,
+        cooldown_seconds=deps.config.limits.provider_cooldown_seconds,
+        on_switch=on_switch,
+    )
+
+
+def model_choice(deps: EngineDeps, run_id: int, role: Role, size: Size) -> ModelChoice:
+    """Return the run's model choice for a role, recording it on first use.
+
+    The recorded choice is reused after a restart, so a run keeps the tier it started with
+    even when the ticket Size or the configuration changed in between.
+    """
+    operation = deps.store.begin_operation(
+        run_id, "model_choice", str(role), {"role": str(role), "size": str(size)}
+    )
+    if operation.result_json is not None:
+        return ModelChoice.from_json(role, json.loads(operation.result_json))
+    choice = resolve_models(deps.config, role, size)
+    deps.store.complete_operation(operation.id, choice.to_json())
+    if deps.progress is not None:
+        tier = "default" if choice.tier is None else str(choice.tier)
+        deps.progress(f"{role}: tier {tier} ({choice.source})")
+    return choice
+
+
+class UsageChoice(TypedDict):
+    model: str | None
+    tier: str | None
+
+
+def usage_choice(choice: ModelChoice | None, provider: str) -> UsageChoice:
+    """The model and tier to store on a usage record for the provider that served the call."""
+    if choice is None:
+        return {"model": None, "tier": None}
+    tier = None if choice.tier is None else str(choice.tier)
+    return {"model": choice.models.get(provider), "tier": tier}
+
+
+def saved_model_choice(store: Store, run_id: int, role: Role) -> ModelChoice | None:
+    """The recorded model choice, or None for a run that never recorded one."""
+    saved = _operation_by_key(store, run_id, "model_choice", str(role))
+    if saved is None or saved[4] is None:
+        return None
+    return ModelChoice.from_json(role, json.loads(saved[4]))
 
 
 async def _common_dir(path: Path) -> Path:
@@ -200,7 +282,7 @@ async def observe(
         return replace(snapshot, pr=pr)
     git = Git(identity.path)
     head = await git.head_sha()
-    base = f"refs/heads/{deps.base_branch}"
+    base = _base_ref(deps, run_id)
     merge_base = (await git._run("merge-base", base, head)).strip()
     ahead = (await git._run("log", "--format=%s", f"{merge_base}..{head}")).splitlines()
     changed = await git._run("diff", "--name-only", "--no-renames", "-z", merge_base, head, "--")
@@ -218,6 +300,19 @@ async def observe(
         scope_sha256=snapshot.scope_sha256,
         implemented_sha256=snapshot.implemented_sha256,
     )
+
+
+def _ticket_base(deps: EngineDeps, run_id: int) -> str:
+    saved = _operation_by_key(deps.store, run_id, "stack_base", "base")
+    if saved is not None and saved[4] is not None:
+        return str(json.loads(saved[4])["branch"])
+    return deps.base_branch
+
+
+def _base_ref(deps: EngineDeps, run_id: int) -> str:
+    base = _ticket_base(deps, run_id)
+    prefix = "refs/heads" if base == deps.base_branch else "refs/remotes/origin"
+    return f"{prefix}/{base}"
 
 
 class Engine:
@@ -281,9 +376,14 @@ class Engine:
     async def _operation(
         self, run_id: int, kind: str, intent: dict[str, Any], action: Callable[[], Awaitable[Any]]
     ) -> None:
-        # The operation is an audit record only; resume never reads it back.
-        key = str(self._attempt_id.get())
+        key = (
+            f"{intent['branch']}:{intent.get('head', '')}"
+            if kind.startswith("stack_")
+            else str(self._attempt_id.get())
+        )
         operation = self.deps.store.begin_operation(run_id, kind, key, intent)
+        if kind.startswith("stack_") and operation.result_json is not None:
+            return
         await action()
         self.deps.store.complete_operation(operation.id, {"done": True})
 
@@ -330,13 +430,10 @@ class Engine:
 
     def _changes(self, run_id: int, paths: Sequence[str]) -> list[str]:
         """Use the last qualifying message from the latest implement attempt and its repairs."""
-        row = self.deps.store._connection.execute(
-            "SELECT MAX(id) FROM stage_attempts WHERE run_id = ? AND stage = ?",
-            (run_id, Stage.IMPLEMENT),
-        ).fetchone()
-        if row[0] is None:
+        implements = self.deps.store.stage_attempts(run_id, Stage.IMPLEMENT)
+        if not implements:
             return fallback_changes(paths)
-        latest_implement_id = int(row[0])
+        latest_implement_id = implements[-1].id
         gate = {" ".join(command) for command in self.deps.config.policy.gate_commands}
         messages: list[tuple[int, str]] = []
         for artifact in self.deps.store.list_artifacts(run_id):
@@ -578,6 +675,7 @@ class Engine:
             ticket = await self._stage(
                 run_id, Stage.LOAD, lambda: self.deps.github.get_ticket(ticket_number)
             )
+            self._choose_models(run_id, ticket)
             scope = await self._stage(
                 run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket)
             )
@@ -597,6 +695,10 @@ class Engine:
             store.set_run_state(run_id, RunState.BLOCKED)
             raise
 
+    def _choose_models(self, run_id: int, ticket: Ticket) -> None:
+        for role in (Role.IMPLEMENTER, Role.REVIEWER):
+            model_choice(self.deps, run_id, role, ticket.size)
+
     async def _drive(self, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
         while True:
             ticket = await self.deps.github.get_ticket(ticket.number)
@@ -604,6 +706,13 @@ class Engine:
             snapshot = await observe(self.deps, run_id, ticket, scope, identity)
             action = decide(snapshot)
             if isinstance(action, Done):
+                if _ticket_base(self.deps, run_id) != self.deps.base_branch:
+                    assert identity is not None
+                    await self._stage(
+                        run_id,
+                        Stage.DELIVER,
+                        partial(self._open_pr, run_id, ticket, scope, identity),
+                    )
                 self.deps.store.set_run_state(run_id, RunState.WAITING_FOR_CI)
                 return RunOutcome(
                     run_id, RunState.WAITING_FOR_CI, action.pr.number, action.head_sha
@@ -636,13 +745,19 @@ class Engine:
                 run_id, Stage.DELIVER, lambda: self._commit(run_id, ticket, scope, identity)
             )
         elif isinstance(action, Push):
-            await self._stage(run_id, Stage.DELIVER, lambda: self._push(run_id, identity))
+            if _ticket_base(self.deps, run_id) != self.deps.base_branch:
+                await self._stage(
+                    run_id, Stage.DELIVER, lambda: self._open_pr(run_id, ticket, scope, identity)
+                )
+            else:
+                await self._stage(run_id, Stage.DELIVER, lambda: self._push(run_id, identity))
         elif isinstance(action, OpenPr):
             await self._stage(
                 run_id, Stage.DELIVER, lambda: self._open_pr(run_id, ticket, scope, identity)
             )
 
     async def _validate(self, run_id: int, ticket: Ticket) -> str:
+        await self._stack_base(run_id, ticket)
         url = scope_url(ticket)
         problems: list[str] = []
         text: str | None = None
@@ -673,19 +788,55 @@ class Engine:
         self._artifact(run_id, "scope", text, ".md")
         return text
 
+    async def _stack_base(self, run_id: int, ticket: Ticket) -> str:
+        saved = _operation_by_key(self.deps.store, run_id, "stack_base", "base")
+        branch: str | None
+        if saved is not None and saved[4] is not None:
+            branch = str(json.loads(saved[4])["branch"])
+        elif ticket.blocked_by:
+            branch = await lower_branch(ticket, self.deps.github)
+            if branch is None:
+                raise _Stop(RunState.BLOCKED, ["Open blockers require a sole lower open PR"])
+        else:
+            return self.deps.base_branch
+        probe = await self.deps.stack_factory(self.deps.repo_root).probe(self.deps.github.repo)
+        if not probe.available:
+            raise _Stop(RunState.BLOCKED, [f"gh stack unavailable: {probe.reason}"])
+        operation = self.deps.store.begin_operation(run_id, "stack_base", "base", {})
+        self.deps.store.complete_operation(operation.id, {"branch": branch})
+        return branch
+
     async def _prepare(
         self, run_id: int, ticket: Ticket, scope: str, identity: Identity | None
     ) -> None:
+        base = await self._stack_base(run_id, ticket)
         identity = identity or self._new_identity(run_id, ticket, scope)
         if not await _is_worktree(self.deps, identity):
             git = Git(self.deps.repo_root)
 
             async def create() -> None:
                 identity.path.parent.mkdir(parents=True, exist_ok=True)
-                async with self.deps.repo_lock or nullcontext():
+                async with self.deps.repo_lock or RepoLock(
+                    self.deps.state_dir, self.deps.repo_root
+                ):
                     await git.fetch()
-                    await git.fast_forward(self.deps.base_branch)
-                    await git.create_worktree(identity.path, identity.branch, self.deps.base_branch)
+                    if base == self.deps.base_branch:
+                        await git.fast_forward(base)
+                        await git.create_worktree(identity.path, identity.branch, base)
+                    else:
+                        await self._check_lower_branch(git, base)
+                        # Reuse a branch left by an interrupted worktree operation.
+                        branches = await git._run(
+                            "for-each-ref", "--format=%(refname)", f"refs/heads/{identity.branch}"
+                        )
+                        if f"refs/heads/{identity.branch}" in branches.splitlines():
+                            await git._run(
+                                "worktree", "add", "--", str(identity.path), identity.branch
+                            )
+                        else:
+                            await git.create_worktree(
+                                identity.path, identity.branch, _base_ref(self.deps, run_id)
+                            )
 
             await self._operation(run_id, "worktree", {"branch": identity.branch}, create)
         if ticket.status != Status.IN_IMPLEMENTATION:
@@ -704,23 +855,37 @@ class Engine:
             scope,
         )
         git = Git(identity.path)
-        commits = await git._run("rev-list", "--count", f"refs/heads/{self.deps.base_branch}..HEAD")
+        commits = await git._run("rev-list", "--count", f"{_base_ref(self.deps, run_id)}..HEAD")
         if not await git.status_porcelain() and int(commits) == 0:
             raise _Stop(RunState.BLOCKED, ["Implementer made no changes"])
 
     async def _agent(self, run_id: int, identity: Identity, prompt: str, scope: str) -> None:
         role_config = self.deps.config.roles[Role.IMPLEMENTER]
-        adapter = self.deps.registry.build(role_config)
-        session = _session_id(
-            self.deps.store, run_id, adapter.name, str(adapter.authentication_mode)
-        )
-        if session is None and scope not in prompt:
+        adapter = role_adapter(self.deps, run_id, Role.IMPLEMENTER, role_config)
+        # Each chain member resumes only its own session; none is passed between providers.
+        members: list[RoleConfig | ProviderEntry] = [role_config, *role_config.fallback]
+        sessions: dict[str, str] = {
+            member.provider: found
+            for member in members
+            if (
+                found := _session_id(
+                    self.deps.store, run_id, member.provider, str(member.authentication_mode)
+                )
+            )
+            is not None
+        }
+        session = sessions.get(role_config.provider)
+        fresh_prompt = prompt
+        if scope not in prompt:
             # A new provider conversation needs the scope even when repairing.
-            prompt = (
+            fresh_prompt = (
                 implementation_prompt(scope, workdir=identity.path, branch=identity.branch)
                 + "\n\n"
                 + prompt
             )
+        if session is None:
+            prompt = fresh_prompt
+        choice = saved_model_choice(self.deps.store, run_id, Role.IMPLEMENTER)
         result = await adapter.run(
             AgentRequest(
                 role=Role.IMPLEMENTER,
@@ -728,7 +893,12 @@ class Engine:
                 cwd=identity.path,
                 access=AccessMode.WORKSPACE_WRITE,
                 session_id=session,
-                model=role_config.model,
+                sessions=sessions,
+                fresh_prompt=fresh_prompt,
+                model=role_config.model
+                if choice is None
+                else choice.models.get(role_config.provider),
+                models={} if choice is None else choice.models,
                 timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
             )
         )
@@ -740,6 +910,7 @@ class Engine:
                 result.provider,
                 result.authentication_mode,
                 **asdict(result.usage),
+                **usage_choice(choice, result.provider),
             )
         if result.session_id is not None:
             self.deps.store.record_agent_session(
@@ -821,31 +992,148 @@ class Engine:
             raise _Stop(RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations])
 
     async def _push(self, run_id: int, identity: Identity) -> None:
+        if _ticket_base(self.deps, run_id) != self.deps.base_branch:
+            # Native submit owns publication of stack branches.
+            await self._submit_stack(run_id, identity)
+            return
         git = Git(identity.path)
+        await self._require_remote_not_ahead(git, identity)
         await self._operation(
             run_id, "push", {"branch": identity.branch}, lambda: git.push(identity.branch)
         )
 
+    async def _require_remote_not_ahead(self, git: Git, identity: Identity) -> None:
+        remote = await git._run("ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}")
+        if not remote.strip():
+            return
+        remote_sha = remote.split()[0]
+        head = await git.head_sha()
+        if remote_sha == head:
+            return
+        async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
+            await git.fetch()
+        await self._check_remote_ancestry(git, remote_sha, head)
+
+    async def _require_remote_not_ahead_unlocked(self, git: Git, identity: Identity) -> None:
+        remote = await git._run("ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}")
+        if not remote.strip():
+            return
+        head = await git.head_sha()
+        if remote.split()[0] == head:
+            return
+        await git.fetch()
+        await self._check_remote_ancestry(git, remote.split()[0], head)
+
+    async def _check_remote_ancestry(self, git: Git, remote_sha: str, head: str) -> None:
+        if await self._is_ancestor(git, remote_sha, head):
+            return
+        if await self._is_ancestor(git, head, remote_sha):
+            message = "The remote branch is ahead of the local branch; resolve it before pushing"
+        else:
+            message = (
+                "The remote branch has diverged from the local branch; resolve it before pushing"
+            )
+        raise _Stop(RunState.BLOCKED, [message])
+
+    @staticmethod
+    async def _is_ancestor(git: Git, ancestor: str, descendant: str) -> bool:
+        try:
+            await git._run("merge-base", "--is-ancestor", ancestor, descendant)
+        except GitError as error:
+            if error.returncode == 1:
+                return False
+            raise
+        return True
+
+    async def _check_lower_branch(self, git: Git, branch: str) -> None:
+        local = await git._run("for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}")
+        remote = (await git._run("rev-parse", "--verify", f"refs/remotes/origin/{branch}")).strip()
+        if not local.strip():
+            await git._validate_branch(branch)
+            await git._run("branch", "--", branch, remote)
+        elif local.strip() != remote:
+            raise _Stop(
+                RunState.BLOCKED,
+                ["The lower local and remote stack branches differ; resolve before submitting"],
+            )
+
+    async def _submit_stack(self, run_id: int, identity: Identity) -> None:
+        ticket = await self.deps.github.get_ticket(self.deps.store.get_run(run_id).ticket_number)
+        lower = await self._stack_base(run_id, ticket)
+        stack = self.deps.stack_factory(identity.path)
+        async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
+            git = Git(identity.path)
+            await git.fetch()
+            await self._check_lower_branch(git, lower)
+            await self._require_remote_not_ahead_unlocked(git, identity)
+            head = await Git(identity.path).head_sha()
+
+            async def submit() -> None:
+                remote = await Git(identity.path)._run(
+                    "ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}"
+                )
+                if (
+                    remote.split()[:1] == [head]
+                    and await self.deps.github.find_pr(identity.branch) is not None
+                ):
+                    return
+
+                async def initialize() -> None:
+                    view = await stack.view()
+                    if view is None or identity.branch not in view.split():
+                        await stack.init(self.deps.base_branch, [lower, identity.branch])
+
+                await self._operation(run_id, "stack_init", {"branch": identity.branch}, initialize)
+                await stack.submit()
+
+            await self._operation(
+                run_id, "stack_submit", {"branch": identity.branch, "head": head}, submit
+            )
+
     async def _open_pr(self, run_id: int, ticket: Ticket, scope: str, identity: Identity) -> None:
-        if await self.deps.github.find_pr(identity.branch) is not None:
+        stacked = _ticket_base(self.deps, run_id) != self.deps.base_branch
+        if stacked:
+            await self._stack_base(run_id, ticket)
+        elif await self.deps.github.find_pr(identity.branch) is not None:
             return
         git = Git(identity.path)
-        base = f"refs/heads/{self.deps.base_branch}"
+        base = _base_ref(self.deps, run_id)
         merge_base = (await git._run("merge-base", base, "HEAD")).strip()
         diff = await git._run("diff", "--name-only", "--no-renames", "-z", merge_base, "HEAD", "--")
         paths = [path for path in diff.split("\0") if path]
+        if stacked:
+            self._require_allowed(paths, allowed_files(scope))
         message = self._message(ticket, scope, self._changes(run_id, paths))
         verification = "\n".join(
             f"- {' '.join(command)}: passed" for command in self.deps.config.policy.gate_commands
         )
         body = pr_body(ticket, message.summary, message.changes, verification)
+        if stacked:
+            lower = _ticket_base(self.deps, run_id)
+            pr = await self.deps.github.find_pr(lower)
+            body += f"\n\nStack position: above {pr.url if pr else lower} (branch `{lower}`)."
+            await self._submit_stack(run_id, identity)
+            await self._operation(
+                run_id,
+                "stack_metadata",
+                {"branch": identity.branch, "head": await git.head_sha()},
+                lambda: self.deps.stack_factory(identity.path).edit_pr(
+                    self.deps.github.repo,
+                    identity.branch,
+                    message.render().splitlines()[0],
+                    body,
+                    ",".join(ticket.assignees) or "Bojan-Ivanovski",
+                    ticket.milestone or "0.1.0",
+                ),
+            )
+            return
         await self._operation(
             run_id,
             "pr",
             {"branch": identity.branch},
             lambda: self.deps.github.create_pr(
                 identity.branch,
-                self.deps.base_branch,
+                _ticket_base(self.deps, run_id),
                 message.render().splitlines()[0],
                 body,
                 ",".join(ticket.assignees) or "Bojan-Ivanovski",
@@ -1018,6 +1306,7 @@ class Engine:
 
     async def _load(self, run_id: int, number: int) -> tuple[Ticket, str]:
         ticket = await self._stage(run_id, Stage.LOAD, lambda: self.deps.github.get_ticket(number))
+        self._choose_models(run_id, ticket)
         scope = await self._stage(run_id, Stage.VALIDATE, lambda: self._validate(run_id, ticket))
         return ticket, scope
 
@@ -1157,21 +1446,25 @@ class Engine:
         self, run_id: int, identity: Identity, scope: str, ci_result: str
     ) -> list[Finding]:
         role_config = self.deps.config.roles[Role.REVIEWER]
-        adapter = self.deps.registry.build(role_config)
+        adapter = role_adapter(self.deps, run_id, Role.REVIEWER, role_config)
         prompt = review_prompt(
             scope=scope,
             ci_result=ci_result,
             rounds=self._round_log(run_id),
-            base_ref=f"refs/heads/{self.deps.base_branch}",
+            diff=await self._diff(run_id, identity.path),
         )
         # Every round is a fresh, read-only conversation so the review stays independent.
+        choice = saved_model_choice(self.deps.store, run_id, Role.REVIEWER)
         result = await adapter.run(
             AgentRequest(
                 role=Role.REVIEWER,
                 prompt=prompt,
                 cwd=identity.path,
                 access=AccessMode.READ_ONLY,
-                model=role_config.model,
+                model=role_config.model
+                if choice is None
+                else choice.models.get(role_config.provider),
+                models={} if choice is None else choice.models,
                 timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
             )
         )
@@ -1183,7 +1476,11 @@ class Engine:
                 result.provider,
                 result.authentication_mode,
                 **asdict(result.usage),
+                **usage_choice(choice, result.provider),
             )
+        implementers = self.deps.store.agent_sessions(run_id, role=Role.IMPLEMENTER)
+        if implementers and implementers[-1].provider == result.provider:
+            self._report("review: same provider as implementation")
         if not result.ok:
             error = result.error or "Reviewer failed"
             self._artifact(run_id, "review-error", error)
@@ -1192,9 +1489,9 @@ class Engine:
         parsed = parse_findings(result.final_text)
         return [] if isinstance(parsed, Clean) else parsed
 
-    async def _diff(self, path: Path) -> str:
+    async def _diff(self, run_id: int, path: Path) -> str:
         git = Git(path)
-        base = f"refs/heads/{self.deps.base_branch}"
+        base = _base_ref(self.deps, run_id)
         merge_base = (await git._run("merge-base", base, "HEAD")).strip()
         return await git._run("diff", "--no-renames", "-U3", merge_base, "HEAD", "--")
 
@@ -1210,7 +1507,7 @@ class Engine:
         port = self._review_port()
         built = build_review(
             record.findings,
-            diff_ranges(await self._diff(identity.path)),
+            diff_ranges(await self._diff(run_id, identity.path)),
             record.round,
             separate_identity=self.deps.config.github.reviewer_identity_separate,
         )

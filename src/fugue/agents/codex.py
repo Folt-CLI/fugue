@@ -15,6 +15,7 @@ from fugue.agents.base import (
     AgentRequest,
     AgentResult,
     Capability,
+    Unavailable,
     UsageRecord,
     check_request,
     unsupported_result,
@@ -30,6 +31,16 @@ def _object(value: object) -> dict[str, Any]:
 
 def _tokens(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _is_usage_limit(text: str, raw: Mapping[str, Any]) -> bool:
+    if re.search(r"\bhit your usage limit\b", text, re.I):
+        return True
+    return any(
+        source.get(field) == "usage_limit_exceeded"
+        for source in (raw, _object(raw.get("error")))
+        for field in ("codex_error_info", "code")
+    )
 
 
 def _event(raw: Mapping[str, Any]) -> AgentEvent | None:
@@ -49,7 +60,9 @@ def _event(raw: Mapping[str, Any]) -> AgentEvent | None:
         return AgentEvent("usage", data=_object(raw.get("usage")))
     if kind in {"error", "turn.failed"}:
         error = _object(raw.get("error"))
-        return AgentEvent("error", str(raw.get("message") or error.get("message") or kind))
+        return AgentEvent(
+            "error", str(raw.get("message") or error.get("message") or kind), data=raw
+        )
     return None
 
 
@@ -104,9 +117,7 @@ class CodexAdapter:
                 last_message = event.text
             elif event.kind == "error":
                 error = event.text
-                provider_limited = provider_limited or bool(
-                    re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error, re.I)
-                )
+                provider_limited = provider_limited or _is_usage_limit(error, event.data)
             elif event.kind == "usage":
                 usage_data = event.data
             if on_event is not None:
@@ -136,16 +147,34 @@ class CodexAdapter:
             for key in os.environ:
                 if key.endswith("_API_KEY"):
                     clean_env += ["-u", key]
-            result = await run_command(
-                [*clean_env, *argv],
-                cwd=cwd,
-                stdin=request.prompt,
-                timeout=request.timeout_seconds,
-                max_output_bytes=0,
-                max_line_bytes=None,
-                spool_dir=spool_dir,
-                on_stdout_line=receive,
-            )
+            try:
+                result = await run_command(
+                    [*clean_env, *argv],
+                    cwd=cwd,
+                    stdin=request.prompt,
+                    timeout=request.timeout_seconds,
+                    max_output_bytes=0,
+                    max_line_bytes=None,
+                    spool_dir=spool_dir,
+                    on_stdout_line=receive,
+                )
+            except OSError as exc:
+                # A spawn failure is a structured condition: the CLI cannot be reached.
+                return AgentResult(
+                    ok=False,
+                    final_text="",
+                    structured_output=None,
+                    session_id=session_id,
+                    usage=None,
+                    provider=self.name,
+                    authentication_mode=self.authentication_mode,
+                    error=f"Codex command could not start: {exc}",
+                    timed_out=False,
+                    cancelled=False,
+                    log_path=None,
+                    unsupported=None,
+                    unavailable=Unavailable.UNREACHABLE,
+                )
             final_text = (
                 final_file.read_text(encoding="utf-8") if final_file.exists() else last_message
             )
@@ -176,6 +205,9 @@ class CodexAdapter:
                 cost_estimate_usd=None,
                 duration_ms=int(result.duration_seconds * 1000),
             )
+        limited = provider_limited or _is_usage_limit(error or "", {})
+        # No structured signed-out signal is evidenced for Codex, so only rate limits
+        # and spawn failures are classified as unavailable.
         return AgentResult(
             ok=error is None and result.returncode == 0 and not result.timed_out,
             final_text=final_text,
@@ -189,10 +221,8 @@ class CodexAdapter:
             cancelled=result.cancelled,
             log_path=log_path,
             unsupported=None,
-            provider_limited=provider_limited
-            or bool(
-                re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error or "", re.I)
-            ),
+            provider_limited=limited,
+            unavailable=Unavailable.RATE_LIMITED if limited else None,
         )
 
 

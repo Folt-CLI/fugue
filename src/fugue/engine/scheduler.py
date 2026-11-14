@@ -2,7 +2,6 @@
 
 import asyncio
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Protocol
 
 from fugue.engine.locks import TicketLock
@@ -16,18 +15,25 @@ class ScheduledEngine(Protocol):
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome: ...
 
+    async def run_to_green(self, ticket_number: int) -> RunOutcome: ...
+
 
 async def run_many(
     tickets: Sequence[Ticket],
-    engine_factory: Callable[[], ScheduledEngine],
+    engine_factory: Callable[[Ticket], ScheduledEngine],
     limit: int,
+    *,
+    until_green: bool = False,
+    on_complete: Callable[[Ticket, RunOutcome | Exception | None], None] | None = None,
 ) -> list[RunOutcome | Exception | None]:
     """Return input-ordered outcomes, errors, or None for blocked tickets.
 
     The factory supplies an engine for each runnable ticket and owns its
-    resources. Locks cover the entire run. Duplicate numbers and nonpositive
-    limits are refused before starting any work. Cancellation is propagated
-    after every active run has finished its cancellation cleanup.
+    resources. Ticket locks cover the entire run; the repository lock around
+    shared Git steps is taken by the engine itself. Duplicate numbers and
+    nonpositive limits are refused before starting any work. `on_complete` is
+    called as each run finishes. Cancellation is propagated after every active
+    run has finished its cancellation cleanup.
     """
     if limit < 1:
         raise ValueError("Concurrent run limit must be positive")
@@ -35,21 +41,25 @@ async def run_many(
     if len(numbers) != len(set(numbers)):
         raise ValueError("The same ticket cannot be scheduled twice")
     semaphore = asyncio.Semaphore(limit)
-    repo_locks: dict[Path, asyncio.Lock] = {}
 
-    async def run(ticket: Ticket) -> RunOutcome | Exception | None:
+    async def execute(ticket: Ticket) -> RunOutcome | Exception | None:
         if ticket.blocked_by:
             return None
         async with semaphore:
             try:
-                engine = engine_factory()
-                engine.deps.repo_lock = repo_locks.setdefault(
-                    engine.deps.repo_root.resolve(), asyncio.Lock()
-                )
+                engine = engine_factory(ticket)
                 with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket.number):
+                    if until_green:
+                        return await engine.run_to_green(ticket.number)
                     return await engine.run_to_pr(ticket.number)
             except Exception as error:
                 return error
+
+    async def run(ticket: Ticket) -> RunOutcome | Exception | None:
+        result = await execute(ticket)
+        if on_complete is not None:
+            on_complete(ticket, result)
+        return result
 
     tasks = [asyncio.create_task(run(ticket)) for ticket in tickets]
     try:

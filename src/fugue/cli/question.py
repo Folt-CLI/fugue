@@ -1,6 +1,8 @@
 """Interactive Question walkthrough with injectable terminal functions."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from rich.console import Console, RenderableType
@@ -15,12 +17,23 @@ from fugue.agents import (
     ProviderAdapter,
     register_claude,
     register_codex,
+    resolve_models,
 )
-from fugue.cli import wiring
+from fugue.cli import terminal, wiring
+from fugue.cli.chat import ChatSession, default_reader
 from fugue.config import FugueConfig
-from fugue.models import IssueType, Role
+from fugue.models import IssueType, Role, Size, Status, Ticket
 from fugue.questions.decision import QuestionClient, QuestionGitHubClient, record_decision
 from fugue.questions.parse import Option, parse_analysis
+
+
+def analysis_pending(ticket: Ticket, body: str) -> bool:
+    """Whether a Question can begin or continue its interview."""
+    return (
+        ticket.issue_type == IssueType.QUESTION
+        and ticket.status in {Status.TO_DO, Status.IN_ANALYSIS}
+        and not parse_analysis(body).options
+    )
 
 
 class QuestionWalkthrough:
@@ -31,7 +44,7 @@ class QuestionWalkthrough:
         *,
         adapter: ProviderAdapter | None = None,
         config: FugueConfig | None = None,
-        prompt: Callable[[str], str] = input,
+        prompt: Callable[[str], str] = default_reader,
         print_fn: Callable[[RenderableType], None] | None = None,
     ) -> None:
         self.client = client
@@ -39,7 +52,10 @@ class QuestionWalkthrough:
         self.adapter = adapter
         self.config = config or FugueConfig()
         self.prompt = prompt
-        self.print = print_fn or Console().print
+        self._console = None if print_fn else terminal.console_for()
+        self.print: Callable[[RenderableType], None] = print_fn or (
+            self._console.print if self._console else Console().print
+        )
 
     def _show_option(self, option: Option) -> None:
         self.print(
@@ -61,13 +77,13 @@ class QuestionWalkthrough:
         by: str | None = None,
     ) -> None:
         ticket = await self.client.get_ticket(number)
-        if ticket.issue_type != IssueType.QUESTION:
-            raise ValueError(f"Ticket #{number} is not a Question")
         body = await self.client.get_body(number)
         analysis = parse_analysis(body)
+        is_question = ticket.issue_type == IssueType.QUESTION
+        label = "Question" if is_question else "Ticket"
         if not analysis.options:
-            raise ValueError(f"Question #{number} has no Analysis options")
-        self.print(Markdown(f"# Question #{number}: {ticket.title}\n\n{analysis.overview}"))
+            raise ValueError(f"{label} #{number} has no Analysis options")
+        self.print(Markdown(f"# {label} #{number}: {ticket.title}\n\n{analysis.overview}"))
         for option in analysis.options:
             self.print(f"{option.number}: {option.name}")
         self.print(Markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}"))
@@ -112,19 +128,37 @@ class QuestionWalkthrough:
                     self.print("Enter a non-empty follow-up question.")
                     continue
                 role_config = self.config.roles.get(Role.ANALYST)
-                result = await self.adapter.run(
-                    AgentRequest(
+                # Every Question is Size L; there is no run, so the choice is not persisted.
+                choice = resolve_models(self.config, Role.ANALYST, Size.L)
+                console = self._console
+                model = choice.models.get(role_config.provider) if role_config else None
+
+                def make_request(
+                    text: str,
+                    model: str | None = model,
+                    models: Mapping[str, str | None] = choice.models,
+                ) -> AgentRequest:
+                    return AgentRequest(
                         role=Role.ANALYST,
                         prompt=f"Question #{number} Analysis:\n{analysis.text}\n\n"
-                        f"Follow-up question:\n{question}\n\n"
+                        f"Follow-up question:\n{text}\n\n"
                         "Answer read-only; do not modify files.",
                         cwd=self.repo_root,
                         access=AccessMode.READ_ONLY,
-                        model=role_config.model if role_config else None,
+                        model=model,
+                        models=models,
                         timeout_seconds=self.config.limits.agent_timeout_seconds,
                     )
+
+                session = ChatSession(
+                    self.adapter,
+                    make_request,
+                    emit=self.print,
+                    write=partial(console.out, end="") if console else None,
+                    console=console,
+                    live=console is not None and terminal.is_interactive(console),
                 )
-                self.print(result.final_text if result.ok else f"Follow-up failed: {result.error}")
+                await session.ask(question)
             elif command.isascii() and command.isdecimal():
                 try:
                     self._show_option(analysis.option(int(command)))
@@ -159,6 +193,14 @@ def build_question(config: FugueConfig, repo_root: Path) -> QuestionWalkthrough:
             resolve_token_env=github.resolve_token_env,
         ),
         repo_root,
-        adapter=registry.build(role_config) if role_config else None,
+        adapter=(
+            registry.build_for_role(
+                role_config,
+                clock=lambda: datetime.now(UTC),
+                cooldown_seconds=config.limits.provider_cooldown_seconds,
+            )
+            if role_config
+            else None
+        ),
         config=config,
     )

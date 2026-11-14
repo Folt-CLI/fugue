@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -163,8 +163,10 @@ class GitHubClient:
         max_output_bytes: int = 16 * 1024 * 1024,
         project_field_limit: int = 200,
         resolve_token_env: str | None = None,
+        review_token: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self.resolve_token_env = resolve_token_env
+        self.review_token = review_token
         if max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be positive")
         self.max_output_bytes = max_output_bytes
@@ -586,23 +588,34 @@ class GitHubClient:
     ) -> PostedReview:
         if event not in REVIEW_EVENTS:
             raise ValueError(f"Unsupported review event: {event!r}")
-        output = await self._run(
-            "api",
-            f"repos/{self.repo}/pulls/{pr.number}/reviews",
-            "--input",
-            "-",
-            stdin=json.dumps(
-                {
-                    "commit_id": head_sha,
-                    "event": event,
-                    "body": body,
-                    "comments": [
-                        {key: value for key, value in asdict(comment).items() if value is not None}
-                        for comment in comments
-                    ],
-                }
-            ),
-        )
+        extra_env = {"GH_TOKEN": await self.review_token()} if self.review_token else None
+        try:
+            output = await self._run(
+                "api",
+                f"repos/{self.repo}/pulls/{pr.number}/reviews",
+                "--input",
+                "-",
+                extra_env=extra_env,
+                stdin=json.dumps(
+                    {
+                        "commit_id": head_sha,
+                        "event": event,
+                        "body": body,
+                        "comments": [
+                            {
+                                key: value
+                                for key, value in asdict(comment).items()
+                                if value is not None
+                            }
+                            for comment in comments
+                        ],
+                    }
+                ),
+            )
+        except GitHubError as error:
+            if extra_env is not None:
+                raise GitHubError(error.argv, "Reviewer app review submission failed") from None
+            raise
         return _posted_review(json.loads(output))
 
     async def reviews(self, pr: PullRequest) -> list[PostedReview]:

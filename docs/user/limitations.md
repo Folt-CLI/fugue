@@ -15,9 +15,14 @@ GitHub Projects or repository process metadata. See
   usage differ; a session can be resumed only where the provider supports it.
 - Both bundled provider adapters require `subscription_login`, using your own
   sign-in to the unmodified provider CLI. The schema accepts `api_key` when
-  explicitly set in TOML, but both adapters reject it when invoked. There is no
-  automatic fallback to metered authentication. Provider restrictions, quota
-  limits, missing credentials and billing requirements need intervention.
+  explicitly set in TOML, but both adapters reject it when invoked. Provider
+  fallback (`[[roles.<role>.fallback]]`) moves a whole call to the next listed
+  provider when one is rate limited, not signed in or unreachable, but never to
+  metered authentication and never carries a session between providers. Only
+  structured signals count: Claude reports signed-out and outage through numeric
+  API statuses; Codex has no signed-out signal, so only its rate limits and spawn
+  failures switch. When every provider is unavailable the run ends
+  provider-limited and `fugue resume` continues it.
 - Workflow commands require a GitHub repository and Project configuration,
   ticket metadata and suitable permissions. A non-GitHub origin cannot be used
   to infer the repository; set `github.repo` explicitly when needed.
@@ -27,19 +32,52 @@ GitHub Projects or repository process metadata. See
   A waiting state is not consent. Any new head commit invalidates approval.
 - In single-account GitHub use, reviews use COMMENT because the author cannot
   approve their own pull request. A clean required review and Fugue approval
-  still have distinct purposes.
-- Stacks (stacked pull requests) are deferred from 0.1.0. Work in
-  [issue #49](https://github.com/Folt-CLI/fugue/issues/49) moved to the
-  [0.2.0 Epic #76](https://github.com/Folt-CLI/fugue/issues/76).
-- A reviewer identity setup command is deferred to
-  [issue #77](https://github.com/Folt-CLI/fugue/issues/77).
-- Branch protection enforcing approvals is deferred to
-  [issue #78](https://github.com/Folt-CLI/fugue/issues/78).
+  still have distinct purposes. See [reviewer identity setup](reviewer-identity.md)
+  for the separate identity setting.
+- Stacks require native `gh stack`, gh >= 2.90.0, Git >= 2.36, the
+  `github/gh-stack` extension and repository enablement. An unavailable stack
+  probe stops dependent runs before worktree or PR creation and reports
+  `gh_too_old`, `git_too_old`, `extension_missing` or `feature_disabled`.
+  Fugue does not emulate stacks with chained plain PR bases. A dependent run
+  requires a sole open blocker with an open PR. Divergence stops submission;
+  stack merging still requires a developer instruction for that stack and head.
+- Posting reviews as a reviewer app requires registration, installation for the
+  repository, a saved local private key, OpenSSL and
+  `github.reviewer_identity_separate = true`; see
+  [reviewer identity setup](reviewer-identity.md). Replies and thread resolution
+  retain their existing credentials.
+- `fugue protection` reads the recommended branch protection rules: at least one
+  approving review, dismissal of stale reviews and conversation resolution. It
+  does not apply or change protection. Required approving reviews need the
+  configured reviewer app or another reviewer identity; single-account COMMENT
+  reviews do not satisfy them. See [branch protection](reviewer-identity.md#branch-protection)
+  for setup, read permissions and the single-account fallback.
 - Follow-up hardening work remains deferred and is collected in
   [issue #53](https://github.com/Folt-CLI/fugue/issues/53).
 - The run store and artifacts are local. Keep their directory to inspect or
   resume a run. Output is bounded by `max_output_bytes`; usage and cost data
   are limited to what providers report, and cost estimates are not a bill.
+
+## Parallel runs
+
+- Runs of one ticket are exclusive: a second `fugue run` of the same ticket in
+  the same repository exits with code 3 and names the process holding the
+  ticket lock. After a killed process the next run recovers the lock and
+  resumes the unfinished run. If the lock file is held but its recorded process
+  is not running, stop any remaining processes holding the file; never delete it.
+- `fugue run` accepts several ticket numbers, runs at most
+  `limits.max_concurrent_runs` at once, labels progress lines `[#N]` and prints
+  a summary. A ticket with an open blocker is skipped. Skipped and
+  lock-conflicted tickets exit with code 3.
+- Shared Git steps in the primary checkout are serialised across processes by a
+  repository lock; agent work is not.
+- Concurrent runs in one process share the provider cool-down, so one run's
+  limit makes the next call in another run start with the next provider. The
+  cool-down is not shared across processes or kept across restarts, and there is
+  no throttle or backoff. A run whose providers are all unavailable ends
+  provider-limited (exit code 5) while others go on.
+- `resume`, `review`, `decide`, `approve` and `merge` do not take the ticket
+  lock.
 
 ## Exit codes
 
@@ -53,6 +91,16 @@ The CLI maps run outcomes to these codes:
 | `4` | Run failed or an execution error occurred |
 | `5` | Run provider-limited |
 | `6` | Run interrupted |
+
+For several tickets the highest-precedence code applies: interrupted (6), then
+failed or error (4), provider-limited (5), then blocked, skipped or
+lock-conflicted (3), otherwise 0.
+
+For `protection`, 0 means every checked rule is satisfied, 3 means a missing rule
+or an explicitly unprotected branch, and 4 means protection could not be read or
+another execution error occurred. Read errors take precedence over missing
+rules. A permission refusal or ambiguous 404 is a read error, not evidence of an
+unprotected branch.
 
 An exit code of zero alone does not mean the ticket was merged or even that the
 run completed. Check the printed state and `status`. CLI argument parsing can

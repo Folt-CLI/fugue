@@ -1,16 +1,26 @@
 """Resolve defaults and build the engine from configuration."""
 
+import json
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from fugue.agents import AdapterRegistry, register_claude, register_codex
 from fugue.artifacts import ArtifactStore
-from fugue.cli.render import ApprovalLine, AttemptLine, OperationLine, RunDetail
+from fugue.cli.render import (
+    ApprovalLine,
+    AttemptLine,
+    ModelLine,
+    OperationLine,
+    RunDetail,
+    describe_models,
+)
 from fugue.config import FugueConfig
 from fugue.engine import Engine, EngineDeps
 from fugue.github import GitHubClient
+from fugue.reviewer_app.store import config_dir
+from fugue.reviewer_app.token import ReviewerTokenProvider
 from fugue.store import Store
 
 _REMOTE = re.compile(
@@ -76,6 +86,15 @@ def discover_config(config_path: Path | None, repo_root: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def reviewer_token(
+    config: FugueConfig, repo: str, env: Mapping[str, str], home: Path
+) -> Callable[[], Awaitable[str]] | None:
+    """Use the saved reviewer app only when a separate reviewer identity is enabled."""
+    if not config.github.reviewer_identity_separate:
+        return None
+    return ReviewerTokenProvider(repo, config_dir(env, home)).token
+
+
 def build_engine(
     config: FugueConfig,
     repo_root: Path,
@@ -97,13 +116,16 @@ def build_engine(
     return Engine(
         EngineDeps(
             config=config,
-            store=Store(state_dir / "fugue.db"),
+            store=Store(
+                state_dir / "fugue.db", busy_timeout_seconds=config.limits.database_wait_seconds
+            ),
             artifacts=ArtifactStore(state_dir / "artifacts"),
             github=GitHubClient(
                 repo,
                 github.project_owner,
                 github.project_number,
                 resolve_token_env=github.resolve_token_env,
+                review_token=reviewer_token(config, repo, env, home),
             ),
             registry=registry,
             repo_root=repo_root,
@@ -114,10 +136,10 @@ def build_engine(
     )
 
 
-def open_store(state_dir: Path) -> Store:
+def open_store(state_dir: Path, wait_seconds: float = 30.0) -> Store:
     """Open the run store for reading; a missing store reads as empty and is not created."""
     path = state_dir / "fugue.db"
-    return Store(path) if path.is_file() else Store(":memory:")
+    return Store(path, busy_timeout_seconds=wait_seconds) if path.is_file() else Store(":memory:")
 
 
 def load_run_detail(store: Store, run_id: int) -> RunDetail:
@@ -153,4 +175,24 @@ def load_run_detail(store: Store, run_id: int) -> RunDetail:
             )
         ),
         usage=store.usage_summary(run_id),
+        models=tuple(
+            _model_line(row["key"], row["result_json"])
+            for row in connection.execute(
+                "SELECT key, result_json FROM operations "
+                "WHERE run_id = ? AND kind = 'model_choice' AND result_json IS NOT NULL "
+                "ORDER BY id",
+                (run_id,),
+            )
+        ),
+    )
+
+
+def _model_line(role: str, result_json: str) -> ModelLine:
+    data = json.loads(result_json)
+    return ModelLine(
+        role=role,
+        size=str(data["size"]),
+        tier="-" if data["tier"] is None else str(data["tier"]),
+        source=str(data["source"]),
+        models=describe_models(data["models"]),
     )

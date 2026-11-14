@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -24,6 +25,21 @@ from fugue.store.records import (
     UsageTotals,
 )
 
+
+@dataclass(frozen=True)
+class RepoUsageTotals(UsageTotals):
+    """Usage totals that also name the repository when the group is tied to one."""
+
+    repo: str | None
+
+
+@dataclass(frozen=True)
+class RepoStageDuration(StageDuration):
+    """A stage attempt duration that names the repository of its run."""
+
+    repo: str
+
+
 _USAGE_GROUPS = {
     "role": "u.role",
     "provider": "u.provider",
@@ -41,8 +57,8 @@ _USAGE_FIELDS = (
 )
 
 
-def _record[T](record_type: type[T], row: sqlite3.Row) -> T:
-    values = dict(row)
+def _record[T](record_type: type[T], row: sqlite3.Row, exclude: frozenset[str] = frozenset()) -> T:
+    values = {key: value for key, value in dict(row).items() if key not in exclude}
     for key, value in values.items():
         if key.endswith("_at") and value is not None:
             values[key] = datetime.fromisoformat(value)
@@ -56,9 +72,10 @@ class Store:
         self,
         path: Path | Literal[":memory:"],
         clock: Callable[[], datetime] | None = None,
+        busy_timeout_seconds: float = 30.0,
     ) -> None:
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._connection = sqlite3.connect(str(path))
+        self._connection = sqlite3.connect(str(path), timeout=busy_timeout_seconds)
         self._connection.row_factory = sqlite3.Row
         try:
             self._connection.execute("PRAGMA foreign_keys = ON")
@@ -132,15 +149,21 @@ class Store:
     def set_run_state(self, id: int, state: str) -> None:
         self._update("runs", id, dict(state=state, updated_at=self._now()))
 
-    def list_runs(self, ticket_number: int | None = None) -> list[Run]:
+    def list_runs(self, ticket_number: int | None = None, repo: str | None = None) -> list[Run]:
         query = "SELECT * FROM runs"
-        parameters: tuple[object, ...] = ()
+        clauses: list[str] = []
+        parameters: list[object] = []
         if ticket_number is not None:
-            query += " WHERE ticket_number = ?"
-            parameters = (ticket_number,)
+            clauses.append("ticket_number = ?")
+            parameters.append(ticket_number)
+        if repo is not None:
+            clauses.append("repo = ?")
+            parameters.append(repo)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         return [
             _record(Run, row)
-            for row in self._connection.execute(query + " ORDER BY id", parameters)
+            for row in self._connection.execute(query + " ORDER BY id", tuple(parameters))
         ]
 
     def begin_attempt(self, run_id: int, stage: str) -> StageAttempt:
@@ -168,6 +191,39 @@ class Store:
         self._update(
             "stage_attempts", id, dict(status=status, detail=detail, finished_at=self._now())
         )
+
+    def stage_attempts(self, run_id: int, stage: str | None = None) -> list[StageAttempt]:
+        query = "SELECT * FROM stage_attempts WHERE run_id = ?"
+        parameters: list[object] = [run_id]
+        if stage is not None:
+            query += " AND stage = ?"
+            parameters.append(stage)
+        return [
+            _record(StageAttempt, row)
+            for row in self._connection.execute(query + " ORDER BY id", tuple(parameters))
+        ]
+
+    def agent_sessions(
+        self,
+        run_id: int,
+        role: str | None = None,
+        provider: str | None = None,
+        authentication_mode: str | None = None,
+    ) -> list[AgentSession]:
+        query = "SELECT * FROM agent_sessions WHERE run_id = ?"
+        parameters: list[object] = [run_id]
+        for column, value in (
+            ("role", role),
+            ("provider", provider),
+            ("authentication_mode", authentication_mode),
+        ):
+            if value is not None:
+                query += f" AND {column} = ?"
+                parameters.append(value)
+        return [
+            _record(AgentSession, row)
+            for row in self._connection.execute(query + " ORDER BY id", tuple(parameters))
+        ]
 
     def begin_operation(
         self, run_id: int, kind: str, key: str, intent: Mapping[str, Any]
@@ -252,6 +308,18 @@ class Store:
         ).fetchone()
         return _record(Approval, row) if row is not None else None
 
+    def merge_approvals(self, repo: str) -> list[Approval]:
+        """Valid merge approvals of runs in one repository; reads only."""
+        return [
+            _record(Approval, row)
+            for row in self._connection.execute(
+                "SELECT a.* FROM approvals a JOIN runs r ON r.id = a.run_id "
+                "WHERE r.repo = ? AND a.kind = 'merge' AND a.decision = 'approved' "
+                "AND a.invalidated_at IS NULL ORDER BY a.id",
+                (repo,),
+            )
+        ]
+
     def invalidate_approvals(self, run_id: int, subject: str, except_head_sha: str) -> None:
         with self._connection:
             self._connection.execute(
@@ -288,6 +356,8 @@ class Store:
         reasoning_tokens: int | None = None,
         cost_estimate_usd: float | None = None,
         duration_ms: int | None = None,
+        model: str | None = None,
+        tier: str | None = None,
     ) -> UsageRecord:
         return self._insert(
             UsageRecord,
@@ -304,6 +374,8 @@ class Store:
                 cost_estimate_usd=cost_estimate_usd,
                 duration_ms=duration_ms,
                 created_at=self._now(),
+                model=model,
+                tier=tier,
             ),
         )
 
@@ -319,23 +391,36 @@ class Store:
         self,
         group_by: Literal["role", "provider", "run", "ticket"],
         ticket_number: int | None = None,
-    ) -> list[UsageTotals]:
+        repo: str | None = None,
+    ) -> list[RepoUsageTotals]:
         """Sum usage records per group; a sum stays NULL when nothing was reported."""
         expression = _USAGE_GROUPS.get(group_by)
         if expression is None:
             raise StoreError(f"Cannot group usage by {group_by!r}")
         sums = ", ".join(f"SUM(u.{field}) AS {field}" for field in _USAGE_FIELDS)
+        # Ticket and run groups belong to one repository; ticket numbers repeat across them.
+        with_repo = group_by in {"ticket", "run"}
+        repo_select = "r.repo" if with_repo else "NULL"
+        grouping = f"r.repo, {expression}" if with_repo else expression
         query = (
-            f"SELECT {expression} AS group_key, COUNT(*) AS records, {sums} "
+            f"SELECT {expression} AS group_key, {repo_select} AS group_repo, "
+            f"COUNT(*) AS records, {sums} "
             "FROM usage_records u JOIN runs r ON r.id = u.run_id"
         )
-        parameters: tuple[object, ...] = ()
+        clauses: list[str] = []
+        parameters: list[object] = []
         if ticket_number is not None:
-            query += " WHERE r.ticket_number = ?"
-            parameters = (ticket_number,)
-        query += f" GROUP BY {expression} ORDER BY {expression}"
+            clauses.append("r.ticket_number = ?")
+            parameters.append(ticket_number)
+        if repo is not None:
+            clauses.append("r.repo = ?")
+            parameters.append(repo)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += f" GROUP BY {grouping} ORDER BY {grouping}"
         return [
-            UsageTotals(
+            RepoUsageTotals(
+                repo=row["group_repo"],
                 key=str(row["group_key"]),
                 records=row["records"],
                 input_tokens=row["input_tokens"],
@@ -345,31 +430,42 @@ class Store:
                 cost_estimate_usd=row["cost_estimate_usd"],
                 duration_ms=row["duration_ms"],
             )
-            for row in self._connection.execute(query, parameters)
+            for row in self._connection.execute(query, tuple(parameters))
         ]
 
-    def stage_durations(self, run_id: int | None = None) -> list[StageDuration]:
-        """Elapsed time per stage attempt, optionally for one run."""
-        query = "SELECT * FROM stage_attempts"
-        parameters: tuple[object, ...] = ()
+    def stage_durations(
+        self, run_id: int | None = None, repo: str | None = None
+    ) -> list[RepoStageDuration]:
+        """Elapsed time per stage attempt, optionally for one run or repository."""
+        query = (
+            "SELECT s.*, r.repo AS run_repo FROM stage_attempts s JOIN runs r ON r.id = s.run_id"
+        )
+        clauses: list[str] = []
+        parameters: list[object] = []
         if run_id is not None:
-            query += " WHERE run_id = ?"
-            parameters = (run_id,)
-        durations: list[StageDuration] = []
-        for row in self._connection.execute(query + " ORDER BY run_id, id", parameters):
-            attempt = _record(StageAttempt, row)
+            clauses.append("s.run_id = ?")
+            parameters.append(run_id)
+        if repo is not None:
+            clauses.append("r.repo = ?")
+            parameters.append(repo)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        durations: list[RepoStageDuration] = []
+        for row in self._connection.execute(query + " ORDER BY s.run_id, s.id", tuple(parameters)):
+            attempt = _record(StageAttempt, row, exclude=frozenset({"run_repo"}))
             seconds = (
                 None
                 if attempt.finished_at is None
                 else (attempt.finished_at - attempt.started_at).total_seconds()
             )
             durations.append(
-                StageDuration(
+                RepoStageDuration(
                     run_id=attempt.run_id,
                     stage=attempt.stage,
                     attempt=attempt.attempt,
                     status=attempt.status,
                     duration_seconds=seconds,
+                    repo=row["run_repo"],
                 )
             )
         return durations

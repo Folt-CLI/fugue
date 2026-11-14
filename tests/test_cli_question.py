@@ -122,12 +122,23 @@ def test_follow_up_sends_analysis_and_question_read_only() -> None:
     assert client.calls == []
 
 
-def test_non_question_refused() -> None:
+def test_non_question_selects_analysed_option() -> None:
     client = FakeClient()
     client.ticket.issue_type = IssueType.FEATURE
-    session, _ = walkthrough(client, ["s 1"])
-    with pytest.raises(ValueError, match="not a Question"):
-        asyncio.run(session.run(2))
+    session, output = walkthrough(client, [])
+    asyncio.run(session.run(2, 1))
+    assert "Ticket #2: Select the process" in output.getvalue()
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
+    assert "[Selected Solution] [2-solution-1.md]" in client.body
+    assert client.calls[2] == ("status", 2, Status.READY_FOR_IMPLEMENTATION)
+
+
+def test_non_question_without_options_refused() -> None:
+    client = FakeClient("## Analysis\nPending")
+    client.ticket.issue_type = IssueType.FEATURE
+    session, _ = walkthrough(client, [])
+    with pytest.raises(ValueError, match="Ticket #2 has no Analysis options"):
+        asyncio.run(session.run(2, 1))
     assert client.calls == []
 
 
@@ -175,14 +186,16 @@ def test_cli_registration_and_selection(
     assert f"[Selected Solution] [2-solution-{expected}.md]" in client.body
 
 
-def test_cli_refuses_non_question(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    client = FakeClient()
+def test_cli_refuses_non_question_without_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = FakeClient("## Analysis\nPending")
     client.ticket.issue_type = IssueType.TASK
     session, _ = walkthrough(client, [])
     monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
     result = runner.invoke(cli_app.app, ["question", "2", "--repo-root", str(tmp_path)])
     assert result.exit_code == 2
-    assert "not a Question" in result.output
+    assert "has no Analysis options" in result.output
     assert client.calls == []
 
 
@@ -298,3 +311,118 @@ def test_cli_selection_keeps_engine_scope_in_sync(
         assert solution.count("[Selected Solution] [") == 1
         assert f"[Selected Solution] [2-solution-{selection}.md]({url})" in solution
         assert "[[Selected Solution]" not in solution
+
+
+@pytest.mark.parametrize("kind", ["select", "non_question", "analysed"])
+def test_cli_rejects_invalid_automatic_without_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    client = FakeClient()
+    if kind == "non_question":
+        client.ticket.issue_type = IssueType.FEATURE
+    session, _ = walkthrough(client, [])
+    monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
+
+    def forbidden(*args: object) -> None:
+        raise AssertionError("Engine must not be built")
+
+    monkeypatch.setattr(cli_app, "engine_factory", forbidden)
+    arguments = ["question", "2", "--repo-root", str(tmp_path), "--automatic"]
+    if kind == "select":
+        arguments += ["--select", "1"]
+    outcome = runner.invoke(cli_app.app, arguments)
+    assert outcome.exit_code == 2, outcome.output
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "ending", ["proceed", "quit", "needs_human", "limited", "failed", "locked"]
+)
+def test_cli_pending_interview_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+) -> None:
+    from contextlib import nullcontext
+
+    from test_analysis import make_deps
+    from test_interview_session import result
+
+    from fugue.analysis.render import render_body
+    from fugue.cli.app import _StoreClosingEngine
+    from fugue.engine import Engine
+    from fugue.engine.locks import TicketLock
+
+    deps, github, analysis_adapter = make_deps(tmp_path, size=Size.L)
+    github.ticket.issue_type = IssueType.QUESTION
+
+    class Bridge(FakeClient):
+        async def get_ticket(self, number: int) -> Ticket:
+            return github.ticket
+
+        async def get_body(self, number: int) -> str:
+            sections = github.ticket.body_sections
+            return render_body(
+                sections,
+                "## Analysis\n" + sections.get("Analysis", "Pending"),
+                "## Details\n" + sections.get("Details", "Pending"),
+            )
+
+        async def edit_body(self, number: int, text: str) -> None:
+            await github.edit_body(number, text)
+
+        async def set_status(self, number: int, status: Status) -> None:
+            await github.set_status(number, status)
+
+    client = Bridge()
+    if ending == "proceed":
+        steps = [ScriptStep(result=result()), *analysis_adapter._steps]
+    elif ending in {"limited", "failed"}:
+        steps = [
+            ScriptStep(
+                result=result(ok=False, provider_limited=ending == "limited", error="Unavailable")
+            )
+        ]
+    else:
+        steps = [ScriptStep(result=result())]
+    analyst = ScriptedAdapter(steps)
+    deps.registry.register("claude", lambda config: analyst)
+    if ending == "needs_human":
+        standin = ScriptedAdapter(
+            [
+                ScriptStep(
+                    result=result(
+                        structured_output={
+                            "reply": "",
+                            "proceed": False,
+                            "needs_human": True,
+                            "reason": "Need consent",
+                        }
+                    )
+                )
+            ]
+        )
+        deps.registry.register("codex", lambda config: standin)
+    commands = ["/proceed", "s 1"] if ending == "proceed" else ["/quit"]
+    session, _ = walkthrough(client, commands)
+    monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
+    monkeypatch.setattr(cli_app, "engine_factory", lambda *args: _StoreClosingEngine(Engine(deps)))
+    arguments = ["question", "43", "--repo-root", str(tmp_path)]
+    if ending == "needs_human":
+        arguments.append("--automatic")
+    context = TicketLock(tmp_path, github.repo, 43) if ending == "locked" else nullcontext()
+    with context:
+        outcome = runner.invoke(cli_app.app, arguments)
+    expected = {"proceed": 0, "quit": 6, "needs_human": 3, "limited": 5, "failed": 4, "locked": 3}
+    assert outcome.exit_code == expected[ending], outcome.output
+    if ending == "proceed":
+        assert github.ticket.status == Status.READY_FOR_IMPLEMENTATION
+        assert "[Selected Solution]" in github.ticket.body_sections["Solution"]
+    else:
+        assert github.uploads == []
+        assert github.ticket.status == Status.TO_DO
+    if ending == "locked":
+        assert "already being run" in outcome.output
+        assert analyst.requests == []

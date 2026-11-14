@@ -24,6 +24,7 @@ from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
 from fugue.engine.review import (
     CLEAN,
+    MAX_PROMPT_DIFF,
     Decision,
     DiffLines,
     Finding,
@@ -84,6 +85,28 @@ def test_exact_no_findings_is_clean() -> None:
     assert parse_findings("## Blocking\n- None\n\n## Non-blocking\n- None.\n") is CLEAN
 
 
+def test_no_findings_followed_by_prose_is_clean() -> None:
+    assert parse_findings("No findings.\n\nI could only review the diff, not run it.\n") is CLEAN
+    assert parse_findings("\n  No findings.  \nSecond line.\nThird line.") is CLEAN
+
+
+def test_no_findings_followed_by_blocking_section_yields_those_findings() -> None:
+    [finding] = parsed(f"No findings.\n\n{BLOCKING}")
+    assert (finding.index, finding.severity, finding.blocking) == (1, "High", True)
+    assert finding.path == "allowed.txt"
+    assert "Crash on empty input" in finding.summary
+
+
+def test_no_findings_followed_by_numbered_item_is_not_clean() -> None:
+    [finding] = parsed("No findings.\n1. High: Crash. `allowed.txt:1`\n")
+    assert finding.severity == "High"
+
+
+def test_sentence_containing_no_findings_is_not_clean() -> None:
+    [finding] = parsed("Overall there were No findings.\nLooks fine.")
+    assert (finding.severity, finding.blocking) == ("Medium", True)
+
+
 @pytest.mark.parametrize("heading", ["Blocking", "Non-blocking"])
 def test_unbulleted_section_text_is_one_medium_finding(heading: str) -> None:
     text = "High: Empty input crashes. src/a.py:10"
@@ -136,6 +159,20 @@ def test_parse_locations_ranges_suggestions_and_limits() -> None:
     rest = findings[3:]
     assert len(rest) == 5 and not any(f.blocking for f in rest)
     assert all(f.severity == "Low" for f in rest)
+
+
+def test_summary_keeps_inline_code_spans_intact() -> None:
+    text = "- Medium: `status <run_id> --repo OWNER/NAME` and `--ticket N` differ\n"
+    [finding] = parsed(text)
+    assert finding.summary == "`status <run_id> --repo OWNER/NAME` and `--ticket N` differ"
+    [ending] = parsed("- Low: Rename the flag to `--ticket N`\n")
+    assert ending.summary == "Rename the flag to `--ticket N`"
+
+
+def test_backticked_location_is_removed_from_summary() -> None:
+    [finding] = parsed("- High: Crash in `run()` on empty input (`src/a.py:10`)\n")
+    assert (finding.path, finding.start_line) == ("src/a.py", 10)
+    assert finding.summary == "Crash in `run()` on empty input"
 
 
 def test_parse_reversed_range_is_ordered() -> None:
@@ -365,16 +402,31 @@ def test_review_prompt_carries_contract_scope_ci_and_rounds_log() -> None:
         RoundEntry(2, finding(index=1, path=None), "deferred", "Deferred to #9"),
     ]
     prompt = review_prompt(
-        scope="SCOPE TEXT", ci_result="CI is green.", rounds=rounds, base_ref="refs/heads/develop"
+        scope="SCOPE TEXT", ci_result="CI is green.", rounds=rounds, diff="+added line\n"
     )
     assert "At most three per round" in prompt and "At most\n  five" in prompt
     assert "`No findings.`" in prompt
     assert "SCOPE TEXT" in prompt and "CI is green." in prompt
     assert "Round 1, finding 1 (rejected)" in prompt and "Reason: Handled by the caller" in prompt
     assert "(accepted)" in prompt and "(deferred)" in prompt
-    assert "refs/heads/develop" in prompt
-    empty = review_prompt(scope="s", ci_result="c", rounds=[], base_ref="b")
-    assert "No earlier rounds." in empty
+    assert "```diff\n+added line\n```" in prompt
+    assert "git diff" not in prompt
+    empty = review_prompt(scope="s", ci_result="c", rounds=[], diff="")
+    assert "No earlier rounds." in empty and "The diff is empty." in empty
+
+
+def test_review_prompt_truncates_an_oversized_diff_with_a_note() -> None:
+    big = "+" + "x" * MAX_PROMPT_DIFF + "TAIL\n"
+    prompt = review_prompt(scope="s", ci_result="c", rounds=[], diff=big)
+    assert "TAIL" not in prompt
+    assert f"truncated to its first {MAX_PROMPT_DIFF} characters" in prompt
+    exact = review_prompt(scope="s", ci_result="c", rounds=[], diff="y" * MAX_PROMPT_DIFF)
+    assert "truncated" not in exact
+
+
+def test_review_prompt_fence_outgrows_backticks_in_the_diff() -> None:
+    prompt = review_prompt(scope="s", ci_result="c", rounds=[], diff="+```py\n+x\n+```\n")
+    assert "````diff\n" in prompt
 
 
 # ---------------------------------------------------------------- engine
@@ -877,3 +929,30 @@ def test_reviewer_failure_stops_without_posting(harness: Harness) -> None:
     assert outcome.state == RunState.FAILED
     assert outcome.problems == ("reviewer failed",)
     assert harness.github.posted == []
+
+
+# Scenario 6
+def test_diverged_remote_blocks_the_accepted_repair_push_until_fixed(harness: Harness) -> None:
+    harness.script(write(LINES), review(BLOCKING), write(FIXED), review("No findings."))
+    run_id = harness.start()
+    harness.review(run_id)
+    first_head = harness.head()
+    branch = branch_name(harness.github.ticket)
+    clone = harness.deps.repo_root
+
+    async def diverge() -> None:
+        base = await git_command(clone, "rev-parse", "refs/heads/develop")
+        sha = await git_command(clone, "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "Other")
+        await git_command(clone, "push", "--force", "origin", f"{sha}:refs/heads/{branch}")
+
+    asyncio.run(diverge())
+    outcome = harness.decide(run_id, {1: Decision(True)})
+    assert outcome.state == RunState.BLOCKED
+    assert outcome.problems == (
+        "The remote branch has diverged from the local branch; resolve it before pushing",
+    )
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) != harness.head()
+    asyncio.run(git_command(harness.origin, "update-ref", "refs/heads/" + branch, first_head))
+    resumed = harness.decide(run_id, {1: Decision(True)})
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
+    assert asyncio.run(Git(harness.origin).head_sha(branch)) == harness.head()

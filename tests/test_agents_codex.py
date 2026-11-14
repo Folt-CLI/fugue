@@ -16,6 +16,7 @@ from fugue.agents import (
     AgentRequest,
     Capability,
     CodexAdapter,
+    Unavailable,
     register_codex,
 )
 from fugue.config import RoleConfig
@@ -367,31 +368,51 @@ def test_live_codex(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+OBSERVED_LIMIT_MESSAGE = (
+    "You\u2019ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+    "visit https://chatgpt.com/settings/usage to purchase more credits or try again at 7:00 PM."
+)
+
+
 @pytest.mark.parametrize(
     ("message", "expected"),
     [
-        ("Rate limit exceeded", True),
-        ("You've hit your usage limit", True),
-        ("USAGE_LIMIT reached", True),
-        ("rate-limited", True),
-        ("ratelimit reached", True),
-        ("Request rejected (429)", True),
+        (OBSERVED_LIMIT_MESSAGE, True),
+        ("You've HIT YOUR USAGE LIMIT", True),
+        ("Rate limit exceeded", False),
+        ("Please check your usage limit settings", False),
+        ("USAGE_LIMIT reached", False),
+        ("rate-limited", False),
+        ("ratelimit reached", False),
+        ("Request rejected (429)", False),
         ("Provider unavailable", False),
         ("Rate limiter configuration missing", False),
     ],
 )
+@pytest.mark.parametrize("event_type", ["error", "turn.failed"])
+@pytest.mark.parametrize("later_error", [False, True])
 def test_explicit_provider_limit_flag(
-    request_data: AgentRequest, message: str, expected: bool
+    request_data: AgentRequest,
+    message: str,
+    expected: bool,
+    event_type: str,
+    later_error: bool,
 ) -> None:
+    raw_error = (
+        {"type": "error", "message": message}
+        if event_type == "error"
+        else {"type": "turn.failed", "error": {"message": message}}
+    )
     stream = [
         {"type": "thread.started", "thread_id": "limited-session"},
-        {"type": "error", "message": message},
-        {"type": "turn.failed", "error": {"message": "turn failed"}},
+        raw_error,
     ]
+    if later_error:
+        stream.append({"type": "turn.failed", "error": {"message": "turn failed"}})
     script = (
         "import sys; sys.stdin.read(); print("
         + repr("\n".join(json.dumps(event) for event in stream))
-        + ")"
+        + "); sys.exit(1)"
     )
     adapter = CodexAdapter(
         executable=(sys.executable, "-c", script),
@@ -400,5 +421,70 @@ def test_explicit_provider_limit_flag(
     result = asyncio.run(adapter.run(request_data))
     assert not result.ok
     assert result.provider_limited is expected
+    assert (result.unavailable == Unavailable.RATE_LIMITED) is expected
     assert result.session_id == "limited-session"
-    assert result.error == "turn failed"
+    assert result.error == ("turn failed" if later_error else message)
+
+
+@pytest.mark.parametrize("event_type", ["error", "turn.failed"])
+@pytest.mark.parametrize("field", ["code", "codex_error_info"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("code", ["usage_limit_exceeded", "other_error", None, 429])
+def test_structured_provider_limit_flag(
+    request_data: AgentRequest, event_type: str, field: str, nested: bool, code: object
+) -> None:
+    raw: dict[str, Any] = {"type": event_type, "message": "provider error"}
+    if nested:
+        raw["error"] = {"message": "provider error", field: code}
+    else:
+        raw[field] = code
+    script = "import sys; sys.stdin.read(); print(" + repr(json.dumps(raw)) + "); sys.exit(1)"
+    adapter = CodexAdapter(
+        executable=(sys.executable, "-c", script), spool_dir=request_data.cwd / "logs"
+    )
+    events: list[AgentEvent] = []
+
+    async def receive(event: AgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(adapter.run(request_data, receive))
+
+    assert not result.ok
+    assert result.error == "provider error"
+    assert result.provider_limited is (code == "usage_limit_exceeded")
+    assert events == [AgentEvent("error", "provider error", data=raw)]
+
+
+@pytest.mark.parametrize("scenario", ["usage_limit", "usage_limit_code"])
+def test_fake_provider_limit(
+    adapter: CodexAdapter,
+    request_data: AgentRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", scenario)
+    events: list[AgentEvent] = []
+
+    async def receive(event: AgentEvent) -> None:
+        events.append(event)
+
+    result = asyncio.run(adapter.run(request_data, receive))
+
+    assert not result.ok
+    assert result.provider_limited
+    assert result.unavailable == Unavailable.RATE_LIMITED
+    expected = OBSERVED_LIMIT_MESSAGE if scenario == "usage_limit" else "provider error"
+    assert result.error == expected
+    assert [event.text for event in events if event.kind == "error"] == [expected, expected]
+
+
+def test_spawn_failure_is_unreachable(
+    request_data: AgentRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refuse(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("codex")
+
+    monkeypatch.setattr("fugue.agents.codex.run_command", refuse)
+    result = asyncio.run(CodexAdapter(spool_dir=tmp_path / "logs").run(request_data))
+    assert not result.ok and result.unavailable == Unavailable.UNREACHABLE
+    assert not result.provider_limited

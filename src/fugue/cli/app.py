@@ -4,23 +4,28 @@ import asyncio
 import getpass
 import json
 import os
+import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
 
 import typer
-from rich.console import Console
 
 from fugue import __version__
 from fugue.analysis.stage import AnalysisGitHubClient, analyse
-from fugue.cli import render, wiring
+from fugue.cli import render, terminal, wiring
+from fugue.cli.protection import check_protection
 from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
+from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
 from fugue.engine.review import Decision
+from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
+from fugue.github.stack import StackClient, lower_branch
 from fugue.gitops import Git
-from fugue.models import Size, Status
-from fugue.store import Run, StoreError
+from fugue.models import ModelTier, Role, Size, Status, Ticket
+from fugue.store import Run, Store, StoreError
 from fugue.store.records import Approval
 from fugue.workflow import RunState
 
@@ -33,6 +38,8 @@ _STATE_EXIT_CODES: dict[str, int] = {
 }
 
 app = typer.Typer(name="fugue", no_args_is_help=True, add_completion=False)
+reviewer_app = typer.Typer(no_args_is_help=True)
+app.add_typer(reviewer_app, name="reviewer-app", help="Set up a reviewer identity.")
 config_app = typer.Typer(no_args_is_help=True)
 app.add_typer(config_app, name="config", help="Inspect configuration.")
 
@@ -40,9 +47,17 @@ ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to fug
 RepoRootOption = Annotated[
     Path | None, typer.Option("--repo-root", help="Repository root (default: Git top level).")
 ]
+RepoFilterOption = Annotated[
+    str | None, typer.Option("--repo", help="Only runs in this repository (OWNER/NAME).")
+]
 
 
 class RunEngine(Protocol):
+    @property
+    def deps(self) -> EngineDeps: ...
+
+    async def get_ticket(self, number: int) -> Ticket: ...
+
     async def run_to_pr(self, ticket_number: int) -> RunOutcome: ...
 
     async def run_to_green(self, ticket_number: int) -> RunOutcome: ...
@@ -83,6 +98,13 @@ class _StoreClosingEngine:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
+    @property
+    def deps(self) -> EngineDeps:
+        return self._engine.deps
+
+    async def get_ticket(self, number: int) -> Ticket:
+        return await self._engine.deps.github.get_ticket(number)
+
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         outcome = await self._analyse_if_needed(ticket_number)
         return outcome if outcome is not None else await self._engine.run_to_pr(ticket_number)
@@ -118,6 +140,21 @@ class _StoreClosingEngine:
         """Continue durable progress without supplying a decision or approval."""
         store = self._engine.deps.store
         run = store.get_run(run_id)
+        if (
+            store._connection.execute(
+                "SELECT 1 FROM operations WHERE run_id = ? AND kind = 'interview' "
+                "AND status != 'done' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            is not None
+        ):
+            return RunOutcome(
+                run_id,
+                RunState.INTERRUPTED,
+                problems=(
+                    f"Interview unfinished; continue with: fugue question {run.ticket_number}",
+                ),
+            )
         if run.state == RunState.COMPLETED:
             return RunOutcome(run_id, RunState.COMPLETED)
         if (
@@ -205,6 +242,7 @@ def _real_engine_factory(
             max_output_bytes=github.max_output_bytes,
             project_field_limit=github.project_field_limit,
             resolve_token_env=github.resolve_token_env,
+            review_token=github.review_token,
         )
     return _StoreClosingEngine(engine)
 
@@ -214,11 +252,11 @@ engine_factory: EngineFactory = _real_engine_factory
 
 
 def _print(text: str) -> None:
-    Console().print(text, markup=False, highlight=False, soft_wrap=True)
+    terminal.print_text(text)
 
 
-def _fail(message: str, code: int = EXIT_USAGE) -> typer.Exit:
-    Console(stderr=True).print(f"error: {message}", markup=False, highlight=False, soft_wrap=True)
+def _fail(message: str, code: int = EXIT_USAGE, next_step: str | None = None) -> typer.Exit:
+    terminal.error(message, next_step)
     return typer.Exit(code)
 
 
@@ -257,31 +295,259 @@ def config_show(config: ConfigOption = None, repo_root: RepoRootOption = None) -
     _print(render.render_config(_load(config, _lenient_root(repo_root))))
 
 
-@app.command()
-def run(
+def _open_store(config: FugueConfig) -> Store:
+    return wiring.open_store(
+        wiring.resolve_state_dir(config, os.environ, Path.home()),
+        config.limits.database_wait_seconds,
+    )
+
+
+def _explain(error: BaseException, wait: int) -> str:
+    """Describe an error for the user, naming the database wait when it applies."""
+    if isinstance(error, sqlite3.OperationalError) and "locked" in str(error).lower():
+        return (
+            f"run database is locked by another fugue process; waited {wait} s "
+            "(limits.database_wait_seconds)"
+        )
+    return str(error)
+
+
+_BATCH_FAILED = "failed"
+_BATCH_SKIPPED = "skipped"
+_BATCH_LOCKED = "locked"
+
+
+def _batch_exit_code(states: list[str]) -> int:
+    """Highest precedence first: interrupted, failed, provider limited, then blocked-like."""
+    if RunState.INTERRUPTED in states:
+        return _STATE_EXIT_CODES[RunState.INTERRUPTED]
+    if _BATCH_FAILED in states:
+        return _STATE_EXIT_CODES[RunState.FAILED]
+    if RunState.PROVIDER_LIMITED in states:
+        return _STATE_EXIT_CODES[RunState.PROVIDER_LIMITED]
+    if any(state in {RunState.BLOCKED, _BATCH_SKIPPED, _BATCH_LOCKED} for state in states):
+        return _STATE_EXIT_CODES[RunState.BLOCKED]
+    return 0
+
+
+def _latest_run(engine: RunEngine, number: int) -> Run | None:
+    try:
+        runs = engine.deps.store.list_runs(number, engine.deps.github.repo)
+    except Exception:
+        return None
+    return runs[-1] if runs else None
+
+
+def _role_name(text: str, option: str) -> Role:
+    try:
+        return Role(text.strip())
+    except ValueError:
+        roles = ", ".join(str(role) for role in Role)
+        raise _fail(f"{option}: unknown role {text!r}; use one of {roles}") from None
+
+
+def _tier_name(text: str) -> ModelTier:
+    try:
+        return ModelTier(text.strip())
+    except ValueError:
+        tiers = ", ".join(str(item) for item in ModelTier)
+        raise _fail(f"--tier: unknown tier {text!r}; use one of {tiers}") from None
+
+
+def _parse_overrides(
+    tier_args: list[str], model_args: list[str]
+) -> tuple[ModelTier | None, dict[Role, ModelTier], dict[Role, str]]:
+    """Parse --tier [ROLE=]TIER and --model ROLE=ID before any run starts."""
+    all_tier: ModelTier | None = None
+    role_tiers: dict[Role, ModelTier] = {}
+    role_models: dict[Role, str] = {}
+    for item in tier_args:
+        name, separator, value = item.rpartition("=")
+        if not separator:
+            all_tier = _tier_name(item)
+        else:
+            role_tiers[_role_name(name, "--tier")] = _tier_name(value)
+    for item in model_args:
+        name, separator, value = item.partition("=")
+        if not separator:
+            raise _fail(f"--model: expected ROLE=ID, got {item!r}")
+        role_models[_role_name(name, "--model")] = value
+    return all_tier, role_tiers, role_models
+
+
+def _run_single(
+    loaded: FugueConfig,
+    engine: RunEngine,
     ticket: int,
-    config: ConfigOption = None,
-    repo_root: RepoRootOption = None,
-    to_green: Annotated[bool, typer.Option("--to-green", help="Wait for green CI.")] = False,
-) -> None:
-    """Run a ticket to a pull request."""
+    to_green: bool,
+    progress: terminal.Progress | None = None,
+) -> typer.Exit:
+    wait = loaded.limits.database_wait_seconds
     try:
-        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
-        loaded = _load(config, root_path)
-        engine = engine_factory(loaded, root_path, _print)
-    except wiring.WiringError as error:
-        raise _fail(str(error)) from error
-    try:
-        _print(render.render_roles(loaded))
-        outcome = asyncio.run(engine.run_to_green(ticket) if to_green else engine.run_to_pr(ticket))
+        with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket) as lock:
+            if lock.recovered is not None:
+                _print(
+                    f"note: recovered stale lock left by process {lock.recovered.pid} "
+                    f"({format_elapsed(lock.recovered.age_seconds)} ago); resuming"
+                )
+
+            async def go() -> RunOutcome:
+                # The tier depends on the ticket Size, so the table waits for the ticket.
+                # A bare Engine has no get_ticket; read through its GitHub port instead. An
+                # engine with neither shows the policy table, which needs no Size.
+                reader = getattr(engine, "get_ticket", None) or getattr(
+                    engine.deps.github, "get_ticket", None
+                )
+                if reader is None:
+                    _print(render.render_roles(loaded))
+                else:
+                    found: Ticket = await reader(ticket)
+                    _print(render.render_roles(loaded, found.size))
+                return await (engine.run_to_green(ticket) if to_green else engine.run_to_pr(ticket))
+
+            with progress or nullcontext():
+                outcome = asyncio.run(go())
+    except TicketLocked as error:
+        raise _fail(str(error), _STATE_EXIT_CODES[RunState.BLOCKED]) from error
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
         raise _fail("run interrupted", _STATE_EXIT_CODES[RunState.INTERRUPTED]) from error
     except Exception as error:
-        raise _fail(str(error), _STATE_EXIT_CODES[RunState.FAILED]) from error
+        raise _fail(_explain(error, wait), _STATE_EXIT_CODES[RunState.FAILED]) from error
     finally:
         engine.close()
     _print(render.render_outcome(outcome))
-    raise typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 0))
+    return typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 0))
+
+
+def _run_batch(
+    loaded: FugueConfig, root_path: Path, probe: RunEngine, numbers: list[int], to_green: bool
+) -> typer.Exit:
+    wait = loaded.limits.database_wait_seconds
+    rows: dict[int, render.BatchRow] = {}
+    engines: dict[int, RunEngine] = {}
+    stack_reasons: dict[int, str] = {}
+
+    def labelled(number: int) -> Callable[[str], None]:
+        return lambda line: _print(f"[#{number}] {line}")
+
+    def factory(ticket: Ticket) -> RunEngine:
+        engine = engine_factory(loaded, root_path, labelled(ticket.number))
+        engines[ticket.number] = engine
+        return engine
+
+    def complete(ticket: Ticket, result: RunOutcome | Exception | None) -> None:
+        number = ticket.number
+        if result is None:
+            message = render.render_skip(number, ticket.blocked_by)
+            if number in stack_reasons:
+                message += f"; gh stack unavailable: {stack_reasons[number]}"
+            rows[number] = render.BatchRow(number, _BATCH_SKIPPED, None, message)
+            _print(f"ticket #{number}\n{message}")
+        elif isinstance(result, TicketLocked):
+            rows[number] = render.BatchRow(number, _BATCH_LOCKED, None, str(result))
+            _print(f"ticket #{number}\nerror: {result}")
+        elif isinstance(result, Exception):
+            message = _explain(result, wait)
+            run = _latest_run(engines[number], number) if number in engines else None
+            rows[number] = render.BatchRow(
+                number, _BATCH_FAILED, None if run is None else run.id, f"error: {message}"
+            )
+            _print(f"ticket #{number}\nerror: {message}")
+        else:
+            detail = f"pull request #{result.pr_number}" if result.pr_number is not None else ""
+            if not detail and result.problems:
+                detail = result.problems[0]
+            rows[number] = render.BatchRow(
+                number, str(result.state), result.run_id, detail, render.next_step(result)
+            )
+            _print(f"ticket #{number}\n{render.render_outcome(result)}")
+
+    async def execute() -> None:
+        tickets: list[Ticket] = []
+        try:
+            for number in numbers:
+                try:
+                    found = await probe.get_ticket(number)
+                    if (
+                        len(found.blocked_by) == 1
+                        and await lower_branch(found, probe.deps.github) is not None
+                    ):
+                        result = await StackClient(root_path).probe(probe.deps.github.repo)
+                        if result.available:
+                            found = found.model_copy(update={"blocked_by": []})
+                        else:
+                            stack_reasons[number] = str(result.reason)
+                    tickets.append(found)
+                    _print(f"ticket #{number}\n{render.render_roles(loaded, found.size)}")
+                except Exception as error:
+                    message = _explain(error, wait)
+                    rows[number] = render.BatchRow(number, _BATCH_FAILED, None, f"error: {message}")
+                    _print(f"ticket #{number}\nerror: {message}")
+        finally:
+            probe.close()
+        await run_many(
+            tickets,
+            factory,
+            loaded.limits.max_concurrent_runs,
+            until_green=to_green,
+            on_complete=complete,
+        )
+
+    try:
+        asyncio.run(execute())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        for number, engine in engines.items():
+            run = _latest_run(engine, number)
+            if number not in rows and run is not None and run.state == RunState.INTERRUPTED:
+                _print(f"ticket #{number}: fugue resume {run.id}")
+        raise _fail("run interrupted", _STATE_EXIT_CODES[RunState.INTERRUPTED]) from None
+    finally:
+        for engine in engines.values():
+            engine.close()
+    _print(render.render_batch_summary([rows[number] for number in numbers if number in rows]))
+    return typer.Exit(_batch_exit_code([row.state for row in rows.values()]))
+
+
+@app.command()
+def run(
+    tickets: Annotated[list[int], typer.Argument(help="Ticket numbers to run.")],
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    to_green: Annotated[bool, typer.Option("--to-green", help="Wait for green CI.")] = False,
+    tier: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tier",
+            help="Model tier for this run: [ROLE=]small|medium|large; repeatable.",
+        ),
+    ] = None,
+    model: Annotated[
+        list[str] | None,
+        typer.Option("--model", help="Model identifier for one role: ROLE=ID; repeatable."),
+    ] = None,
+) -> None:
+    """Run one or more tickets to a pull request."""
+    if len(set(tickets)) != len(tickets):
+        raise _fail("Duplicate ticket numbers")
+    if any(number <= 0 for number in tickets):
+        raise _fail("Ticket numbers must be positive")
+    all_tier, role_tiers, role_models = _parse_overrides(tier or [], model or [])
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        try:
+            loaded = loaded.with_overrides(
+                tier=all_tier, role_tiers=role_tiers, role_models=role_models
+            )
+        except ValueError as error:
+            raise _fail(f"--model: {error}") from error
+        progress = terminal.progress_callback(batch=len(tickets) > 1)
+        engine = engine_factory(loaded, root_path, progress)
+    except wiring.WiringError as error:
+        raise _fail(str(error)) from error
+    if len(tickets) == 1:
+        raise _run_single(loaded, engine, tickets[0], to_green, progress)
+    raise _run_batch(loaded, root_path, engine, tickets, to_green)
 
 
 @app.command()
@@ -290,20 +556,21 @@ def status(
     ticket: Annotated[
         int | None, typer.Option("--ticket", help="Only runs for this ticket.")
     ] = None,
+    repo: RepoFilterOption = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
     """List recent runs, or show one run."""
     loaded = _load(config, _lenient_root(repo_root))
-    store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
+    store = _open_store(loaded)
     try:
         if run_id is None:
-            _print(render.render_runs(list(reversed(store.list_runs(ticket)))[:20]))
+            _print(render.render_runs(list(reversed(store.list_runs(ticket, repo)))[:20]))
             return
         try:
             detail = wiring.load_run_detail(store, run_id)
         except StoreError as error:
-            raise _fail(f"Unknown run id {run_id}") from error
+            raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
         if ticket is not None and detail.run.ticket_number != ticket:
             raise _fail(f"Run {run_id} is not for ticket #{ticket}")
         _print(render.render_run_detail(detail))
@@ -320,14 +587,15 @@ def usage(
     ticket: Annotated[
         int | None, typer.Option("--ticket", help="Only runs for this ticket.")
     ] = None,
+    repo: RepoFilterOption = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
     """Report usage records (estimates, not a bill)."""
     loaded = _load(config, _lenient_root(repo_root))
-    store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
+    store = _open_store(loaded)
     try:
-        _print(render.render_usage(store.usage_by(by, ticket_number=ticket), by))
+        _print(render.render_usage(store.usage_by(by, ticket_number=ticket, repo=repo), by))
     finally:
         store.close()
 
@@ -335,19 +603,20 @@ def usage(
 @app.command()
 def timing(
     run_id: Annotated[int | None, typer.Argument()] = None,
+    repo: RepoFilterOption = None,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
     """Report stage attempt durations for all runs or one run."""
     loaded = _load(config, _lenient_root(repo_root))
-    store = wiring.open_store(wiring.resolve_state_dir(loaded, os.environ, Path.home()))
+    store = _open_store(loaded)
     try:
         if run_id is not None:
             try:
                 store.get_run(run_id)
             except StoreError as error:
-                raise _fail(f"Unknown run id {run_id}") from error
-        _print(render.render_timing(store.stage_durations(run_id)))
+                raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
+        _print(render.render_timing(store.stage_durations(run_id, repo)))
     finally:
         store.close()
 
@@ -467,23 +736,189 @@ def question(
     by: Annotated[
         str | None, typer.Option("--by", help="Decision maker (default: OS user).")
     ] = None,
+    automatic: Annotated[
+        bool, typer.Option("--automatic", help="Use a stand-in for the interview.")
+    ] = False,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
     """Browse a Question and explicitly select its implementation scope."""
-    from fugue.cli.question import build_question
+    from fugue.cli.question import analysis_pending, build_question
+    from fugue.interview.flow import interview_then_analyse
 
     try:
+        if automatic and select is not None:
+            raise ValueError("--automatic cannot be combined with --select")
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
         loaded = _load(config, root_path)
         walkthrough = build_question(loaded, root_path)
-        asyncio.run(walkthrough.run(ticket, select, reason=reason, by=by))
+
+        async def conduct() -> None:
+            current = await walkthrough.client.get_ticket(ticket)
+            body = await walkthrough.client.get_body(ticket)
+            pending = analysis_pending(current, body)
+            if automatic and not pending:
+                raise ValueError("--automatic requires a Question with pending Analysis")
+            if pending and select is None:
+                engine = engine_factory(loaded, root_path, _print)
+                try:
+                    with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket):
+                        live = await engine.get_ticket(ticket)
+                        outcome = await interview_then_analyse(
+                            engine.deps,
+                            live,
+                            automatic=automatic,
+                            reader=walkthrough.prompt,
+                            print_fn=walkthrough.print,
+                        )
+                        if outcome.state != RunState.WAITING_FOR_SELECTION:
+                            raise typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 4))
+                        if automatic:
+                            return
+                finally:
+                    engine.close()
+            await walkthrough.run(ticket, select, reason=reason, by=by)
+
+        asyncio.run(conduct())
+    except typer.Exit:
+        raise
+    except TicketLocked as error:
+        raise _fail(str(error), 3) from error
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
         raise _fail("Question walkthrough interrupted", 6) from error
     except ValueError as error:
         raise _fail(str(error)) from error
     except Exception as error:
         raise _fail(str(error), 4) from error
+
+
+@app.command()
+def overview(
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    no_summary: Annotated[
+        bool, typer.Option("--no-summary", help="Skip the analyst summary.")
+    ] = False,
+    refresh: Annotated[
+        bool, typer.Option("--refresh", help="Ignore the cached summary and ask again.")
+    ] = False,
+) -> None:
+    """Report open tickets, pull requests and unfinished runs; changes nothing."""
+    from fugue.cli import overview as overview_command
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        repo = wiring.resolve_repo(loaded, root_path)
+        code = overview_command.run_overview(
+            loaded, root_path, repo=repo, summary=not no_summary, refresh=refresh
+        )
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError) as error:
+        raise _fail("Overview interrupted", 6) from error
+    except ValueError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
+    if code:
+        raise typer.Exit(code)
+
+
+@reviewer_app.command("setup")
+def reviewer_app_setup(
+    org: Annotated[
+        str | None, typer.Option("--org", help="Register under an organization.")
+    ] = None,
+    timeout: Annotated[float, typer.Option("--timeout", help="Callback timeout in seconds.")] = 300,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Register a reviewer app and save its private key locally."""
+    from fugue.cli import reviewer_app as reviewer_command
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        reviewer_command.run_setup(loaded, root_path, org=org, timeout=timeout)
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise _fail("Reviewer app setup interrupted", 6) from None
+    except ValueError as error:
+        raise _fail(str(error)) from None
+    except Exception as error:
+        raise _fail(str(error), 4) from None
+
+
+@app.command()
+def new(
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    suggest: Annotated[
+        bool, typer.Option("--suggest", help="Start from analyst-suggested candidates.")
+    ] = False,
+    resume: Annotated[
+        str | None, typer.Option("--resume", help="Resume a saved draft by its id.")
+    ] = None,
+    parent: Annotated[
+        int | None, typer.Option("--parent", help="Parent issue number (default 1).")
+    ] = None,
+    assignee: Annotated[
+        str | None, typer.Option("--assignee", help="Assignee login (default: you).")
+    ] = None,
+) -> None:
+    """Create a ticket through a guided conversation; nothing is created without 'yes'."""
+    from fugue.cli import new as new_command
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        code = new_command.run_new(
+            loaded, root_path, suggest=suggest, resume=resume, parent=parent, assignee=assignee
+        )
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError) as error:
+        raise _fail("New ticket interrupted", 6) from error
+    except ValueError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
+    if code:
+        raise typer.Exit(code)
+
+
+@app.command()
+def protection(
+    branch: Annotated[
+        list[str] | None,
+        typer.Option("--branch", help="Branch to check (repeatable; default: develop and main)."),
+    ] = None,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Check recommended branch protection rules without changing them."""
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        repo = wiring.resolve_repo(loaded, root_path)
+        github = loaded.github
+        client = GitHubClient(repo, github.project_owner or "", github.project_number or 0)
+        statuses = asyncio.run(check_protection(client, branch or ["develop", "main"]))
+    except typer.Exit:
+        raise
+    except wiring.WiringError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
+    _print(render.render_protection(statuses))
+    code = (
+        4
+        if any(status.unreadable for status in statuses)
+        else (3 if any(not status.satisfied for status in statuses) else 0)
+    )
+    raise typer.Exit(code)
 
 
 @app.command("children")
@@ -497,7 +932,6 @@ def children(
 ) -> None:
     """Plan or create children of a decided Question."""
     from fugue.children import apply, load_children, plan
-    from fugue.store import Store
 
     async def execute() -> None:
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
@@ -506,9 +940,9 @@ def children(
         github = loaded.github
         if github.project_owner is None or github.project_number is None:
             raise wiring.WiringError("github.project_owner and github.project_number are required")
-        client = GitHubClient(
-            wiring.resolve_repo(loaded, root_path), github.project_owner, github.project_number
-        )
+        repo = wiring.resolve_repo(loaded, root_path)
+        client = GitHubClient(repo, github.project_owner, github.project_number)
+        client.review_token = wiring.reviewer_token(loaded, repo, os.environ, Path.home())
         planned = plan(spec, await client.get_ticket(spec.question), loaded.policy)
         if not apply_changes:
             for child, body in zip(spec.children, planned.bodies, strict=True):

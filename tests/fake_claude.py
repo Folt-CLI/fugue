@@ -77,6 +77,9 @@ def main() -> None:
     }
     if scenario == "error":
         result["api_error_status"] = 503
+    if scenario in {"unauthorized", "outage"}:
+        result["is_error"] = True
+        result["api_error_status"] = 401 if scenario == "unauthorized" else 503
     if scenario == "schema":
         result["structured_output"] = {"answer": "yes"}
     emit(result)

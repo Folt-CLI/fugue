@@ -27,12 +27,19 @@ def test_load_defaults() -> None:
         ["uv", "build"],
     ]
     assert config.limits.model_dump() == {
+        "interview_max_turns": 10,
+        "interview_call_timeout_seconds": 300,
+        "interview_automatic_max_seconds": 1800,
         "max_repair_attempts": 3,
         "max_concurrent_runs": 1,
+        "database_wait_seconds": 30,
         "agent_timeout_seconds": 3600,
         "max_output_bytes": 65536,
         "ci_poll_interval_seconds": 20,
         "ci_timeout_seconds": 3600,
+        "provider_cooldown_seconds": 300,
+        "overview_max_tickets": 100,
+        "overview_cache_seconds": 300,
         "infrastructure_markers": [
             "runner lost",
             "the runner has received a shutdown signal",
@@ -44,6 +51,7 @@ def test_load_defaults() -> None:
     }
     assert {role: settings.provider for role, settings in config.roles.items()} == {
         Role.ANALYST: "claude",
+        Role.STAND_IN: "codex",
         Role.IMPLEMENTER: "codex",
         Role.REVIEWER: "codex",
     }
@@ -90,12 +98,19 @@ model = "chosen-model"
         "max_components": 2,
     }
     assert config.limits.model_dump() == {
+        "interview_max_turns": 10,
+        "interview_call_timeout_seconds": 300,
+        "interview_automatic_max_seconds": 1800,
         "max_repair_attempts": 5,
         "max_concurrent_runs": 2,
+        "database_wait_seconds": 30,
         "agent_timeout_seconds": 60,
         "max_output_bytes": 1024,
         "ci_poll_interval_seconds": 20,
         "ci_timeout_seconds": 3600,
+        "provider_cooldown_seconds": 300,
+        "overview_max_tickets": 100,
+        "overview_cache_seconds": 300,
         "infrastructure_markers": [
             "runner lost",
             "the runner has received a shutdown signal",
@@ -209,7 +224,13 @@ def test_api_key_requires_explicit_toml(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "key",
-    ["max_repair_attempts", "max_concurrent_runs", "agent_timeout_seconds", "max_output_bytes"],
+    [
+        "max_repair_attempts",
+        "max_concurrent_runs",
+        "database_wait_seconds",
+        "agent_timeout_seconds",
+        "max_output_bytes",
+    ],
 )
 @pytest.mark.parametrize("value", [-1, 0])
 def test_limits_reject_nonpositive_values(tmp_path: Path, key: str, value: int) -> None:
@@ -221,13 +242,16 @@ def test_positive_limit_boundaries(tmp_path: Path) -> None:
     config = load_config(
         write_config(
             tmp_path,
-            "[limits]\nmax_repair_attempts = 1\nmax_concurrent_runs = 1\n"
-            "agent_timeout_seconds = 1\nmax_output_bytes = 1\n"
-            "ci_poll_interval_seconds = 1\nci_timeout_seconds = 1",
+            "[limits]\ninterview_max_turns = 1\ninterview_call_timeout_seconds = 1\n"
+            "interview_automatic_max_seconds = 1\n"
+            "max_repair_attempts = 1\nmax_concurrent_runs = 1\n"
+            "database_wait_seconds = 1\nagent_timeout_seconds = 1\nmax_output_bytes = 1\n"
+            "ci_poll_interval_seconds = 1\nci_timeout_seconds = 1\n"
+            "provider_cooldown_seconds = 1\noverview_max_tickets = 1\noverview_cache_seconds = 1",
         )
     )
     integers = config.limits.model_dump(exclude={"infrastructure_markers"})
-    assert len(integers) == 6
+    assert len(integers) == 13
     assert set(integers.values()) == {1}
 
 
@@ -319,3 +343,43 @@ def test_github_rejects_unknown_key_and_bad_number(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as number:
         load_config(write_config(tmp_path, "[github]\nproject_number = 0\n"))
     assert "github.project_number" in str(number.value)
+
+
+def test_interview_configuration_and_role_visibility(tmp_path: Path) -> None:
+    from fugue.cli.render import render_roles
+    from fugue.models import ModelTier
+
+    config = load_config(
+        write_config(
+            tmp_path,
+            """
+[roles.stand_in]
+provider = "claude"
+tier = "large"
+[policy.tier_rules.stand_in]
+L = "small"
+[limits]
+interview_max_turns = 4
+interview_call_timeout_seconds = 7
+interview_automatic_max_seconds = 20
+""",
+        )
+    )
+    assert config.roles[Role.STAND_IN].provider == "claude"
+    assert config.policy.tier_rules[Role.STAND_IN][Size.L] == ModelTier.SMALL
+    assert FugueConfig().policy.tier_rules[Role.STAND_IN][Size.L] == ModelTier.MEDIUM
+    assert config.limits.interview_max_turns == 4
+    assert config.limits.interview_call_timeout_seconds == 7
+    assert config.limits.interview_automatic_max_seconds == 20
+    assert "stand_in" not in render_roles(config, Size.L)
+    assert "stand_in" in render_roles(config, Size.L, interview=True)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["interview_max_turns", "interview_call_timeout_seconds", "interview_automatic_max_seconds"],
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_interview_limits_positive(tmp_path: Path, key: str, value: int) -> None:
+    with pytest.raises(ConfigError):
+        load_config(write_config(tmp_path, f"[limits]\n{key} = {value}"))

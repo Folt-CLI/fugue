@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -48,7 +49,7 @@ BLOCKERS: list[dict[str, Any]] = [
         "id": 1010,
         "number": 10,
         "title": "Add process runner",
-        "state": "closed",
+        "state": "open",
         "url": "https://api.github.com/repos/example/fugue/issues/10",
     },
 ]
@@ -158,6 +159,37 @@ def test_parse_ticket() -> None:
     assert parse_body_sections("preamble\n## Summary\ntext\n### Nested\nmore") == {
         "Summary": "text\n### Nested\nmore"
     }
+
+
+@pytest.mark.parametrize(
+    "component_field,expected",
+    [
+        (
+            {
+                "multi_select_options": [{"name": "Source Code"}, {"name": "User Docs"}],
+                "value": "Source Code,User Docs",
+            },
+            [Component.SOURCE_CODE, Component.USER_DOCS],
+        ),
+        (
+            {"multi_select_options": [{"name": "Source Code"}], "value": "Source Code"},
+            [Component.SOURCE_CODE],
+        ),
+        ({"multi_select_options": [], "value": "Source Code"}, []),
+        ({"single_select_option": {"name": "Source Code"}}, [Component.SOURCE_CODE]),
+        ({"value": "Source Code"}, [Component.SOURCE_CODE]),
+        ({"value": ["Source Code", "User Docs"]}, [Component.SOURCE_CODE, Component.USER_DOCS]),
+        ({"value": [{"name": "Source Code"}]}, [Component.SOURCE_CODE]),
+        (None, []),
+    ],
+)
+def test_parse_ticket_components(
+    component_field: dict[str, Any] | None, expected: list[Component]
+) -> None:
+    fields = VALUES[:1]
+    if component_field is not None:
+        fields = [*fields, {"issue_field_name": "Component", **component_field}]
+    assert parse_ticket(ISSUE, fields, ITEM).components == expected
 
 
 @pytest.mark.parametrize("blockers", [BLOCKERS, []])
@@ -647,6 +679,16 @@ def test_parser_uses_separate_native_blockers() -> None:
     assert parse_ticket(issue, VALUES, ITEM, []).blocked_by == []
 
 
+def test_parser_ignores_closed_blockers_and_counts_missing_state_as_open() -> None:
+    blockers: list[dict[str, Any]] = [
+        {"number": 11, "state": "open"},
+        {"number": 12, "state": "closed"},
+        {"number": 13},
+    ]
+    assert parse_ticket(ISSUE, VALUES, ITEM, blockers).blocked_by == [11, 13]
+    assert parse_ticket(ISSUE, VALUES, ITEM, [blockers[1]]).blocked_by == []
+
+
 @pytest.mark.parametrize("paged", [False, True])
 def test_blockers_from_multiple_pages(fake: Fake, paged: bool) -> None:
     client, calls = fake(
@@ -953,3 +995,72 @@ def test_rerun_failed_reports_gh_failure(fake: Fake) -> None:
     client, _ = fake([(["run", "rerun"], {"stderr": "cannot rerun", "exit_code": 1})])
     with pytest.raises(GitHubError, match="cannot rerun"):
         asyncio.run(client.rerun_failed("https://github.com/example/fugue/actions/runs/123"))
+
+
+@pytest.mark.parametrize("is_open", [True, False])
+def test_stack_lower_branch_requires_open_pr(fake: Fake, is_open: bool) -> None:
+    from fugue.engine.facts import branch_name
+    from fugue.github.stack import lower_branch
+
+    lower = parse_ticket(ISSUE, VALUES, ITEM, [])
+    dependent = lower.model_copy(update={"number": 17, "blocked_by": [16]})
+    client, calls = fake(
+        [
+            (["api", f"repos/{REPO}/issues/16"], response(ISSUE)),
+            (["api", f"repos/{REPO}/issues/16/issue-field-values"], response(VALUES)),
+            (["api", "graphql"], response([PROJECT_RESPONSE])),
+            (["api", f"repos/{REPO}/issues/16/dependencies/blocked_by"], response([])),
+            (["pr", "list"], response([{"number": 27, "url": PR.url}] if is_open else [])),
+        ]
+    )
+    assert asyncio.run(lower_branch(dependent, client)) == (branch_name(lower) if is_open else None)
+    assert calls()[-1]["argv"][calls()[-1]["argv"].index("--head") + 1] == branch_name(lower)
+    assert "--state" in calls()[-1]["argv"] and "open" in calls()[-1]["argv"]
+
+
+@pytest.mark.parametrize("separate", [False, True])
+def test_post_review_uses_only_configured_reviewer_token(fake: Fake, separate: bool) -> None:
+    client, calls = fake(
+        [
+            (
+                ["api", f"repos/{REPO}/pulls/27/reviews"],
+                response({"id": 5, "commit_id": "abc", "state": "COMMENTED", "body": "b"}),
+            )
+        ]
+    )
+    minted = 0
+
+    async def token() -> str:
+        nonlocal minted
+        minted += 1
+        return "installation-secret"
+
+    client.review_token = token if separate else None
+    runner = AsyncMock(wraps=client.runner)
+    client.runner = runner
+    asyncio.run(client.post_review(PR, "abc", "b"))
+    assert minted == int(separate)
+    assert runner.call_args.kwargs["env"].get("GH_TOKEN") == (
+        "installation-secret" if separate else None
+    )
+    assert "installation-secret" not in repr(calls()[0]["argv"])
+
+
+def test_post_review_hides_app_token_in_error(fake: Fake) -> None:
+    client, _ = fake(
+        [
+            (
+                ["api", f"repos/{REPO}/pulls/27/reviews"],
+                {"exit_code": 1, "stderr": "installation-secret"},
+            )
+        ]
+    )
+
+    async def token() -> str:
+        return "installation-secret"
+
+    client.review_token = token
+    with pytest.raises(GitHubError) as error:
+        asyncio.run(client.post_review(PR, "abc", "b"))
+    assert "installation-secret" not in str(error.value)
+    assert "installation-secret" not in error.value.stderr_tail

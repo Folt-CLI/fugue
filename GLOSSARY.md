@@ -10,26 +10,41 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [artifact](#artifact)
 - [authentication mode](#authentication-mode)
 - [autonomy exceptions](#autonomy-exceptions)
+- [batch](#batch)
+- [blocked ticket](#blocked-ticket)
 - [blocking finding](#blocking-finding)
 - [campaign](#campaign)
 - [capability](#capability)
+- [chat component](#chat-component)
 - [child](#child)
 - [Component](#component)
+- [conversation attachment](#conversation-attachment)
+- [cool-down](#cool-down)
 - [Disposition](#disposition)
 - [Epic](#epic)
 - [gate](#gate)
 - [handoff](#handoff)
 - [incident](#incident)
+- [interview](#interview)
+- [interview record](#interview-record)
 - [issue type](#issue-type)
 - [milestone](#milestone)
+- [model override](#model-override)
+- [model tier](#model-tier)
 - [non-blocking finding](#non-blocking-finding)
 - [operation](#operation)
 - [orchestrator](#orchestrator)
 - [parent](#parent)
 - [provider adapter](#provider-adapter)
+- [provider fallback](#provider-fallback)
 - [Question](#question)
+- [ready to start](#ready-to-start)
 - [reconcile](#reconcile)
 - [repair limit](#repair-limit)
+- [repository overview](#repository-overview)
+- [repository lock](#repository-lock)
+- [reviewer app](#reviewer-app)
+- [reviewer identity](#reviewer-identity)
 - [role](#role)
 - [run](#run)
 - [scenario](#scenario)
@@ -37,9 +52,18 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [session](#session)
 - [Size](#size)
 - [stack](#stack)
+- [stack probe](#stack-probe)
 - [stage](#stage)
+- [stand-in](#stand-in)
 - [Status](#status)
+- [terminal layer](#terminal-layer)
+- [ticket draft](#ticket-draft)
+- [ticket lock](#ticket-lock)
+- [transcript](#transcript)
+- [unavailable provider](#unavailable-provider)
+- [unfinished run](#unfinished-run)
 - [usage record](#usage-record)
+- [waiting for a decision](#waiting-for-a-decision)
 - [work item](#work-item)
 - [worktree](#worktree)
 
@@ -159,6 +183,12 @@ A chain of pull requests in one repository, with the bottom targeting develop an
 
 Status: decided.
 
+### stack probe
+
+A read-only check of native stack availability: gh >= 2.90.0, Git >= 2.36, the installed github/gh-stack extension and repository enablement. Its result is available or an unavailable reason: gh_too_old, git_too_old, extension_missing or feature_disabled. Unexpected command failures stop the check.
+
+Status: decided.
+
 ### Status
 
 The planning field with S0: To Do, S1: In Analysis, S3: Ready For Implementation, S4: In Implementation and S5: Done. XS/S/XL use S0 -> S4 -> S5; M/L use S0 -> S1 -> S3 -> S4 -> S5. XL enters S4 when its first child does and never uses S1 or S3.
@@ -197,15 +227,69 @@ how a provider call is authenticated and billed; one of `subscription_login` (th
 
 Status: decided.
 
+### batch
+
+one `fugue run` invocation naming several tickets.
+
+Status: decided.
+
+### blocked ticket
+
+an open ticket with at least one open native blocker; distinct from the run state blocked.
+
+Status: decided.
+
 ### capability
 
 a feature a provider adapter declares (streaming_events, structured_output, session_resume, cancellation, read_only_mode, workspace_write_mode, usage_tokens, usage_cost_estimate).
 
 Status: decided.
 
+### chat component
+
+the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; the interview and the Question walkthrough's follow-up use it.
+
+Status: decided.
+
+### conversation attachment
+
+the `<N>-conversation.md` file uploaded by `fugue new` or `fugue question`: verbatim turns with strings matching known token patterns redacted. The creation form holds the final preview and decision; the Question form holds the mode and decision.
+
+Status: decided.
+
+### cool-down
+
+the interval after an unavailable result during which a later call tries other providers first.
+
+Status: unresolved.
+
 ### handoff
 
 the schema-validated structured input or output passed between roles at a stage boundary.
+
+Status: decided.
+
+### interview
+
+the guided conversation between an analyst and a person (or a stand-in) that precedes the analysis of a Question.
+
+Status: decided.
+
+### interview record
+
+the local state of one interview at `<state_dir>/interviews/<owner>__<name>__<N>.json`: turns, mode, status, usage; never uploaded as a whole.
+
+Status: decided.
+
+### model override
+
+a per-run tier or explicit model identifier on the command line that outranks configuration.
+
+Status: decided.
+
+### model tier
+
+one of small, medium or large; configuration maps it per provider to a model identifier.
 
 Status: decided.
 
@@ -223,6 +307,18 @@ Also called adapter.
 
 Status: decided.
 
+### provider fallback
+
+an ordered list of providers for one role, tried in order, whole calls only.
+
+Status: unresolved.
+
+### ready to start
+
+an open ticket with no readiness problems, Status S0 (XS/S) or S3 (M/L), not a Question or XL, and no open blockers.
+
+Status: decided.
+
 ### reconcile
 
 compare recorded operation intents with the live external state after an interruption and reuse or complete existing objects instead of repeating them.
@@ -235,9 +331,33 @@ the configured maximum number of repair attempts for one stage before a run stop
 
 Status: decided.
 
+### repository lock
+
+the cross-process lock held around the shared Git steps in the primary checkout.
+
+Status: decided.
+
+### repository overview
+
+the single report of open tickets, pull requests and unfinished runs for the current repository, gathered without an agent.
+
+Status: decided.
+
+### reviewer app
+
+a private GitHub App registered to provide a reviewer identity, owned by a person or organization. Registration and local key storage do not themselves enable Fugue to post reviews as that app.
+
+Status: decided.
+
+### reviewer identity
+
+the GitHub identity used to submit reviews, separate from the pull request author when configured as separate. Single-account mode uses the same identity and submits COMMENT reviews.
+
+Status: decided.
+
 ### role
 
-a named job for an agent in a run: analyst, implementer or reviewer.
+a named job for an agent in a run: analyst, implementer, reviewer or stand-in.
 
 Status: decided.
 
@@ -253,14 +373,62 @@ the provider-side conversation identifier a provider adapter retains so work can
 
 Status: decided.
 
+### stand-in
+
+the agent that answers in the person's place under `--automatic`, labelled automatic.
+
+Status: decided.
+
 ### stage
 
 a named step of a run (load, validate, analyse, select, prepare, implement, verify, deliver, monitor, review, repair, merge, close).
 
 Status: decided.
 
+### terminal layer
+
+the one module every command uses for styled status, tables, panels, Markdown and progress; it degrades to plain text when output is piped, captured, or `NO_COLOR` or `TERM=dumb` is set.
+
+Status: decided.
+
+### ticket draft
+
+the saved state of one `fugue new` conversation at `<state_dir>/drafts/<id>.json`: the ticket fields, who owns each field (person or analyst), the turns and the creation journal. It is not a ticket and holds no environment values or tokens.
+
+Status: decided.
+
+### ticket lock
+
+the cross-process lock held for the whole run of one ticket.
+
+Status: decided.
+
+### transcript
+
+the UTF-8 text file a chat session saves on request with `/save PATH`; it never overwrites an existing file.
+
+Status: decided.
+
+### unavailable provider
+
+a provider whose call ended rate or usage limited, unreachable or not signed in, reported as a structured reason.
+
+Status: unresolved.
+
+### unfinished run
+
+a run whose state is not completed.
+
+Status: decided.
+
 ### usage record
 
 tokens, elapsed time and, where the provider reports it, a cost estimate for one agent call; never presented as a bill.
+
+Status: decided.
+
+### waiting for a decision
+
+an M/L ticket or Question with Analysis and no [Selected Solution], or a run in waiting_for_selection, waiting_for_decision or waiting_for_merge_approval.
 
 Status: decided.

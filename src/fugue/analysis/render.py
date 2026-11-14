@@ -1,5 +1,6 @@
 """Pure Markdown renderers for analysis and implementation scope attachments."""
 
+import re
 from collections.abc import Mapping, Sequence
 
 from fugue.analysis.schema import Handoff, Option
@@ -7,6 +8,14 @@ from fugue.analysis.schema import Handoff, Option
 
 def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
+
+
+def _path(item: str) -> str:
+    return item if "`" in item else f"`{item}`"
+
+
+def _scenario(item: str) -> str:
+    return re.sub(r"^\s*\d+[.)]\s+", "", item)
 
 
 def _cell(value: str) -> str:
@@ -53,11 +62,21 @@ def render_analysis(number: int, handoff: Handoff, links: Mapping[str, str]) -> 
     return "\n\n".join(parts) + "\n"
 
 
-def render_details(number: int, handoff: Handoff, links: Mapping[str, str]) -> str:
+def render_details(
+    number: int, handoff: Handoff, links: Mapping[str, str], *, automatic: bool = False
+) -> str:
     name = f"{number}-code-findings.md"
+    conversation = f"{number}-conversation.md"
+    extra = (
+        f"**Conversation:** [{conversation}]({links[conversation]})"
+        + (" (automatic)" if automatic else "")
+        + "\n\n"
+        if conversation in links
+        else ""
+    )
     return (
         f"## Details\n\n**Code findings:** [{name}]({links[name]})\n\n"
-        f"**Key points**\n{_bullets(handoff.key_points)}\n"
+        f"{extra}**Key points**\n{_bullets(handoff.key_points)}\n"
     )
 
 
@@ -76,17 +95,22 @@ def render_scope(number: int, index: int, option: Option) -> str:
     ]
     parts = [f"# {number} solution {index}: {option.name}"]
     for heading, items in sections:
-        content = (
-            "\n".join(f"{i}. {item}" for i, item in enumerate(items, 1))
-            if heading.endswith("scenarios")
-            else _bullets(items)
-        )
+        if heading.endswith("scenarios"):
+            content = "\n".join(f"{i}. {_scenario(item)}" for i, item in enumerate(items, 1))
+        else:
+            content = _bullets(items)
+        if heading == "Standing rules":
+            files = _bullets([_path(item) for item in scope.allowed_files])
+            content += f"\n- You may touch only these files (create them if new):\n{files}"
         parts.extend([f"## {heading}", content])
     return "\n\n".join(parts) + "\n"
 
 
-def render_attachments(number: int, handoff: Handoff) -> dict[str, str]:
+def render_attachments(
+    number: int, handoff: Handoff, conversation: str | None = None
+) -> dict[str, str]:
     return {
+        **({f"{number}-conversation.md": conversation} if conversation is not None else {}),
         f"{number}-code-findings.md": handoff.findings.rstrip() + "\n",
         **{
             f"{number}-solution-{index}.md": render_scope(number, index, option)

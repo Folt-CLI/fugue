@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
@@ -28,6 +30,62 @@ def test_migration_and_reopen(tmp_path: Path) -> None:
     with Store(path) as reopened:
         assert reopened.get_run(run.id).state == "implement"
         assert reopened.list_runs() == [reopened.get_run(run.id)]
+
+
+def test_merge_approvals_lists_valid_approvals_of_one_repository(store: Store) -> None:
+    run = store.create_run(1, "o/r")
+    other = store.create_run(2, "x/y")
+    valid = store.record_approval(run.id, "merge", "7", "a" * 40, "approved", "dev", "ok")
+    store.record_approval(run.id, "merge", "8", "b" * 40, "rejected", "dev", "no")
+    store.record_approval(run.id, "other", "9", "c" * 40, "approved", "dev", "ok")
+    store.record_approval(other.id, "merge", "7", "d" * 40, "approved", "dev", "ok")
+    stale = store.record_approval(run.id, "merge", "10", "e" * 40, "approved", "dev", "ok")
+    store.invalidate_approvals(run.id, "10", "f" * 40)
+    assert [a.id for a in store.merge_approvals("o/r")] == [valid.id]
+    assert stale.id not in [a.id for a in store.merge_approvals("o/r")]
+    assert [a.subject for a in store.merge_approvals("x/y")] == ["7"]
+    assert store.merge_approvals("none/none") == []
+
+
+def _hold_write_lock(path: Path) -> sqlite3.Connection:
+    holder = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    return holder
+
+
+def test_write_waits_for_busy_timeout_and_succeeds_when_released(tmp_path: Path) -> None:
+    path = tmp_path / "busy.db"
+    with Store(path, busy_timeout_seconds=10) as store:
+        holder = _hold_write_lock(path)
+        timer = threading.Timer(0.4, holder.rollback)
+        timer.start()
+        try:
+            started = time.monotonic()
+            run = store.create_run(1, "o/r")
+            assert time.monotonic() - started >= 0.3
+        finally:
+            timer.join()
+            holder.close()
+        assert store.get_run(run.id).ticket_number == 1
+
+
+def test_write_fails_with_locked_error_after_busy_timeout(tmp_path: Path) -> None:
+    path = tmp_path / "busy.db"
+    with Store(path, busy_timeout_seconds=0.2) as store:
+        holder = _hold_write_lock(path)
+        try:
+            started = time.monotonic()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                store.create_run(1, "o/r")
+            assert 0.15 <= time.monotonic() - started < 5
+        finally:
+            holder.rollback()
+            holder.close()
+
+
+def test_busy_timeout_defaults_to_thirty_seconds(tmp_path: Path) -> None:
+    with Store(tmp_path / "default.db") as store:
+        assert store._connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
 
 
 def test_newer_version_errors(tmp_path: Path) -> None:
@@ -242,3 +300,42 @@ def test_context_manager_closes_store() -> None:
     store.close()
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         store.list_runs()
+
+
+# Scenario 1
+def test_stage_attempts_are_ordered_and_filtered(store: Store) -> None:
+    run = store.create_run(12, "Folt-CLI/fugue")
+    other = store.create_run(13, "Folt-CLI/fugue")
+    first = store.begin_attempt(run.id, "implement")
+    verify = store.begin_attempt(run.id, "verify")
+    second = store.begin_attempt(run.id, "implement")
+    store.begin_attempt(other.id, "implement")
+    assert [a.id for a in store.stage_attempts(run.id)] == [first.id, verify.id, second.id]
+    assert [a.id for a in store.stage_attempts(run.id, "implement")] == [first.id, second.id]
+    assert store.stage_attempts(run.id, "repair") == []
+    assert store.stage_attempts(999) == []
+
+
+# Scenario 1
+def test_agent_sessions_are_ordered_and_filtered(store: Store) -> None:
+    run = store.create_run(12, "Folt-CLI/fugue")
+    other = store.create_run(13, "Folt-CLI/fugue")
+    first = store.record_agent_session(run.id, "implementer", "codex", "api_key", "s1")
+    reviewer = store.record_agent_session(run.id, "reviewer", "codex", "api_key", "s2")
+    third = store.record_agent_session(run.id, "implementer", "claude", "subscription_login", "s3")
+    store.record_agent_session(other.id, "implementer", "codex", "api_key", "s4")
+    assert [s.id for s in store.agent_sessions(run.id)] == [first.id, reviewer.id, third.id]
+    assert [s.id for s in store.agent_sessions(run.id, role="implementer")] == [first.id, third.id]
+    assert [s.id for s in store.agent_sessions(run.id, provider="claude")] == [third.id]
+    assert [s.id for s in store.agent_sessions(run.id, authentication_mode="api_key")] == [
+        first.id,
+        reviewer.id,
+    ]
+    assert [
+        s.id
+        for s in store.agent_sessions(
+            run.id, role="implementer", provider="codex", authentication_mode="api_key"
+        )
+    ] == [first.id]
+    assert store.agent_sessions(run.id, role="analyst") == []
+    assert store.agent_sessions(999) == []
