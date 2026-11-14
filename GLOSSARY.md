@@ -43,6 +43,8 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [repair limit](#repair-limit)
 - [repository overview](#repository-overview)
 - [repository lock](#repository-lock)
+- [reviewer app](#reviewer-app)
+- [reviewer identity](#reviewer-identity)
 - [role](#role)
 - [run](#run)
 - [scenario](#scenario)
@@ -338,6 +340,18 @@ Status: decided.
 ### repository overview
 
 the single report of open tickets, pull requests and unfinished runs for the current repository, gathered without an agent.
+
+Status: decided.
+
+### reviewer app
+
+a private GitHub App registered to provide a reviewer identity, owned by a person or organization. Registration and local key storage do not themselves enable Fugue to post reviews as that app.
+
+Status: decided.
+
+### reviewer identity
+
+the GitHub identity used to submit reviews, separate from the pull request author when configured as separate. Single-account mode uses the same identity and submits COMMENT reviews.
 
 Status: decided.
 

@@ -37,6 +37,8 @@ _STATE_EXIT_CODES: dict[str, int] = {
 }
 
 app = typer.Typer(name="fugue", no_args_is_help=True, add_completion=False)
+reviewer_app = typer.Typer(no_args_is_help=True)
+app.add_typer(reviewer_app, name="reviewer-app", help="Set up a reviewer identity.")
 config_app = typer.Typer(no_args_is_help=True)
 app.add_typer(config_app, name="config", help="Inspect configuration.")
 
@@ -819,6 +821,32 @@ def overview(
         raise _fail(str(error), 4) from error
     if code:
         raise typer.Exit(code)
+
+
+@reviewer_app.command("setup")
+def reviewer_app_setup(
+    org: Annotated[
+        str | None, typer.Option("--org", help="Register under an organization.")
+    ] = None,
+    timeout: Annotated[float, typer.Option("--timeout", help="Callback timeout in seconds.")] = 300,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Register a reviewer app and save its private key locally."""
+    from fugue.cli import reviewer_app as reviewer_command
+
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        reviewer_command.run_setup(loaded, root_path, org=org, timeout=timeout)
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise _fail("Reviewer app setup interrupted", 6) from None
+    except ValueError as error:
+        raise _fail(str(error)) from None
+    except Exception as error:
+        raise _fail(str(error), 4) from None
 
 
 @app.command()

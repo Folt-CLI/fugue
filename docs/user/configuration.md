@@ -102,6 +102,10 @@ gathered facts are unchanged.
 | `reviewer_identity_separate` | `false`; single-account reviews use COMMENT because GitHub forbids author self-approval |
 | `resolve_token_env` | Unset; optional name of the environment variable holding a token for resolving review threads; otherwise use the normal environment |
 
+Use `fugue reviewer-app setup` to register a private reviewer app; see
+[reviewer identity setup](reviewer-identity.md) for permissions, key storage and
+`reviewer_identity_separate`. Fugue does not yet post reviews as the reviewer app.
+
 `resolve_token_env` is a variable name, not the token itself. Its value must be
 non-empty after whitespace is stripped.
 
