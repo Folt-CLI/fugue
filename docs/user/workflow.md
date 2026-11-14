@@ -179,7 +179,34 @@ next line. End of input also ends a chat.
 
 ## Select a solution
 
-Browse a Question interactively, or explicitly select an option with a reason:
+A Question with pending Analysis starts an interview with the analyst. Discuss
+intent, users, boundaries, failure cases, constraints and code touched; the
+analyst offers rough directions before writing Analysis options. `/proceed`
+finishes the interview and publishes Analysis, then opens the selection walkthrough.
+`/save PATH` saves the rendered conversation to a new file; `/quit`, end of input
+or interrupt leaves the interview open without publishing or changing Status.
+Run `fugue question N` again to continue with the earlier turns. At the turn
+limit only `/proceed`, `/save` and `/quit` accept further input.
+
+`fugue question N --automatic` uses a stand-in to answer from Summary, Scope,
+GLOSSARY.md and the conversation only. Stand-in turns are labelled automatic.
+It proceeds to Analysis on the stand-in's request or the turn limit and stops
+waiting for human selection. It never selects an option. Missing requirements,
+consent, credentials, billing or merge approval require human input (exit 3);
+continue with `fugue question N`. Provider failure exits 4, provider limiting 5,
+and interruption 6. Invalid `--automatic` combinations (`--select`, a ticket
+that is not a Question, or existing Analysis options) exit 2.
+
+The private local interview record is stored at
+`<state_dir>/interviews/<owner>__<name>__<N>.json` with mode 0600. Only a finished
+conversation is uploaded as `<N>-conversation.md`, containing verbatim turns,
+mode, finished date and who ended it, with known token patterns redacted. Details
+links the verified attachment, marking automatic interviews. The whole interview
+record and its usage are never uploaded. `fugue resume` directs unfinished
+interviews back to `fugue question N`.
+
+Browse a Question with existing Analysis options interactively, or explicitly
+select an option with a reason:
 
 ```sh
 uv run fugue question 47

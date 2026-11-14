@@ -62,11 +62,21 @@ def render_analysis(number: int, handoff: Handoff, links: Mapping[str, str]) -> 
     return "\n\n".join(parts) + "\n"
 
 
-def render_details(number: int, handoff: Handoff, links: Mapping[str, str]) -> str:
+def render_details(
+    number: int, handoff: Handoff, links: Mapping[str, str], *, automatic: bool = False
+) -> str:
     name = f"{number}-code-findings.md"
+    conversation = f"{number}-conversation.md"
+    extra = (
+        f"**Conversation:** [{conversation}]({links[conversation]})"
+        + (" (automatic)" if automatic else "")
+        + "\n\n"
+        if conversation in links
+        else ""
+    )
     return (
         f"## Details\n\n**Code findings:** [{name}]({links[name]})\n\n"
-        f"**Key points**\n{_bullets(handoff.key_points)}\n"
+        f"{extra}**Key points**\n{_bullets(handoff.key_points)}\n"
     )
 
 
@@ -96,8 +106,11 @@ def render_scope(number: int, index: int, option: Option) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def render_attachments(number: int, handoff: Handoff) -> dict[str, str]:
+def render_attachments(
+    number: int, handoff: Handoff, conversation: str | None = None
+) -> dict[str, str]:
     return {
+        **({f"{number}-conversation.md": conversation} if conversation is not None else {}),
         f"{number}-code-findings.md": handoff.findings.rstrip() + "\n",
         **{
             f"{number}-solution-{index}.md": render_scope(number, index, option)

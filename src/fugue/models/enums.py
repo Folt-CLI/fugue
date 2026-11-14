@@ -65,6 +65,7 @@ class Role(StrEnum):
     ANALYST = "analyst"
     IMPLEMENTER = "implementer"
     REVIEWER = "reviewer"
+    STAND_IN = "stand_in"
 
 
 class ModelTier(StrEnum):

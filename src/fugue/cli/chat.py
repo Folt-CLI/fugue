@@ -1,6 +1,6 @@
 """Reusable chat component: streaming output, an input line, slash commands, a transcript."""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext, suppress
 from pathlib import Path
 
@@ -9,7 +9,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
-from fugue.agents import AgentEvent, AgentRequest, ProviderAdapter
+from fugue.agents import AgentEvent, AgentRequest, AgentResult, ProviderAdapter
 from fugue.cli import terminal
 
 HELP = (
@@ -53,7 +53,15 @@ class ChatSession:
         live: bool = False,
         prompt: str = "you> ",
         continuation: str = "... ",
+        commands: Mapping[str, Callable[[str], Awaitable[bool]]] | None = None,
+        max_turns: int | None = None,
+        on_result: Callable[[AgentResult], None] | None = None,
+        on_turn: Callable[[str, str], None] | None = None,
     ) -> None:
+        self.commands = commands or {}
+        self.max_turns = max_turns
+        self.on_result = on_result
+        self.on_turn = on_turn
         self.adapter = adapter
         self.make_request = make_request
         self.reader = reader
@@ -71,7 +79,7 @@ class ChatSession:
     def transcript(self) -> str:
         return "".join(f"you: {question}\n\n{answer}\n\n" for question, answer in self.turns)
 
-    async def ask(self, question: str) -> bool:
+    async def ask(self, question: str, *, record: bool = True) -> bool:
         """Send one question; stream the answer. False when the adapter reported a failure."""
         chunks: list[str] = []
         display: Live | None = None
@@ -94,6 +102,8 @@ class ChatSession:
         with scope as entered:
             display = entered
             result = await self.adapter.run(request, on_event)
+        if self.on_result is not None:
+            self.on_result(result)
         streamed = "".join(chunks)
         if not result.ok:
             self.emit(Text(f"Follow-up failed: {result.error}"))
@@ -106,7 +116,10 @@ class ChatSession:
                 self.emit(Text(streamed))
             elif not streamed.endswith("\n"):
                 self.write("\n")
-        self.turns.append((question, streamed))
+        if record:
+            self.turns.append((question, streamed))
+            if self.on_turn is not None:
+                self.on_turn(question, streamed)
         return True
 
     def read_message(self) -> str:
@@ -137,7 +150,12 @@ class ChatSession:
 
     async def run(self) -> None:
         """Read messages until /quit or end of input."""
+        limit_announced = False
         while True:
+            limited = self.max_turns is not None and len(self.turns) >= self.max_turns
+            if limited and not limit_announced:
+                self.emit(Text("Turn limit reached; use /proceed, /save PATH or /quit."))
+                limit_announced = True
             try:
                 message = self.read_message()
             except EOFError:
@@ -147,16 +165,24 @@ class ChatSession:
                 continue
             if text.startswith("/"):
                 command, _, argument = text.partition(" ")
-                if command == "/quit":
+                if limited and command not in {*self.commands, "/save", "/quit"}:
+                    continue
+                if command in self.commands:
+                    if await self.commands[command](argument):
+                        return
+                    continue
+                elif command == "/quit":
                     return
                 if command == "/help":
-                    self.emit(Text(HELP))
+                    self.emit(Text(HELP + "".join(f"\n  {name}" for name in self.commands)))
                 elif command == "/save":
                     self.emit(Text(self.save(argument.strip())))
                 else:
                     self.emit(Text(f"Unknown command {command}; /help lists commands."))
                 continue
+            if limited:
+                continue
             try:
-                await self.ask(text)
+                await self.ask(message if self.on_turn is not None else text)
             except Exception as error:
                 self.emit(Text(f"Follow-up failed: {error}"))

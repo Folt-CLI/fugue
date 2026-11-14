@@ -21,6 +21,9 @@ from fugue.models import AuthenticationMode, ModelTier, Role, Size, SizeRule
 class Limits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    interview_max_turns: int = Field(default=10, gt=0)
+    interview_call_timeout_seconds: int = Field(default=300, gt=0)
+    interview_automatic_max_seconds: int = Field(default=1800, gt=0)
     max_repair_attempts: int = Field(default=3, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
     database_wait_seconds: int = Field(default=30, gt=0)
@@ -163,6 +166,7 @@ def _default_gate_commands() -> list[list[str]]:
 def _default_tier_rules() -> dict[Role, dict[Size, ModelTier]]:
     # XS and XL analyst rows and every XL row are absent: those Sizes run no such role.
     return {
+        Role.STAND_IN: {Size.L: ModelTier.MEDIUM},
         Role.ANALYST: {Size.M: ModelTier.MEDIUM, Size.L: ModelTier.LARGE},
         Role.IMPLEMENTER: {
             Size.XS: ModelTier.SMALL,
@@ -215,6 +219,7 @@ class RepoPolicy(BaseModel):
 def _default_roles() -> dict[Role, RoleConfig]:
     return {
         Role.ANALYST: RoleConfig(provider="claude"),
+        Role.STAND_IN: RoleConfig(provider="codex"),
         Role.IMPLEMENTER: RoleConfig(provider="codex"),
         Role.REVIEWER: RoleConfig(provider="codex"),
     }

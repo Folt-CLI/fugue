@@ -184,3 +184,25 @@ The default `human` profile preserves developer solution selection and explicit
 approval. `campaign` represents the repository's
 [autonomy exceptions](../dev/process.md#autonomous-development-campaign-exceptions);
 choosing the value is not a substitute for actual consent or credentials.
+
+### Interview configuration
+
+The interview uses the analyst role (default provider `claude`). The stand-in
+role is used only with `fugue question --automatic` and is omitted from the
+`fugue run` role table and its authentication warnings.
+
+| Role | Default provider | Default tier for Size L |
+| --- | --- | --- |
+| `stand_in` | `codex` | `medium` |
+
+Configure it with `[roles.stand_in]` (`provider`, `model`, `tier`,
+`authentication_mode`, `fallback`) and `[policy.tier_rules.stand_in]` (`L`).
+
+| Limit under `[limits]` | Default | Meaning |
+| --- | --- | --- |
+| `interview_max_turns` | 10 | Positive maximum of person or stand-in messages plus analyst replies; the initial analyst reply is additional. |
+| `interview_call_timeout_seconds` | 300 | Positive timeout for each analyst or stand-in call. |
+| `interview_automatic_max_seconds` | 1800 | Positive wall clock bound for the whole automatic interview; expiry requires human continuation. |
+
+Every interview call records usage under `analyst` or `stand_in`; inspect it with
+`fugue usage --by role`. A stand-in never selects an Analysis option.

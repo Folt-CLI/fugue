@@ -563,3 +563,17 @@ def test_saved_handoff_checksum_mismatch_blocks(tmp_path: Path) -> None:
         assert len(github.uploads) == 2
     finally:
         deps.store.close()
+
+
+def test_conversation_rendering_is_optional_and_marks_automatic() -> None:
+    conversation = "# Interview for ticket #43\n"
+    links = LINKS | {"43-conversation.md": "https://github.com/user-attachments/conversation"}
+    original = render_details(43, handoff(), LINKS)
+    assert render_details(43, handoff(), LINKS, automatic=True) == original
+    rendered = render_details(43, handoff(), links, automatic=True)
+    assert "**Conversation:** [43-conversation.md]" in rendered
+    assert "](https://github.com/user-attachments/conversation) (automatic)" in rendered
+    assert rendered.index("**Conversation:**") < rendered.index("**Key points**")
+    attachments = render_attachments(43, handoff(), conversation)
+    assert attachments.pop("43-conversation.md") == conversation
+    assert attachments == render_attachments(43, handoff())

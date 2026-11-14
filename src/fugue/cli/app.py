@@ -136,6 +136,21 @@ class _StoreClosingEngine:
         """Continue durable progress without supplying a decision or approval."""
         store = self._engine.deps.store
         run = store.get_run(run_id)
+        if (
+            store._connection.execute(
+                "SELECT 1 FROM operations WHERE run_id = ? AND kind = 'interview' "
+                "AND status != 'done' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            is not None
+        ):
+            return RunOutcome(
+                run_id,
+                RunState.INTERRUPTED,
+                problems=(
+                    f"Interview unfinished; continue with: fugue question {run.ticket_number}",
+                ),
+            )
         if run.state == RunState.COMPLETED:
             return RunOutcome(run_id, RunState.COMPLETED)
         if (
@@ -704,17 +719,54 @@ def question(
     by: Annotated[
         str | None, typer.Option("--by", help="Decision maker (default: OS user).")
     ] = None,
+    automatic: Annotated[
+        bool, typer.Option("--automatic", help="Use a stand-in for the interview.")
+    ] = False,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
     """Browse a Question and explicitly select its implementation scope."""
-    from fugue.cli.question import build_question
+    from fugue.cli.question import analysis_pending, build_question
+    from fugue.interview.flow import interview_then_analyse
 
     try:
+        if automatic and select is not None:
+            raise ValueError("--automatic cannot be combined with --select")
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
         loaded = _load(config, root_path)
         walkthrough = build_question(loaded, root_path)
-        asyncio.run(walkthrough.run(ticket, select, reason=reason, by=by))
+
+        async def conduct() -> None:
+            current = await walkthrough.client.get_ticket(ticket)
+            body = await walkthrough.client.get_body(ticket)
+            pending = analysis_pending(current, body)
+            if automatic and not pending:
+                raise ValueError("--automatic requires a Question with pending Analysis")
+            if pending and select is None:
+                engine = engine_factory(loaded, root_path, _print)
+                try:
+                    with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket):
+                        live = await engine.get_ticket(ticket)
+                        outcome = await interview_then_analyse(
+                            engine.deps,
+                            live,
+                            automatic=automatic,
+                            reader=walkthrough.prompt,
+                            print_fn=walkthrough.print,
+                        )
+                        if outcome.state != RunState.WAITING_FOR_SELECTION:
+                            raise typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 4))
+                        if automatic:
+                            return
+                finally:
+                    engine.close()
+            await walkthrough.run(ticket, select, reason=reason, by=by)
+
+        asyncio.run(conduct())
+    except typer.Exit:
+        raise
+    except TicketLocked as error:
+        raise _fail(str(error), 3) from error
     except (KeyboardInterrupt, asyncio.CancelledError) as error:
         raise _fail("Question walkthrough interrupted", 6) from error
     except ValueError as error:
