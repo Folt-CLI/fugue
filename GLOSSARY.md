@@ -18,6 +18,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [chat component](#chat-component)
 - [child](#child)
 - [Component](#component)
+- [conversation attachment](#conversation-attachment)
 - [cool-down](#cool-down)
 - [Disposition](#disposition)
 - [Epic](#epic)
@@ -50,6 +51,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [stage](#stage)
 - [Status](#status)
 - [terminal layer](#terminal-layer)
+- [ticket draft](#ticket-draft)
 - [ticket lock](#ticket-lock)
 - [transcript](#transcript)
 - [unavailable provider](#unavailable-provider)
@@ -237,6 +239,12 @@ the reusable conversation loop with streaming output, an input line, slash comma
 
 Status: decided.
 
+### conversation attachment
+
+the `<N>-conversation.md` file uploaded to a ticket created with `fugue new`: the verbatim turns of the creation conversation, the final preview and the decision, with strings matching known token patterns redacted.
+
+Status: decided.
+
 ### cool-down
 
 the interval after an unavailable result during which a later call tries other providers first.
@@ -338,6 +346,12 @@ Status: decided.
 ### terminal layer
 
 the one module every command uses for styled status, tables, panels, Markdown and progress; it degrades to plain text when output is piped, captured, or `NO_COLOR` or `TERM=dumb` is set.
+
+Status: decided.
+
+### ticket draft
+
+the saved state of one `fugue new` conversation at `<state_dir>/drafts/<id>.json`: the ticket fields, who owns each field (person or analyst), the turns and the creation journal. It is not a ticket and holds no environment values or tokens.
 
 Status: decided.
 

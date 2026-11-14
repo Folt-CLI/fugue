@@ -93,6 +93,75 @@ The summary is cached in `overview-OWNER-NAME.json` in the state directory for
 identical. `--refresh` ignores the cache and asks again. The cache file is the
 only file the command writes, and only when a summary was produced.
 
+## New ticket
+
+```sh
+uv run fugue new
+uv run fugue new --suggest
+uv run fugue new --resume ID
+uv run fugue new --parent N --assignee LOGIN
+```
+
+`new` creates one ticket through a guided conversation. It needs
+`github.project_owner` and `github.project_number`; outside a Git repository or
+without those settings it prints an `error:` line and exits with 2 before any
+GitHub or agent call. Nothing is created until you type `/create` and then
+exactly `yes`.
+
+Two starts exist. By default you describe an idea. With `--suggest` the analyst
+proposes at most 5 candidates from the open tickets, unfinished runs and reported
+usage totals; a candidate that cites a `#N` not in those facts is dropped, and
+the one you pick prefills the draft. Before drafting, up to 5 open or closed
+issues with similar words are listed so you can stop with `/quit` if the work
+exists. Then `new` asks for the outcome, who benefits, the boundaries and the
+Size (XS, S, M or L), and the analyst fills the remaining fields. Size XL (Epic
+work) is refused.
+
+The preview shows the five sections and every problem that blocks creation:
+empty Summary, Scope or title, a Component count the Size does not allow
+(exactly one for XS and S), allowed files missing, absolute or containing `..`,
+a milestone, parent or blocker that does not exist, or a blocker that is
+closed. The parent defaults to #1; `--parent N` overrides it. The assignee
+defaults to the authenticated login; `--assignee` overrides it.
+
+- XS and S: Analysis is `No analysis needed.`, Solution holds the decision and
+  links the uploaded `<N>-solution-1.md` scope, and one Component is set.
+- M: Summary and Scope are filled, Analysis and Solution stay `_Pending._` and
+  Components stay unset; no scope is attached. L is created as a Question in the
+  same way.
+- Every ticket gets Status S0, the Size and the Priority. Every ticket gets a
+  `<N>-conversation.md` conversation attachment with your verbatim turns, the
+  final preview and the decision. `/create` states that it will be uploaded.
+  Strings matching GitHub tokens, `sk-` keys, AWS access key ids and `Bearer`
+  tokens are replaced with `[redacted]` in the draft and the attachment; other
+  secrets are not detected, so do not type them.
+- On success it prints the ticket URL and `next: fugue run N`. It never starts
+  the run.
+
+In the session, `/help`, `/show`, `/set FIELD TEXT`, `/skip`, `/save PATH`
+(a transcript that never overwrites a file), `/create` and `/quit` are
+available; other text answers the question or asks the analyst for a change.
+A field you wrote with `/set` or an answer is yours: an analyst change to it is
+ignored with `kept your wording for FIELD`. Each analyst call is read-only in
+the repository, uses the analyst role's medium-size model, sees the draft, the
+step and bounded facts rather than the whole history, and at most 20 calls are
+made per session. A usage record is shown as reported values, not a bill. When
+the analyst is unavailable, limited, times out, fails, lacks read-only mode or
+structured output, or cites an unknown `#N`, the reason is printed and you
+continue by hand.
+
+The draft is saved after every step in `drafts/ID.json` in the state directory
+with mode 0600 and holds only the draft. End of input or `/quit` saves it and
+creates nothing; `fugue new --resume ID` continues. An unknown or unreadable id
+exits with 2 naming the id. Creation is journalled: after an interruption,
+`--resume ID` finds the issue by its marker and performs only the remaining
+steps. If the attachment upload fails the ticket exists without a scope link, so
+`fugue run` blocks with `A scope attachment is required` until
+`fugue new --resume ID` completes it.
+
+Exit codes: 0 created or ended without creating, 2 usage or an unknown draft,
+4 a failure (the draft stays saved), 6 interrupted.
+
 ## Terminal output
 
 On a terminal, output uses colour and a single run shows a live spinner with
