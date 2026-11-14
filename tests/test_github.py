@@ -160,6 +160,37 @@ def test_parse_ticket() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "component_field,expected",
+    [
+        (
+            {
+                "multi_select_options": [{"name": "Source Code"}, {"name": "User Docs"}],
+                "value": "Source Code,User Docs",
+            },
+            [Component.SOURCE_CODE, Component.USER_DOCS],
+        ),
+        (
+            {"multi_select_options": [{"name": "Source Code"}], "value": "Source Code"},
+            [Component.SOURCE_CODE],
+        ),
+        ({"multi_select_options": [], "value": "Source Code"}, []),
+        ({"single_select_option": {"name": "Source Code"}}, [Component.SOURCE_CODE]),
+        ({"value": "Source Code"}, [Component.SOURCE_CODE]),
+        ({"value": ["Source Code", "User Docs"]}, [Component.SOURCE_CODE, Component.USER_DOCS]),
+        ({"value": [{"name": "Source Code"}]}, [Component.SOURCE_CODE]),
+        (None, []),
+    ],
+)
+def test_parse_ticket_components(
+    component_field: dict[str, Any] | None, expected: list[Component]
+) -> None:
+    fields = VALUES[:1]
+    if component_field is not None:
+        fields = [*fields, {"issue_field_name": "Component", **component_field}]
+    assert parse_ticket(ISSUE, fields, ITEM).components == expected
+
+
 @pytest.mark.parametrize("blockers", [BLOCKERS, []])
 def test_get_ticket(fake: Fake, blockers: list[dict[str, Any]]) -> None:
     client, calls = fake(

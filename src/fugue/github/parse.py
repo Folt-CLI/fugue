@@ -68,8 +68,10 @@ def parse_ticket(
 ) -> Ticket:
     """Combine the REST issue, issue fields, project item and native blockers."""
     fields = {
-        entry["issue_field_name"]: (entry.get("single_select_option") or {}).get(
-            "name", entry.get("value")
+        entry["issue_field_name"]: (
+            [option["name"] for option in entry["multi_select_options"]]
+            if "multi_select_options" in entry
+            else (entry.get("single_select_option") or {}).get("name", entry.get("value"))
         )
         for entry in field_values
     }
