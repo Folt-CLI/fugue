@@ -75,8 +75,25 @@ Update the Fugue project status separately for each ticket, following [Ticket
 planning](ticket-planning.md). A shared stack does not change ticket ownership
 or status.
 
-## Unverified
+## When gh stack is unavailable
 
-Enablement for this repository has not been confirmed. The `line` and `side`
-review-comment parameters and requesting changes on an agent-authored pull
-request have not been verified here; see [Review](review.md).
+Fugue stops before creating a dependent worktree or opening a pull request when
+its stack probe reports `gh_too_old`, `git_too_old`, `extension_missing` or
+`feature_disabled`. Report the reason and stop. Do not emulate a stack with
+chained plain pull request bases. Install the required versions and extension,
+or enable the feature for the repository, then resume.
+
+The stack probe checks CLI and Git versions, the installed extension and
+`gh stack view` in the repository; exit code 9 establishes `feature_disabled`.
+An unexpected command failure also stops the run. A successful probe establishes
+availability for that invocation; it does not establish merge behavior or
+review permissions. This implementation has been verified with fakes; live
+repository enablement has not been exercised.
+
+A dependent run requires exactly one open blocker with an open pull request.
+It records that branch as its base, fetches it and creates the dependent
+worktree from its remote ref. Native `gh stack submit` publishes the layer;
+Fugue records its stack position and the lower pull request in the PR body.
+Restarting reuses the recorded base, existing worktree, branch and open PR.
+Divergent local and remote branches stop delivery before submission. Independent
+tickets retain the configured base (`develop` by default).

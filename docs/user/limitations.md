@@ -33,9 +33,13 @@ GitHub Projects or repository process metadata. See
 - In single-account GitHub use, reviews use COMMENT because the author cannot
   approve their own pull request. A clean required review and Fugue approval
   still have distinct purposes.
-- Stacks (stacked pull requests) are deferred from 0.1.0. Work in
-  [issue #49](https://github.com/Folt-CLI/fugue/issues/49) moved to the
-  [0.2.0 Epic #76](https://github.com/Folt-CLI/fugue/issues/76).
+- Stacks require native `gh stack`, gh >= 2.90.0, Git >= 2.36, the
+  `github/gh-stack` extension and repository enablement. An unavailable stack
+  probe stops dependent runs before worktree or PR creation and reports
+  `gh_too_old`, `git_too_old`, `extension_missing` or `feature_disabled`.
+  Fugue does not emulate stacks with chained plain PR bases. A dependent run
+  requires a sole open blocker with an open PR. Divergence stops submission;
+  stack merging still requires a developer instruction for that stack and head.
 - A reviewer identity setup command is deferred to
   [issue #77](https://github.com/Folt-CLI/fugue/issues/77).
 - Branch protection enforcing approvals is deferred to

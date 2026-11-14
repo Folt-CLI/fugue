@@ -50,6 +50,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [session](#session)
 - [Size](#size)
 - [stack](#stack)
+- [stack probe](#stack-probe)
 - [stage](#stage)
 - [stand-in](#stand-in)
 - [Status](#status)
@@ -177,6 +178,12 @@ Status: decided.
 ### stack
 
 A chain of pull requests in one repository, with the bottom targeting develop and each upper PR targeting the branch below. Each layer has its own ticket and worktree.
+
+Status: decided.
+
+### stack probe
+
+A read-only check of native stack availability: gh >= 2.90.0, Git >= 2.36, the installed github/gh-stack extension and repository enablement. Its result is available or an unavailable reason: gh_too_old, git_too_old, extension_missing or feature_disabled. Unexpected command failures stop the check.
 
 Status: decided.
 

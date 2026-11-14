@@ -169,7 +169,21 @@ a finding is rejected.
 ### Stacked pull requests
 
 Use `gh stack` from the [stacked pull request guide](stacked-prs.md). These
-commands require the `github/gh-stack` extension:
+commands require the `github/gh-stack` extension, gh >= 2.90.0 and Git >= 2.36.
+Fugue's stack probe checks these prerequisites and repository enablement using
+`gh stack view` (exit code 9 means `feature_disabled`). When unavailable, stop
+and report the reason; do not emulate stacks with chained plain PR bases.
+The runtime uses bounded subprocess calls for init, add, submit, view, rebase
+and push; it does not invoke stack merge automatically.
+
+| Probe reason | Required action |
+| --- | --- |
+| `gh_too_old` | Install gh >= 2.90.0 |
+| `git_too_old` | Install Git >= 2.36 |
+| `extension_missing` | Install `github/gh-stack` |
+| `feature_disabled` | Enable stacked pull requests for the repository |
+
+Supported native commands:
 
 | Command | Purpose |
 | --- | --- |
