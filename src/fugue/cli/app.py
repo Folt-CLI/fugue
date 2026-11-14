@@ -241,6 +241,7 @@ def _real_engine_factory(
             max_output_bytes=github.max_output_bytes,
             project_field_limit=github.project_field_limit,
             resolve_token_env=github.resolve_token_env,
+            review_token=github.review_token,
         )
     return _StoreClosingEngine(engine)
 
