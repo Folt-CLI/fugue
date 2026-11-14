@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from fugue.agents import UsageRecord, resolve_models
 from fugue.cli import terminal
+from fugue.cli.protection import BranchStatus
 from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
 from fugue.engine.locks import format_elapsed
@@ -64,6 +65,22 @@ class RunDetail:
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
     return terminal.table_text(header, rows)
+
+
+def render_protection(statuses: Sequence[BranchStatus]) -> str:
+    """Render each rule and explain branches whose protection could not be read."""
+    rows: list[list[str]] = []
+    for status in statuses:
+        if status.reason is not None:
+            rows.append([status.branch, "protection", status.reason])
+            continue
+        for rule, satisfied in (
+            ("required_approving_review_count >= 1", status.required_approving_review_count),
+            ("dismiss_stale_reviews", status.dismiss_stale_reviews),
+            ("required_conversation_resolution", status.required_conversation_resolution),
+        ):
+            rows.append([status.branch, rule, "satisfied" if satisfied else "missing"])
+    return "\n".join(_table(["branch", "rule", "status"], rows))
 
 
 def describe_models(models: Mapping[str, str | None]) -> str:

@@ -105,3 +105,36 @@ command prints the configuration line but does not edit `fugue.toml`.
 This credential switch applies to posting reviews. Replies and thread resolution
 retain their existing credentials. With the setting false, Fugue uses the
 existing GitHub CLI identity and posts COMMENT reviews.
+
+## Branch protection
+
+For `develop` and `main`, configure GitHub branch protection to require at least
+one approving review (`required_approving_review_count >= 1`), dismiss stale
+reviews when new commits are pushed (`dismiss_stale_reviews = true`), and require
+conversation resolution (`required_conversation_resolution.enabled = true`).
+These rules let GitHub enforce review requirements alongside Fugue's recorded
+merge approval, which is bound to the exact head commit SHA.
+
+Before requiring approving reviews from Fugue, register and install the reviewer
+app and enable `github.reviewer_identity_separate = true` as described above.
+In single-account mode Fugue submits COMMENT reviews; these do not satisfy a
+required approving review. Keep that fallback when a reviewer app is unavailable
+and arrange an approving review from another identity if protection requires it.
+
+Inspect the rules without changing them:
+
+```sh
+fugue protection
+fugue protection --branch release/next --branch stable
+```
+
+The default branches are `develop` and `main`; repeated `--branch` options replace
+those defaults. `--config` and `--repo-root` select the configuration and checkout.
+The command reads protection using the existing GitHub CLI identity, so that
+identity needs permission to read branch protection; it does not use the reviewer
+app credentials or require GitHub Project settings. It reports each rule as
+satisfied or missing. Exit code 0 means every checked rule is satisfied, 3 means
+rules are missing or a branch is explicitly unprotected, and 4 means protection
+could not be read or another execution error occurred. An ambiguous 404 is
+reported as inaccessible or missing, rather than treated as unprotected. The
+command never applies or changes protection.

@@ -15,6 +15,7 @@ import typer
 from fugue import __version__
 from fugue.analysis.stage import AnalysisGitHubClient, analyse
 from fugue.cli import render, terminal, wiring
+from fugue.cli.protection import check_protection
 from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
@@ -886,6 +887,38 @@ def new(
         raise _fail(str(error), 4) from error
     if code:
         raise typer.Exit(code)
+
+
+@app.command()
+def protection(
+    branch: Annotated[
+        list[str] | None,
+        typer.Option("--branch", help="Branch to check (repeatable; default: develop and main)."),
+    ] = None,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Check recommended branch protection rules without changing them."""
+    try:
+        root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
+        loaded = _load(config, root_path)
+        repo = wiring.resolve_repo(loaded, root_path)
+        github = loaded.github
+        client = GitHubClient(repo, github.project_owner or "", github.project_number or 0)
+        statuses = asyncio.run(check_protection(client, branch or ["develop", "main"]))
+    except typer.Exit:
+        raise
+    except wiring.WiringError as error:
+        raise _fail(str(error)) from error
+    except Exception as error:
+        raise _fail(str(error), 4) from error
+    _print(render.render_protection(statuses))
+    code = (
+        4
+        if any(status.unreadable for status in statuses)
+        else (3 if any(not status.satisfied for status in statuses) else 0)
+    )
+    raise typer.Exit(code)
 
 
 @app.command("children")
