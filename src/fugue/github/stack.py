@@ -43,7 +43,7 @@ class StackClient:
             raise GitHubError(result.argv, result.stderr or f"exit code {result.returncode}")
         return result.stdout
 
-    async def probe(self) -> StackProbe:
+    async def probe(self, repo: str | None = None) -> StackProbe:
         checks: tuple[tuple[tuple[str, ...], tuple[int, ...], StackReason], ...] = (
             (("gh", "--version"), (2, 90, 0), "gh_too_old"),
             (("git", "--version"), (2, 36, 0), "git_too_old"),
@@ -66,8 +66,24 @@ class StackClient:
         enabled = await self._result("gh", "stack", "view")
         if enabled.returncode == 9:
             return StackProbe(False, "feature_disabled")
-        if enabled.returncode != 0:
+        if enabled.returncode not in (0, 2):
             raise GitHubError(enabled.argv, enabled.stderr)
+        # Local tracking can be absent even when repository support is enabled.
+        if repo is None:
+            resolved = await self._result(
+                "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"
+            )
+            if resolved.returncode != 0:
+                raise GitHubError(resolved.argv, resolved.stderr)
+            repo = resolved.stdout.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            raise ValueError("Stack probe requires an explicit owner/repository")
+        support = await self._result("gh", "api", f"repos/{repo}/stacks?per_page=1", "--include")
+        status = re.search(r"^HTTP/\S+ (\d{3})\b", support.stdout)
+        if status is not None and status[1] == "404":
+            return StackProbe(False, "feature_disabled")
+        if support.returncode != 0 or status is None or status[1] != "200":
+            raise GitHubError(support.argv, support.stderr or "Cannot establish stack availability")
         return StackProbe(True)
 
     async def init(self, base: str, branches: Sequence[str]) -> str:
@@ -79,8 +95,14 @@ class StackClient:
     async def submit(self) -> str:
         return await self._run("submit")
 
-    async def view(self) -> str:
-        return await self._run("view")
+    async def view(self) -> str | None:
+        """Return tracked stack state, or None for the native not-in-stack exit code."""
+        result = await self._result("gh", "stack", "view")
+        if result.returncode == 2:
+            return None
+        if result.returncode != 0:
+            raise GitHubError(result.argv, result.stderr or f"exit code {result.returncode}")
+        return result.stdout
 
     async def rebase(self) -> str:
         return await self._run("rebase")

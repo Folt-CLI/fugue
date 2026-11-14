@@ -84,7 +84,12 @@ chained plain pull request bases. Install the required versions and extension,
 or enable the feature for the repository, then resume.
 
 The stack probe checks CLI and Git versions, the installed extension and
-`gh stack view` in the repository; exit code 9 establishes `feature_disabled`.
+`gh stack view` in the repository. Exit code 2 means the current branch has no
+local stack tracking; it allows initialization after repository support is
+confirmed. Exit code 9 establishes `feature_disabled`. The probe independently
+reads `GET /repos/{owner}/{repo}/stacks` for the configured repository; HTTP 404
+also reports `feature_disabled`, while permission and other API errors stop
+the run. Missing local tracking never serves as evidence of repository support.
 An unexpected command failure also stops the run. A successful probe establishes
 availability for that invocation; it does not establish merge behavior or
 review permissions. This implementation has been verified with fakes; live

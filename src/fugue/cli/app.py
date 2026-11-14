@@ -468,7 +468,7 @@ def _run_batch(
                         len(found.blocked_by) == 1
                         and await lower_branch(found, probe.deps.github) is not None
                     ):
-                        result = await StackClient(root_path).probe()
+                        result = await StackClient(root_path).probe(probe.deps.github.repo)
                         if result.available:
                             found = found.model_copy(update={"blocked_by": []})
                         else:

@@ -799,7 +799,7 @@ class Engine:
                 raise _Stop(RunState.BLOCKED, ["Open blockers require a sole lower open PR"])
         else:
             return self.deps.base_branch
-        probe = await self.deps.stack_factory(self.deps.repo_root).probe()
+        probe = await self.deps.stack_factory(self.deps.repo_root).probe(self.deps.github.repo)
         if not probe.available:
             raise _Stop(RunState.BLOCKED, [f"gh stack unavailable: {probe.reason}"])
         operation = self.deps.store.begin_operation(run_id, "stack_base", "base", {})
@@ -1080,7 +1080,7 @@ class Engine:
 
                 async def initialize() -> None:
                     view = await stack.view()
-                    if identity.branch not in view.split():
+                    if view is None or identity.branch not in view.split():
                         await stack.init(self.deps.base_branch, [lower, identity.branch])
 
                 await self._operation(run_id, "stack_init", {"branch": identity.branch}, initialize)

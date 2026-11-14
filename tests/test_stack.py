@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -59,6 +60,14 @@ def test_probe_outcomes(
             ("git", "--version"): (f"git version {git}", 0),
             ("gh", "extension", "list"): ("gh stack github/gh-stack" if extension else "", 0),
             ("gh", "stack", "view"): ("", code),
+            ("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"): (
+                "owner/repo\n",
+                0,
+            ),
+            ("gh", "api", "repos/owner/repo/stacks?per_page=1", "--include"): (
+                "HTTP/2.0 200 OK\r\n\r\n[]",
+                0,
+            ),
         }
         output, status = responses[tuple(argv)]
         return command_result(argv, output, status)
@@ -108,15 +117,52 @@ class FakeStack(StackClient):
         self.submits = 0
         self.metadata: list[tuple[str, ...]] = []
         self.interrupt = False
+        self.initializations = 0
+        self.view_codes: list[int] = []
+        self.repository_status = 200
 
-    async def probe(self) -> StackProbe:
-        return self.available
+    async def _result(self, *argv: str) -> CommandResult:
+        if argv == ("gh", "stack", "view"):
+            code = 0 if self.branches else 2
+            self.view_codes.append(code)
+            return replace(
+                command_result(argv, " ".join(self.branches), code),
+                stderr="current branch is not part of a stack" if code == 2 else "",
+            )
+        responses = {
+            ("gh", "--version"): "gh version 2.90.0",
+            ("git", "--version"): "git version 2.36.0",
+            ("gh", "extension", "list"): "gh stack github/gh-stack",
+            (
+                "gh",
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ): self.harness.github.repo,
+            (
+                "gh",
+                "api",
+                f"repos/{self.harness.github.repo}/stacks?per_page=1",
+                "--include",
+            ): f"HTTP/2.0 {self.repository_status}\r\n\r\n[]",
+        }
+        return command_result(
+            argv,
+            responses[tuple(argv)],
+            int(self.repository_status != 200) if argv[1] == "api" else 0,
+        )
 
-    async def view(self) -> str:
-        return " ".join(self.branches)
+    async def probe(self, repo: str | None = None) -> StackProbe:
+        if not self.available.available:
+            return self.available
+        return await super().probe() if repo is None else await super().probe(repo)
 
     async def init(self, base: str, branches: Sequence[str]) -> str:
         assert base == "develop"
+        self.initializations += 1
         self.branches = list(branches)
         return ""
 
@@ -179,6 +225,8 @@ def test_scenario_1_lower_open_pr_selects_base_and_native_submit(
     assert (path / "foundation.txt").read_text() == "lower layer"
     assert fake.branches == [lower, branch_name(harness.github.ticket)]
     assert fake.submits == 1
+    assert fake.initializations == 1
+    assert 2 in fake.view_codes
     assert "Stack position: above https://example.test/pr/70" in fake.metadata[0][3]
     assert harness.github.created == []
     assert asyncio.run(git_command(path, "rev-list", "--count", f"{lower}..HEAD")) == "1"
@@ -235,6 +283,7 @@ def test_scenario_5_restart_reuses_worktree_branch_and_submits_once(
     ).fetchall()
     assert len(operations) == 1
     assert len(fake.metadata) == 1
+    assert fake.initializations == 1
 
 
 def test_scenario_6_divergent_update_stops_without_push(
@@ -522,3 +571,74 @@ def test_stacked_review_prompt_and_inline_comments_use_recorded_base(
     [posted] = github.posted
     assert [comment.path for comment in posted.comments] == ["allowed.txt"]
     assert "foundation.txt:1" in posted.body
+
+
+@pytest.mark.parametrize("status", [200, 404, 403, 500])
+def test_fresh_clone_probe_checks_repository_support(tmp_path: Path, status: int) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        calls.append(tuple(argv))
+        if tuple(argv) == ("gh", "stack", "view"):
+            return replace(
+                command_result(argv, code=2),
+                stderr='current branch "develop" is not part of a stack',
+            )
+        responses = {
+            ("gh", "--version"): "gh version 2.90.0",
+            ("git", "--version"): "git version 2.36.0",
+            ("gh", "extension", "list"): "gh stack github/gh-stack",
+            (
+                "gh",
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ): "owner/repo\n",
+            (
+                "gh",
+                "api",
+                "repos/owner/repo/stacks?per_page=1",
+                "--include",
+            ): f"HTTP/2.0 {status}\r\n\r\n[]",
+        }
+        return command_result(
+            argv, responses[tuple(argv)], int(status != 200) if argv[1] == "api" else 0
+        )
+
+    client = StackClient(tmp_path, runner=runner)
+    if status in (403, 500):
+        with pytest.raises(GitHubError):
+            asyncio.run(client.probe())
+    else:
+        expected = StackProbe(True) if status == 200 else StackProbe(False, "feature_disabled")
+        assert asyncio.run(client.probe()) == expected
+    assert ("gh", "api", "repos/owner/repo/stacks?per_page=1", "--include") in calls
+
+
+@pytest.mark.parametrize("code", [1, 2, 4, 8, 9])
+def test_view_only_missing_local_tracking_allows_initialization(tmp_path: Path, code: int) -> None:
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        return command_result(argv, code=code)
+
+    client = StackClient(tmp_path, runner=runner)
+    if code == 2:
+        assert asyncio.run(client.view()) is None
+    else:
+        with pytest.raises(GitHubError):
+            asyncio.run(client.view())
+
+
+def test_fresh_clone_disabled_repository_blocks_before_worktree(
+    stacked: tuple[Harness, FakeStack, str],
+) -> None:
+    harness, fake, _ = stacked
+    fake.repository_status = 404
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    assert outcome.problems == ("gh stack unavailable: feature_disabled",)
+    assert not worktree_path(harness.deps.worktrees_root, harness.github.ticket).exists()
+    assert fake.initializations == fake.submits == 0
+    assert harness.github.pr is None
