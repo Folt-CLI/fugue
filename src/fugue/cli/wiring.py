@@ -3,7 +3,7 @@
 import json
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from fugue.agents import AdapterRegistry, register_claude, register_codex
@@ -19,6 +19,8 @@ from fugue.cli.render import (
 from fugue.config import FugueConfig
 from fugue.engine import Engine, EngineDeps
 from fugue.github import GitHubClient
+from fugue.reviewer_app.store import config_dir
+from fugue.reviewer_app.token import ReviewerTokenProvider
 from fugue.store import Store
 
 _REMOTE = re.compile(
@@ -84,6 +86,15 @@ def discover_config(config_path: Path | None, repo_root: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def reviewer_token(
+    config: FugueConfig, repo: str, env: Mapping[str, str], home: Path
+) -> Callable[[], Awaitable[str]] | None:
+    """Use the saved reviewer app only when a separate reviewer identity is enabled."""
+    if not config.github.reviewer_identity_separate:
+        return None
+    return ReviewerTokenProvider(repo, config_dir(env, home)).token
+
+
 def build_engine(
     config: FugueConfig,
     repo_root: Path,
@@ -114,6 +125,7 @@ def build_engine(
                 github.project_owner,
                 github.project_number,
                 resolve_token_env=github.resolve_token_env,
+                review_token=reviewer_token(config, repo, env, home),
             ),
             registry=registry,
             repo_root=repo_root,

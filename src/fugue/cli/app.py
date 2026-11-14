@@ -906,9 +906,9 @@ def children(
         github = loaded.github
         if github.project_owner is None or github.project_number is None:
             raise wiring.WiringError("github.project_owner and github.project_number are required")
-        client = GitHubClient(
-            wiring.resolve_repo(loaded, root_path), github.project_owner, github.project_number
-        )
+        repo = wiring.resolve_repo(loaded, root_path)
+        client = GitHubClient(repo, github.project_owner, github.project_number)
+        client.review_token = wiring.reviewer_token(loaded, repo, os.environ, Path.home())
         planned = plan(spec, await client.get_ticket(spec.question), loaded.policy)
         if not apply_changes:
             for child, body in zip(spec.children, planned.bodies, strict=True):
