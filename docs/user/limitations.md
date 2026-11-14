@@ -46,8 +46,12 @@ GitHub Projects or repository process metadata. See
   `github.reviewer_identity_separate = true`; see
   [reviewer identity setup](reviewer-identity.md). Replies and thread resolution
   retain their existing credentials.
-- Branch protection enforcing approvals is deferred to
-  [issue #78](https://github.com/Folt-CLI/fugue/issues/78).
+- `fugue protection` reads the recommended branch protection rules: at least one
+  approving review, dismissal of stale reviews and conversation resolution. It
+  does not apply or change protection. Required approving reviews need the
+  configured reviewer app or another reviewer identity; single-account COMMENT
+  reviews do not satisfy them. See [branch protection](reviewer-identity.md#branch-protection)
+  for setup, read permissions and the single-account fallback.
 - Follow-up hardening work remains deferred and is collected in
   [issue #53](https://github.com/Folt-CLI/fugue/issues/53).
 - The run store and artifacts are local. Keep their directory to inspect or
@@ -91,6 +95,12 @@ The CLI maps run outcomes to these codes:
 For several tickets the highest-precedence code applies: interrupted (6), then
 failed or error (4), provider-limited (5), then blocked, skipped or
 lock-conflicted (3), otherwise 0.
+
+For `protection`, 0 means every checked rule is satisfied, 3 means a missing rule
+or an explicitly unprotected branch, and 4 means protection could not be read or
+another execution error occurred. Read errors take precedence over missing
+rules. A permission refusal or ambiguous 404 is a read error, not evidence of an
+unprotected branch.
 
 An exit code of zero alone does not mean the ticket was merged or even that the
 run completed. Check the printed state and `status`. CLI argument parsing can
