@@ -170,6 +170,7 @@ class ChatSession:
                 if command in self.commands:
                     if await self.commands[command](argument):
                         return
+                    continue
                 elif command == "/quit":
                     return
                 if command == "/help":

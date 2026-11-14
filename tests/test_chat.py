@@ -225,6 +225,7 @@ def test_extra_commands_help_and_turn_limit() -> None:
     assert len(harness.adapter.requests) == 1
     assert "/continue" in harness.shown.getvalue()
     assert "Turn limit reached" in harness.shown.getvalue()
+    assert "Unknown command" not in harness.shown.getvalue()
 
 
 def test_callbacks_and_unrecorded_exchange() -> None:

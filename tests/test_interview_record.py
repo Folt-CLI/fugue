@@ -49,3 +49,31 @@ def test_finished_render_is_deterministic(tmp_path: Path) -> None:
     assert "Mode: automatic (stand-in provider: codex)" in text
     assert "stand-in (automatic): Original\nturn" in text
     assert "Ended by: stand-in (automatic)" in text
+
+
+def test_needs_human_request_reserves_turn_for_person(tmp_path: Path) -> None:
+    record = InterviewRecord(repo="owner/name", ticket=90)
+    record.add_turn("stand_in", "Need the intended audience", max_turns=1, needs_human=True)
+    store = InterviewStore(tmp_path)
+    store.save(record)
+    saved = store.load("owner/name", 90)
+    assert saved is not None
+    assert saved.turns[0].needs_human
+    assert saved.turn_count == 0
+    saved.add_turn("person", "Internal developers", max_turns=1)
+    assert saved.turn_count == 1
+    with pytest.raises(ValueError, match="turn limit"):
+        saved.add_turn("person", "Extra answer", max_turns=1)
+    assert "stand-in (automatic): Need the intended audience" in render_conversation(saved)
+
+
+def test_existing_turns_still_count_without_needs_human_metadata() -> None:
+    record = InterviewRecord.model_validate(
+        {
+            "repo": "owner/name",
+            "ticket": 90,
+            "turns": [{"speaker": "stand_in", "text": "Known audience"}],
+        }
+    )
+    assert record.turn_count == 1
+    assert not record.turns[0].needs_human

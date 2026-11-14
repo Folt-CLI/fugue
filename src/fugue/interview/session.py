@@ -220,7 +220,10 @@ class InterviewSession:
             )
             if reply.needs_human:
                 self.record.add_turn(
-                    "stand_in", reply.reply, max_turns=self.limits.interview_max_turns
+                    "stand_in",
+                    reply.reply,
+                    max_turns=self.limits.interview_max_turns,
+                    needs_human=True,
                 )
                 self.state = RunState.BLOCKED
                 self.reason = reply.reason or "Interview needs human input"

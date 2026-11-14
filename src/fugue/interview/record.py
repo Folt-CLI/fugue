@@ -14,6 +14,7 @@ class Turn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speaker: Speaker
     text: str
+    needs_human: bool = False
 
     @field_validator("text")
     @classmethod
@@ -44,11 +45,18 @@ class InterviewRecord(BaseModel):
 
     @property
     def turn_count(self) -> int:
-        return sum(turn.speaker != "analyst" for turn in self.turns)
+        return sum(
+            turn.speaker != "analyst" and not (turn.speaker == "stand_in" and turn.needs_human)
+            for turn in self.turns
+        )
 
-    def add_turn(self, speaker: Speaker, text: str, *, max_turns: int = 10) -> None:
+    def add_turn(
+        self, speaker: Speaker, text: str, *, max_turns: int = 10, needs_human: bool = False
+    ) -> None:
         if self.status != "open":
             raise ValueError("Interview has already proceeded")
-        if speaker != "analyst" and self.turn_count >= max_turns:
+        # A stand-in's request for human input reserves its turn for the person's answer.
+        counts = speaker != "analyst" and not (speaker == "stand_in" and needs_human)
+        if counts and self.turn_count >= max_turns:
             raise ValueError("Interview turn limit reached")
-        self.turns.append(Turn(speaker=speaker, text=text))
+        self.turns.append(Turn(speaker=speaker, text=text, needs_human=needs_human))

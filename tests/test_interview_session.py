@@ -205,3 +205,50 @@ def test_adapter_exception_is_failed_without_further_input(tmp_path: Path) -> No
     interview.analyst.adapter = ScriptedAdapter([ScriptStep(side_effect=fail)])
     assert asyncio.run(interview.run()) == RunState.FAILED
     assert interview.reason == "Offline"
+
+
+@pytest.mark.parametrize("maximum", [1, 2])
+def test_needs_human_at_last_turn_preserves_capacity_after_reload(
+    tmp_path: Path,
+    maximum: int,
+) -> None:
+    interview, _, _ = session(tmp_path, [], maximum=maximum)
+    for _ in range(maximum - 1):
+        interview.record.add_turn("stand_in", "Known audience details", max_turns=maximum)
+        interview.record.add_turn("analyst", "Who is the intended audience?", max_turns=maximum)
+    standin = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=result(
+                    structured_output={
+                        "reply": "Need the intended audience",
+                        "proceed": False,
+                        "needs_human": True,
+                        "reason": "Audience unspecified",
+                    }
+                )
+            )
+        ]
+    )
+    from fugue.interview.session import _TimedAdapter
+
+    interview.standin = _TimedAdapter(standin, 300)
+    assert asyncio.run(interview.run(automatic=True)) == RunState.BLOCKED
+    saved = interview.store.load("owner/name", 90)
+    assert saved is not None and saved.status == "open"
+    assert saved.turns[-1].speaker == "stand_in"
+    assert saved.turns[-1].text == "Need the intended audience"
+    resumed, analyst, messages = session(
+        tmp_path,
+        ["Internal developers", "ignored after limit", "/proceed"],
+        maximum=maximum,
+    )
+    resumed.record = saved
+    assert asyncio.run(resumed.run()) == RunState.WAITING_FOR_SELECTION
+    assert [request.prompt for request in analyst.requests] == ["Internal developers"]
+    final = interview.store.load("owner/name", 90)
+    assert final is not None
+    assert final.turn_count == maximum
+    assert final.turns[-2].speaker == "person"
+    assert final.turns[-2].text == "Internal developers"
+    assert any("Turn limit reached" in str(message) for message in messages)
