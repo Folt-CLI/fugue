@@ -33,6 +33,16 @@ def _tokens(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _is_usage_limit(text: str, raw: Mapping[str, Any]) -> bool:
+    if re.search(r"\bhit your usage limit\b", text, re.I):
+        return True
+    return any(
+        source.get(field) == "usage_limit_exceeded"
+        for source in (raw, _object(raw.get("error")))
+        for field in ("codex_error_info", "code")
+    )
+
+
 def _event(raw: Mapping[str, Any]) -> AgentEvent | None:
     kind = raw.get("type")
     item = _object(raw.get("item"))
@@ -50,7 +60,9 @@ def _event(raw: Mapping[str, Any]) -> AgentEvent | None:
         return AgentEvent("usage", data=_object(raw.get("usage")))
     if kind in {"error", "turn.failed"}:
         error = _object(raw.get("error"))
-        return AgentEvent("error", str(raw.get("message") or error.get("message") or kind))
+        return AgentEvent(
+            "error", str(raw.get("message") or error.get("message") or kind), data=raw
+        )
     return None
 
 
@@ -105,9 +117,7 @@ class CodexAdapter:
                 last_message = event.text
             elif event.kind == "error":
                 error = event.text
-                provider_limited = provider_limited or bool(
-                    re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error, re.I)
-                )
+                provider_limited = provider_limited or _is_usage_limit(error, event.data)
             elif event.kind == "usage":
                 usage_data = event.data
             if on_event is not None:
@@ -195,9 +205,7 @@ class CodexAdapter:
                 cost_estimate_usd=None,
                 duration_ms=int(result.duration_seconds * 1000),
             )
-        limited = provider_limited or bool(
-            re.search(r"\b(?:rate|usage)[ _-]*limit(?:s|ed|ing)?\b|\b429\b", error or "", re.I)
-        )
+        limited = provider_limited or _is_usage_limit(error or "", {})
         # No structured signed-out signal is evidenced for Codex, so only rate limits
         # and spawn failures are classified as unavailable.
         return AgentResult(
