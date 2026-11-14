@@ -1101,6 +1101,8 @@ class Engine:
         merge_base = (await git._run("merge-base", base, "HEAD")).strip()
         diff = await git._run("diff", "--name-only", "--no-renames", "-z", merge_base, "HEAD", "--")
         paths = [path for path in diff.split("\0") if path]
+        if stacked:
+            self._require_allowed(paths, allowed_files(scope))
         message = self._message(ticket, scope, self._changes(run_id, paths))
         verification = "\n".join(
             f"- {' '.join(command)}: passed" for command in self.deps.config.policy.gate_commands
@@ -1449,7 +1451,7 @@ class Engine:
             scope=scope,
             ci_result=ci_result,
             rounds=self._round_log(run_id),
-            diff=await self._diff(identity.path),
+            diff=await self._diff(run_id, identity.path),
         )
         # Every round is a fresh, read-only conversation so the review stays independent.
         choice = saved_model_choice(self.deps.store, run_id, Role.REVIEWER)
@@ -1487,9 +1489,9 @@ class Engine:
         parsed = parse_findings(result.final_text)
         return [] if isinstance(parsed, Clean) else parsed
 
-    async def _diff(self, path: Path) -> str:
+    async def _diff(self, run_id: int, path: Path) -> str:
         git = Git(path)
-        base = f"refs/heads/{self.deps.base_branch}"
+        base = _base_ref(self.deps, run_id)
         merge_base = (await git._run("merge-base", base, "HEAD")).strip()
         return await git._run("diff", "--no-renames", "-U3", merge_base, "HEAD", "--")
 
@@ -1505,7 +1507,7 @@ class Engine:
         port = self._review_port()
         built = build_review(
             record.findings,
-            diff_ranges(await self._diff(identity.path)),
+            diff_ranges(await self._diff(run_id, identity.path)),
             record.round,
             separate_identity=self.deps.config.github.reviewer_identity_separate,
         )

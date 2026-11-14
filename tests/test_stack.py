@@ -458,3 +458,67 @@ def test_lower_stack_divergence_blocks_before_worktree(
     assert "lower local and remote stack branches differ" in outcome.problems[0]
     assert not worktree_path(harness.deps.worktrees_root, harness.github.ticket).exists()
     assert fake.submits == 0
+
+
+def test_stacked_pr_update_rejects_committed_file_outside_scope(
+    stacked: tuple[Harness, FakeStack, str],
+) -> None:
+    harness, fake, _ = stacked
+    delivered = harness.run()
+    assert delivered.state == RunState.WAITING_FOR_CI
+    path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
+    branch = branch_name(harness.github.ticket)
+
+    async def update() -> None:
+        (path / "outside.txt").write_text("outside the selected scope")
+        await git_command(path, "add", "outside.txt")
+        await git_command(path, "commit", "-m", "Feature[#33]: outside scope")
+
+    asyncio.run(update())
+    outcome = harness.run()
+    assert outcome.state == RunState.BLOCKED
+    assert outcome.problems == ("Outside allowed files: outside.txt",)
+    assert fake.submits == 1
+    assert len(fake.metadata) == 1
+    remote = asyncio.run(git_command(path, "ls-remote", "--heads", "origin", branch))
+    assert remote.split()[0] == delivered.head_sha
+
+
+def test_stacked_review_prompt_and_inline_comments_use_recorded_base(
+    stacked: tuple[Harness, FakeStack, str],
+) -> None:
+    from test_engine_review import FakeReviewGitHub, agent_result
+
+    from fugue.agents import AccessMode, ScriptedAdapter, ScriptStep
+    from fugue.models import Role
+
+    harness, _, _ = stacked
+    delivered = harness.run()
+    assert delivered.state == RunState.WAITING_FOR_CI
+    github = FakeReviewGitHub(harness.github.ticket)
+    github.pr = harness.github.pr
+    harness.deps.github = github
+    role = harness.deps.config.roles[Role.REVIEWER]
+    reviewer = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=agent_result(
+                    "## Blocking\n"
+                    "1. High: Dependent change needs repair. `allowed.txt:1`\n"
+                    "2. Medium: Lower layer needs repair. `foundation.txt:1`\n"
+                )
+            )
+        ],
+        name=role.provider,
+    )
+    harness.deps.registry.register(role.provider, lambda config: reviewer)
+
+    outcome = asyncio.run(Engine(harness.deps).run_review(delivered.run_id))
+    assert outcome.state == RunState.WAITING_FOR_DECISION
+    [request] = reviewer.requests
+    assert request.access == AccessMode.READ_ONLY
+    assert "diff --git a/allowed.txt b/allowed.txt" in request.prompt
+    assert "foundation.txt" not in request.prompt
+    [posted] = github.posted
+    assert [comment.path for comment in posted.comments] == ["allowed.txt"]
+    assert "foundation.txt:1" in posted.body
