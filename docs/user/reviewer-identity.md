@@ -5,9 +5,9 @@ REQUEST_CHANGES review on that pull request. A reviewer identity is the GitHub i
 reviewer identity differs from the pull request author. A reviewer app is a private GitHub App
 registered for that purpose and owned by you or your organization.
 
-Fugue can register a reviewer app and save its private key. **Fugue does not yet
-post reviews as the reviewer app.** Registration alone does not change the
-identity used by workflow commands.
+Fugue can register a reviewer app, save its private key and post reviews as the
+app when `github.reviewer_identity_separate = true`. Registration alone does not
+change the reviewer identity.
 
 ## Register and install
 
@@ -83,7 +83,7 @@ submits COMMENT reviews, even when there are no blocking findings. This avoids
 GitHub's restriction on author reviews. Fugue's recorded merge approval remains
 a separate decision.
 
-Only after your workflow actually uses a separate reviewer identity, enable:
+After registering and installing the reviewer app for this repository, enable:
 
 ```toml
 [github]
@@ -91,6 +91,17 @@ reviewer_identity_separate = true
 ```
 
 This setting selects APPROVE for a clean review or REQUEST_CHANGES for blocking
-findings. It does not load the saved key, switch credentials or enable posting
-as the reviewer app. The setup command prints this line but does not edit
-`fugue.toml`.
+findings. Fugue loads the repository's saved app record and uses OpenSSL to sign
+a short-lived JWT with its private key. It discovers the repository installation
+and mints an installation token, passed to the review submission through
+`GH_TOKEN`. OpenSSL must be available on your machine. The token, JWT and private
+key text are never placed in command arguments or error messages.
+
+Missing or invalid app records or keys report an error naming
+`fugue reviewer-app setup`. Authentication failures also report that setup
+command; check the app installation and local key before retrying. The setup
+command prints the configuration line but does not edit `fugue.toml`.
+
+This credential switch applies to posting reviews. Replies and thread resolution
+retain their existing credentials. With the setting false, Fugue uses the
+existing GitHub CLI identity and posts COMMENT reviews.

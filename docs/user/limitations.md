@@ -41,9 +41,11 @@ GitHub Projects or repository process metadata. See
   Fugue does not emulate stacks with chained plain PR bases. A dependent run
   requires a sole open blocker with an open PR. Divergence stops submission;
   stack merging still requires a developer instruction for that stack and head.
-- `fugue reviewer-app setup` registers a private reviewer app and saves its key
-  locally; see [reviewer identity setup](reviewer-identity.md). Fugue does not yet
-  post reviews as the reviewer app.
+- Posting reviews as a reviewer app requires registration, installation for the
+  repository, a saved local private key, OpenSSL and
+  `github.reviewer_identity_separate = true`; see
+  [reviewer identity setup](reviewer-identity.md). Replies and thread resolution
+  retain their existing credentials.
 - Branch protection enforcing approvals is deferred to
   [issue #78](https://github.com/Folt-CLI/fugue/issues/78).
 - Follow-up hardening work remains deferred and is collected in

@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -1015,3 +1016,51 @@ def test_stack_lower_branch_requires_open_pr(fake: Fake, is_open: bool) -> None:
     assert asyncio.run(lower_branch(dependent, client)) == (branch_name(lower) if is_open else None)
     assert calls()[-1]["argv"][calls()[-1]["argv"].index("--head") + 1] == branch_name(lower)
     assert "--state" in calls()[-1]["argv"] and "open" in calls()[-1]["argv"]
+
+
+@pytest.mark.parametrize("separate", [False, True])
+def test_post_review_uses_only_configured_reviewer_token(fake: Fake, separate: bool) -> None:
+    client, calls = fake(
+        [
+            (
+                ["api", f"repos/{REPO}/pulls/27/reviews"],
+                response({"id": 5, "commit_id": "abc", "state": "COMMENTED", "body": "b"}),
+            )
+        ]
+    )
+    minted = 0
+
+    async def token() -> str:
+        nonlocal minted
+        minted += 1
+        return "installation-secret"
+
+    client.review_token = token if separate else None
+    runner = AsyncMock(wraps=client.runner)
+    client.runner = runner
+    asyncio.run(client.post_review(PR, "abc", "b"))
+    assert minted == int(separate)
+    assert runner.call_args.kwargs["env"].get("GH_TOKEN") == (
+        "installation-secret" if separate else None
+    )
+    assert "installation-secret" not in repr(calls()[0]["argv"])
+
+
+def test_post_review_hides_app_token_in_error(fake: Fake) -> None:
+    client, _ = fake(
+        [
+            (
+                ["api", f"repos/{REPO}/pulls/27/reviews"],
+                {"exit_code": 1, "stderr": "installation-secret"},
+            )
+        ]
+    )
+
+    async def token() -> str:
+        return "installation-secret"
+
+    client.review_token = token
+    with pytest.raises(GitHubError) as error:
+        asyncio.run(client.post_review(PR, "abc", "b"))
+    assert "installation-secret" not in str(error.value)
+    assert "installation-secret" not in error.value.stderr_tail
