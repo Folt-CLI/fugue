@@ -1,20 +1,24 @@
 """Run the ordered children of a parent as sequential stack layers."""
 
 import asyncio
+import json
 import sys
 from collections.abc import Sequence
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
+from functools import partial
 from heapq import heapify, heappop, heappush
 
 from fugue.engine.facts import selected_solution
-from fugue.engine.locks import TicketLock
-from fugue.engine.pipeline import Engine, EngineDeps, RunOutcome
+from fugue.engine.locks import RepoLock, TicketLock
+from fugue.engine.pipeline import Engine, EngineDeps, Identity, RunOutcome, _ticket_base
 from fugue.engine.review import Decision
+from fugue.github import GitHubError
 from fugue.github.stack import lower_branch
+from fugue.gitops import Git
 from fugue.models import IssueType, Size, Status, Ticket
-from fugue.store import Run
-from fugue.workflow import RunState
+from fugue.store import Operation, Run
+from fugue.workflow import RunState, Stage
 
 
 def order_children(children: Sequence[Ticket]) -> list[Ticket]:
@@ -76,6 +80,161 @@ class _WorkEngine(Engine):
             ticket = ticket.model_copy(update={"blocked_by": [self.lower]})
         return await super()._stack_base(run_id, ticket)
 
+    async def check_again(self, run_id: int) -> RunOutcome:
+        """Refresh CI while retaining the review of an unchanged layer diff."""
+
+        async def check() -> RunOutcome:
+            run = self.deps.store.get_run(run_id)
+            ticket, scope = await self._load(run_id, run.ticket_number)
+            identity = self._saved_identity(run_id)
+            assert identity is not None
+            diff = await self._diff(run_id, identity.path)
+            await self._wait_for_green(run_id, ticket, scope)
+            if diff != await self._diff(run_id, identity.path):
+                return await self._review_round(run_id, ticket, scope)
+            pr = await self.deps.github.find_pr(identity.branch)
+            assert pr is not None
+            return await self._ready_for_approval(
+                run_id, pr, await Git(identity.path).head_sha(), ()
+            )
+
+        return await self._guarded(run_id, check)
+
+
+async def _refresh_stack(
+    deps: EngineDeps, parent_id: int, active: set[int]
+) -> tuple[dict[int, Operation], str | None]:
+    """Reconcile an interrupted refresh before any saved delivery can be skipped."""
+    engine = Engine(deps)
+    layers: list[tuple[Run, Identity]] = []
+    refresh: dict[int, Operation] = {}
+    with ExitStack() as locks:
+        for work in deps.store.list_work(parent_id):
+            if work.ticket_number not in active:
+                continue
+            if work.run_id is None:
+                candidates = [
+                    candidate
+                    for candidate in reversed(deps.store.list_runs(work.ticket_number))
+                    if candidate.state not in {RunState.COMPLETED, RunState.FAILED}
+                    and candidate.repo.casefold() == deps.github.repo.casefold()
+                    and json.loads(engine._identity_operation(candidate.id, {}).intent_json).get(
+                        "repo_root"
+                    )
+                    == engine._repo_root()
+                ]
+                if not candidates:
+                    continue
+                run = candidates[0]
+                deps.store.set_work_run(parent_id, work.ticket_number, run.id)
+            else:
+                run = deps.store.get_run(work.run_id)
+            if run.state == RunState.COMPLETED:
+                continue
+            identity = engine._saved_identity(run.id)
+            if identity is None or not identity.path.exists():
+                continue
+            locks.enter_context(TicketLock(deps.state_dir, deps.github.repo, run.ticket_number))
+            layers.append((run, identity))
+            for operation in deps.store.pending_operations(run.id):
+                if operation.kind == "parent_refresh":
+                    refresh[run.id] = operation
+        if not layers:
+            return refresh, None
+        async with RepoLock(deps.state_dir, deps.repo_root):
+            git = Git(deps.repo_root)
+            await git.fetch()
+            moved: list[int] = []
+            for run, identity in layers:
+                base = _ticket_base(deps, run.id)
+                pending_lower = next(
+                    (
+                        identity
+                        for run, identity in layers
+                        if identity.branch == base and run.id in refresh
+                    ),
+                    None,
+                )
+                base_head = await git.head_sha(
+                    f"refs/heads/{base}"
+                    if pending_lower is not None
+                    else f"refs/remotes/origin/{base}"
+                )
+                merge_base = (
+                    await Git(identity.path)._run("merge-base", base_head, "HEAD")
+                ).strip()
+                if merge_base != base_head:
+                    moved.append(run.ticket_number)
+            if not moved and not refresh:
+                return refresh, None
+            for run, identity in layers:
+                layer_git = Git(identity.path)
+                for directory in ("rebase-merge", "rebase-apply"):
+                    path = (await layer_git._run("rev-parse", "--git-path", directory)).strip()
+                    if (identity.path / path).exists():
+                        return refresh, f"Layer #{run.ticket_number} has an unfinished rebase"
+                if await layer_git.status_porcelain():
+                    return (
+                        refresh,
+                        f"Layer #{run.ticket_number} worktree must be clean before rebase",
+                    )
+            for run, identity in layers:
+                if moved and run.id not in refresh:
+                    head = await Git(identity.path).head_sha()
+                    reviewed = deps.store.begin_operation(run.id, "parent_work", "reviewed", {})
+                    saved_review = json.loads(reviewed.result_json or "{}")
+                    diff = saved_review.get("diff")
+                    if diff is None:
+                        diff = await engine._diff(run.id, identity.path)
+                    refresh[run.id] = deps.store.begin_operation(
+                        run.id,
+                        "parent_refresh",
+                        head,
+                        {"diff": diff},
+                    )
+            stack = deps.stack_factory(layers[0][1].path)
+            if moved:
+                # The native rebase uses the local bottom base. Fast-forward it
+                # only after every worktree has passed the cleanliness check.
+                await git.fast_forward(deps.base_branch)
+                try:
+                    await stack.rebase()
+                except GitHubError as error:
+                    for run, identity in layers:
+                        for directory in ("rebase-merge", "rebase-apply"):
+                            path = (
+                                await Git(identity.path)._run("rev-parse", "--git-path", directory)
+                            ).strip()
+                            if (identity.path / path).exists():
+                                return (
+                                    refresh,
+                                    f"Rebase stopped at layer #{run.ticket_number}: {error}",
+                                )
+                    return refresh, f"Rebase stopped at layer #{moved[0]}: {error}"
+            # All layers pass the gate before publishing any rebased head.
+            for run, identity in layers:
+                if run.id not in refresh:
+                    continue
+                gate = deps.store.begin_operation(
+                    run.id, "parent_refresh_gate", await Git(identity.path).head_sha(), {}
+                )
+                if gate.status == "done":
+                    continue
+                result = await engine._stage(
+                    run.id, Stage.VERIFY, partial(engine._gate, run.id, identity.path)
+                )
+                if not result.passed:
+                    return refresh, f"Gate failed for layer #{run.ticket_number} after rebase"
+                deps.store.complete_operation(gate.id, {})
+            heads = [await Git(identity.path).head_sha() for _, identity in layers]
+            push = deps.store.begin_operation(
+                layers[0][0].id, "parent_refresh_push", ":".join(heads), {}
+            )
+            if push.status != "done":
+                await stack.push()
+                deps.store.complete_operation(push.id, {})
+    return refresh, None
+
 
 async def run_parent(
     deps: EngineDeps,
@@ -118,6 +277,9 @@ async def run_parent(
             return ParentOutcome(parent.id, state, tuple(outcomes), tuple(problems), next_step)
 
         try:
+            refresh, problem = await _refresh_stack(deps, parent.id, active)
+            if problem is not None:
+                return stop(RunState.BLOCKED, problem)
             for item in store.list_work(parent.id):
                 if item.ticket_number not in active:
                     continue
@@ -133,9 +295,13 @@ async def run_parent(
                     store.set_work_run(parent.id, ticket.number, run.id)
                     finished = store.begin_operation(run.id, "parent_work", "delivered", {})
                     reviewed = store.begin_operation(run.id, "parent_work", "reviewed", {})
-                    if run.state == RunState.COMPLETED or (
-                        reviewed.status == "done"
-                        and run.state == RunState.WAITING_FOR_MERGE_APPROVAL
+                    refreshing = refresh.get(run.id)
+                    if refreshing is None and (
+                        run.state == RunState.COMPLETED
+                        or (
+                            reviewed.status == "done"
+                            and run.state == RunState.WAITING_FOR_MERGE_APPROVAL
+                        )
                     ):
                         if ticket.issue_type != IssueType.QUESTION:
                             lower = ticket.number
@@ -195,7 +361,17 @@ async def run_parent(
                                 outcomes.append((ticket.number, outcome))
                                 return stop(outcome.state)
                         store.complete_operation(finished.id, {})
-                    outcome = await engine.continue_review(run.id)
+                    identity = engine._saved_identity(run.id)
+                    if (
+                        identity is not None
+                        and refreshing is not None
+                        and reviewed.status == "done"
+                        and json.loads(refreshing.intent_json)["diff"]
+                        == await engine._diff(run.id, identity.path)
+                    ):
+                        outcome = await engine.check_again(run.id)
+                    else:
+                        outcome = await engine.continue_review(run.id)
                     while outcome.state == RunState.WAITING_FOR_DECISION:
                         decisions = _prompt_decisions(outcome)
                         if decisions is None:
@@ -204,7 +380,15 @@ async def run_parent(
                     outcomes.append((ticket.number, outcome))
                     if outcome.state != RunState.WAITING_FOR_MERGE_APPROVAL:
                         return stop(outcome.state)
-                    store.complete_operation(reviewed.id, {})
+                    identity = engine._saved_identity(run.id)
+                    store.complete_operation(
+                        reviewed.id,
+                        {"diff": await engine._diff(run.id, identity.path)}
+                        if identity is not None
+                        else {},
+                    )
+                    if refreshing is not None:
+                        store.complete_operation(refreshing.id, {})
                     lower = ticket.number
             return stop(RunState.COMPLETED)
         except (asyncio.CancelledError, KeyboardInterrupt):

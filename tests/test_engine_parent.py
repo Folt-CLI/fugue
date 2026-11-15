@@ -1,26 +1,30 @@
 """Ordering, filtering and dependency-cycle cases for children of a parent."""
 
 import asyncio
+import fcntl
 import sys
 from collections.abc import Iterator
 from itertools import permutations
+from pathlib import Path
 
 import pytest
 from test_engine_review import BLOCKING, FIXED, LINES, review, write
 from test_engine_review import Harness as ReviewHarness
 from test_engine_review import harness as _review_harness
-from test_engine_to_pr import Harness, result
+from test_engine_to_pr import Harness, git_command, result
 from test_engine_to_pr import harness as harness
 from test_stack import FakeStack
 
 from fugue.agents import AgentRequest, ScriptedAdapter, ScriptStep
 from fugue.engine import Engine, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
-from fugue.engine.locks import TicketLock, TicketLocked
+from fugue.engine.locks import RepoLock, TicketLock, TicketLocked
 from fugue.engine.parent import _prompt_decisions, order_children, run_parent
 from fugue.engine.review import Decision, Finding
-from fugue.github import PullRequest
+from fugue.gate import GateResult
+from fugue.github import GitHubError, PullRequest
 from fugue.github.stack import StackProbe
+from fugue.gitops import Git, GitError
 from fugue.models import IssueType, Priority, Size, Status, Ticket
 from fugue.workflow import RunState
 
@@ -492,3 +496,213 @@ def test_review_choice_validates_reason_and_deferred_ticket(
     monkeypatch.setattr("fugue.cli.choices.LineChooser.choose", lambda *args, **kwargs: choice)
     monkeypatch.setattr("builtins.input", lambda message: answer)
     assert _prompt_decisions(outcome) == expected
+
+
+@pytest.fixture
+def reentry_stack(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Harness, FakeStack, dict[int, Ticket], list[str]]:
+    h, stack, catalog = parent_stack
+    calls: list[str] = []
+
+    def check_lock() -> None:
+        lock = RepoLock(h.deps.state_dir, h.deps.repo_root)
+        with lock.path.open("a+") as handle, pytest.raises(BlockingIOError):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    async def rebase() -> str:
+        check_lock()
+        calls.append("rebase")
+        for number in (33, 34):
+            path = worktree_path(h.deps.worktrees_root, catalog[number])
+            base = "develop" if number == 33 else branch_name(catalog[33])
+            try:
+                await Git(path)._run("rebase", base)
+            except GitError as error:
+                raise GitHubError(("gh", "stack", "rebase"), str(error)) from error
+        return ""
+
+    async def push() -> str:
+        check_lock()
+        calls.append("push")
+        for number in (33, 34):
+            branch = branch_name(catalog[number])
+            await Git(h.deps.repo_root)._run(
+                "push", "--force-with-lease", "origin", f"refs/heads/{branch}"
+            )
+        return ""
+
+    async def ready(
+        self: Engine, run_id: int, pr: PullRequest, head: str, notes: tuple[str, ...]
+    ) -> RunOutcome:
+        h.deps.store.set_run_state(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+        return RunOutcome(run_id, RunState.WAITING_FOR_MERGE_APPROVAL, head_sha=head)
+
+    async def green(self: Engine, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
+        return RunOutcome(run_id, RunState.RUNNING, ci_green=True)
+
+    monkeypatch.setattr(Engine, "_ready_for_approval", ready)
+    monkeypatch.setattr(Engine, "_wait_for_green", green)
+    monkeypatch.setattr(stack, "rebase", rebase)
+    monkeypatch.setattr(stack, "push", push)
+    first = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert first.state == RunState.COMPLETED
+    return h, stack, catalog, calls
+
+
+def advance_base(h: Harness, *, lower: Ticket | None = None, conflict: bool = False) -> None:
+    async def advance() -> None:
+        path = h.deps.repo_root if lower is None else worktree_path(h.deps.worktrees_root, lower)
+        filename = "allowed.txt" if conflict else "README"
+        (path / filename).write_text("Advanced base\n")
+        await git_command(path, "add", filename)
+        await git_command(path, "commit", "-m", "Advance base")
+        await git_command(path, "push", "origin", "HEAD")
+
+    asyncio.run(advance())
+
+
+@pytest.mark.parametrize("lower_advanced", [False, True])
+def test_reentry_rebases_advanced_base_and_checks_every_layer(
+    reentry_stack: tuple[Harness, FakeStack, dict[int, Ticket], list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    lower_advanced: bool,
+) -> None:
+    h, _, catalog, calls = reentry_stack
+    advance_base(h, lower=catalog[33] if lower_advanced else None)
+    gates: list[int] = []
+    checks: list[int] = []
+    reviews: list[int] = []
+    original_gate = Engine._gate
+
+    async def gate(self: Engine, run_id: int, path: Path) -> GateResult:
+        gates.append(h.deps.store.get_run(run_id).ticket_number)
+        assert calls == ["rebase"]
+        return await original_gate(self, run_id, path)
+
+    async def green(self: Engine, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
+        checks.append(ticket.number)
+        assert calls == ["rebase", "push"]
+        return RunOutcome(run_id, RunState.RUNNING, ci_green=True)
+
+    async def review_again(self: Engine, run_id: int) -> RunOutcome:
+        number = h.deps.store.get_run(run_id).ticket_number
+        reviews.append(number)
+        await green(self, run_id, catalog[number], "scope")
+        h.deps.store.set_run_state(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+        return RunOutcome(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.continue_review", review_again)
+    monkeypatch.setattr(Engine, "_gate", gate)
+    monkeypatch.setattr(Engine, "_wait_for_green", green)
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.COMPLETED
+    assert gates == checks == [33, 34]
+    assert reviews == ([33] if lower_advanced else [])
+    assert calls == ["rebase", "push"]
+    again = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert again.outcomes == ()
+    assert calls == ["rebase", "push"]
+    assert gates == checks == [33, 34]
+
+
+def test_reentry_without_movement_does_not_rebase(
+    reentry_stack: tuple[Harness, FakeStack, dict[int, Ticket], list[str]],
+) -> None:
+    h, _, catalog, calls = reentry_stack
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.COMPLETED
+    assert resumed.outcomes == ()
+    assert calls == []
+
+
+@pytest.mark.parametrize("dirty", [33, 34])
+def test_reentry_requires_every_worktree_clean_before_rebase(
+    reentry_stack: tuple[Harness, FakeStack, dict[int, Ticket], list[str]], dirty: int
+) -> None:
+    h, _, catalog, calls = reentry_stack
+    advance_base(h)
+    path = worktree_path(h.deps.worktrees_root, catalog[dirty])
+    (path / "untracked.txt").write_text("Keep this")
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.BLOCKED
+    assert resumed.problems == (f"Layer #{dirty} worktree must be clean before rebase",)
+    assert calls == []
+    assert (path / "untracked.txt").read_text() == "Keep this"
+
+
+@pytest.mark.parametrize("conflicting_layer", [33, 34])
+def test_reentry_conflict_stops_and_names_the_layer(
+    reentry_stack: tuple[Harness, FakeStack, dict[int, Ticket], list[str]],
+    conflicting_layer: int,
+) -> None:
+    h, _, catalog, calls = reentry_stack
+    advance_base(h, lower=catalog[33] if conflicting_layer == 34 else None, conflict=True)
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.BLOCKED
+    assert f"Rebase stopped at layer #{conflicting_layer}" in resumed.problems[0]
+    assert calls == ["rebase"]
+    repeated = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert repeated.state == RunState.BLOCKED
+    assert f"Layer #{conflicting_layer} has an unfinished rebase" in repeated.problems[0]
+    assert calls == ["rebase"]
+    with TicketLock(h.deps.state_dir, h.github.repo, 33):
+        pass
+
+
+def test_reentry_gate_failure_does_not_push_and_resumes_without_rebase(
+    reentry_stack: tuple[Harness, FakeStack, dict[int, Ticket], list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, _, catalog, calls = reentry_stack
+    advance_base(h)
+    gates: list[int] = []
+    fail = True
+
+    async def gate(self: Engine, run_id: int, path: Path) -> GateResult:
+        number = h.deps.store.get_run(run_id).ticket_number
+        gates.append(number)
+        return GateResult(not (fail and number == 34), (), None)
+
+    monkeypatch.setattr(Engine, "_gate", gate)
+    stopped = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert stopped.state == RunState.BLOCKED
+    assert stopped.problems == ("Gate failed for layer #34 after rebase",)
+    assert calls == ["rebase"]
+    fail = False
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.COMPLETED
+    assert gates == [33, 34, 34]
+    assert calls == ["rebase", "push"]
+
+
+def test_interrupted_ci_resumes_refresh_without_rebase_gate_or_push(
+    reentry_stack: tuple[Harness, FakeStack, dict[int, Ticket], list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, _, catalog, calls = reentry_stack
+    advance_base(h)
+    checks: list[int] = []
+    interrupt = True
+
+    async def green(self: Engine, run_id: int, ticket: Ticket, scope: str) -> RunOutcome:
+        checks.append(ticket.number)
+        if interrupt and ticket.number == 34:
+            raise asyncio.CancelledError
+        return RunOutcome(run_id, RunState.RUNNING, ci_green=True)
+
+    monkeypatch.setattr(Engine, "_wait_for_green", green)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert calls == ["rebase", "push"]
+    interrupt = False
+
+    async def no_gate(self: Engine, run_id: int, path: Path) -> GateResult:
+        pytest.fail("A successful gate must not repeat for the same head")
+
+    monkeypatch.setattr(Engine, "_gate", no_gate)
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.COMPLETED
+    assert checks == [33, 34, 34]
+    assert calls == ["rebase", "push"]
