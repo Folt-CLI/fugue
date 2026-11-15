@@ -9,7 +9,7 @@ Created and inspected on 2026-11-12.
 - Source Project: https://github.com/orgs/Folt-CLI/projects/1.
 - Fugue Project node ID: `PVT_kwDOFO3Uoc4BrXFq`.
 - Repository node ID: `R_kgDOVsUL-Q`.
-- Release Epic: https://github.com/Folt-CLI/fugue/issues/1, `0.1.0 -- Fugue`.
+- Release Epic: https://github.com/Folt-CLI/fugue/issues/1, `0.1.0 - Fugue`.
 - Milestones: `0.1.0` and `Backlog`.
 
 The source Project was copied through GitHub's native project-copy operation without its tickets or draft issues. Fugue's repository was linked explicitly. No Folt work items or source configuration were changed.

@@ -253,7 +253,7 @@ specific blocker.
 ## Epics
 
 An epic contains only `## Objective` followed by a quick explanation of what we
-want from the release. Its title is `<version> -- Fugue`. Close it with the
+want from the release. Its title is `<version> - Fugue`. Close it with the
 Disposition issue field set to Released only after all its children are closed;
 see the [XL template](working/xl-epic.md).
 Place release work under its existing delivery group or Question where

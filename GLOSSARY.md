@@ -110,7 +110,7 @@ Status: decided.
 
 ### Epic
 
-A release grouping issue of Size XL. Its title is <version> -- Fugue and its body contains only Objective. It has no Component and closes with Released after all children close.
+A release grouping issue of Size XL. Its title is <version> - Fugue and its body contains only Objective. It has no Component and closes with Released after all children close.
 
 Status: decided.
 

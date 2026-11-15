@@ -28,7 +28,7 @@ TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2"
 def epic(number: int = 1) -> Ticket:
     return Ticket(
         number=number,
-        title="0.1.0 -- Fugue",
+        title="0.1.0 - Fugue",
         issue_type=IssueType.EPIC,
         size=Size.XL,
         status=Status.IN_IMPLEMENTATION,
