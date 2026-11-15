@@ -2,6 +2,7 @@
 
 Every command prints through this module. Output degrades to plain text when it
 is piped, captured, or the environment asks for no colour (NO_COLOR, TERM=dumb).
+Tables, panels and Markdown also use plain text below 60 columns.
 """
 
 import os
@@ -21,6 +22,8 @@ from rich.text import Text
 
 # Columns whose cells are identifiers; they must never be cut short.
 ID_COLUMNS = frozenset({"id", "run", "ticket", "index"})
+
+MIN_RICH_WIDTH = 60
 
 _PREFIX_STYLES = {"error:": "bold red", "warning:": "yellow", "next:": "cyan", "note:": "dim"}
 
@@ -64,6 +67,11 @@ def console_for(
 def is_interactive(console: Console) -> bool:
     """True on a real, non-dumb terminal where live displays make sense."""
     return console.is_terminal and not console.is_dumb_terminal
+
+
+def supports_rich(console: Console) -> bool:
+    """True when styled tables, panels and Markdown fit a colour terminal."""
+    return is_interactive(console) and not console.no_color and console.width >= MIN_RICH_WIDTH
 
 
 def _current() -> Console:
@@ -164,7 +172,7 @@ def print_table(
     console: Console | None = None,
 ) -> None:
     target = console or _current()
-    if is_interactive(target) and not target.no_color:
+    if supports_rich(target):
         target.print(_build_table(header, rows, ID_COLUMNS, title=title, plain=False))
         return
     if title:
@@ -179,7 +187,7 @@ def _env_for(console: Console) -> Mapping[str, str]:
 
 def print_panel(title: str, body: str, *, console: Console | None = None) -> None:
     target = console or _current()
-    if is_interactive(target) and not target.no_color:
+    if supports_rich(target):
         target.print(Panel(Text(body), title=title))
         return
     print_text(title, console=target)
@@ -188,7 +196,7 @@ def print_panel(title: str, body: str, *, console: Console | None = None) -> Non
 
 def print_markdown(text: str, *, console: Console | None = None) -> None:
     target = console or _current()
-    if is_interactive(target) and not target.no_color:
+    if supports_rich(target):
         target.print(Markdown(text))
     else:
         print_text(text, console=target)
