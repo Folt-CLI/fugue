@@ -7,10 +7,13 @@ import os
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
+from functools import wraps
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, ParamSpec, Protocol
 
 import typer
+from typer import _click
+from typer.core import TyperGroup
 
 from fugue import __version__
 from fugue.analysis.stage import AnalysisGitHubClient, analyse
@@ -37,11 +40,76 @@ _STATE_EXIT_CODES: dict[str, int] = {
     RunState.INTERRUPTED: 6,
 }
 
+
+class _ReviewGroup(TyperGroup):
+    """Route a legacy integer first word to review start."""
+
+    def resolve_command(
+        self, ctx: _click.Context, args: list[str]
+    ) -> tuple[str | None, _click.Command | None, list[str]]:
+        if args:
+            try:
+                int(args[0])
+            except ValueError:
+                pass
+            else:
+                terminal.deprecated_name("fugue review RUN", "fugue review start RUN", "0.4.0")
+                args = ["start", *args]
+        return super().resolve_command(ctx, args)
+
+
 app = typer.Typer(name="fugue", no_args_is_help=True, add_completion=False)
 reviewer_app = typer.Typer(no_args_is_help=True)
-app.add_typer(reviewer_app, name="reviewer-app", help="Set up a reviewer identity.")
+app.add_typer(reviewer_app, name="reviewer-app", hidden=True)
 config_app = typer.Typer(no_args_is_help=True)
-app.add_typer(config_app, name="config", help="Inspect configuration.")
+app.add_typer(config_app, name="config", hidden=True)
+setup_app = typer.Typer(no_args_is_help=True)
+app.add_typer(setup_app, name="setup", help="Configure Fugue and check repository setup.")
+
+report_app = typer.Typer(no_args_is_help=True)
+app.add_typer(report_app, name="report", help="Inspect runs and repository reports.")
+
+review_app = typer.Typer(no_args_is_help=True, cls=_ReviewGroup)
+app.add_typer(review_app, name="review", help="Start reviews and decide findings.")
+approval_app = typer.Typer(no_args_is_help=True)
+app.add_typer(approval_app, name="approval", help="Request and record approval.")
+
+_CommandParams = ParamSpec("_CommandParams")
+
+
+def _deprecated_command(
+    old: str, new: str, legacy_app: typer.Typer | None = None
+) -> Callable[[Callable[_CommandParams, None]], Callable[_CommandParams, None]]:
+    def decorate(body: Callable[_CommandParams, None]) -> Callable[_CommandParams, None]:
+        @wraps(body)
+        def alias(*args: _CommandParams.args, **kwargs: _CommandParams.kwargs) -> None:
+            terminal.deprecated_name(f"fugue {old}", f"fugue {new}", "0.4.0")
+            body(*args, **kwargs)
+
+        target = app if legacy_app is None else legacy_app
+        target.command(old.split()[-1], hidden=True)(alias)
+        return body
+
+    return decorate
+
+
+_ReportParams = ParamSpec("_ReportParams")
+
+
+def _deprecated_report(
+    old: str, new: str
+) -> Callable[[Callable[_ReportParams, None]], Callable[_ReportParams, None]]:
+    def decorate(body: Callable[_ReportParams, None]) -> Callable[_ReportParams, None]:
+        @wraps(body)
+        def alias(*args: _ReportParams.args, **kwargs: _ReportParams.kwargs) -> None:
+            terminal.deprecated_name(f"fugue {old}", f"fugue report {new}", "0.4.0")
+            body(*args, **kwargs)
+
+        app.command(old, hidden=True)(alias)
+        return body
+
+    return decorate
+
 
 ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to fugue.toml.")]
 RepoRootOption = Annotated[
@@ -289,7 +357,8 @@ def _lenient_root(repo_root: Path | None) -> Path:
         return Path.cwd()
 
 
-@config_app.command("show")
+@_deprecated_command("config show", "setup config", config_app)
+@setup_app.command("config")
 def config_show(config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Print the effective configuration."""
     _print(render.render_config(_load(config, _lenient_root(repo_root))))
@@ -550,7 +619,8 @@ def run(
     raise _run_batch(loaded, root_path, engine, tickets, to_green)
 
 
-@app.command()
+@_deprecated_report("status", "runs")
+@report_app.command("runs")
 def status(
     run_id: Annotated[int | None, typer.Argument()] = None,
     ticket: Annotated[
@@ -570,7 +640,7 @@ def status(
         try:
             detail = wiring.load_run_detail(store, run_id)
         except StoreError as error:
-            raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
+            raise _fail(f"Unknown run id {run_id}", next_step="fugue report runs") from error
         if ticket is not None and detail.run.ticket_number != ticket:
             raise _fail(f"Run {run_id} is not for ticket #{ticket}")
         _print(render.render_run_detail(detail))
@@ -578,7 +648,8 @@ def status(
         store.close()
 
 
-@app.command()
+@_deprecated_report("usage", "usage")
+@report_app.command("usage")
 def usage(
     by: Annotated[
         Literal["role", "provider", "run", "ticket"],
@@ -600,7 +671,8 @@ def usage(
         store.close()
 
 
-@app.command()
+@_deprecated_report("timing", "timing")
+@report_app.command("timing")
 def timing(
     run_id: Annotated[int | None, typer.Argument()] = None,
     repo: RepoFilterOption = None,
@@ -615,7 +687,7 @@ def timing(
             try:
                 store.get_run(run_id)
             except StoreError as error:
-                raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
+                raise _fail(f"Unknown run id {run_id}", next_step="fugue report runs") from error
         _print(render.render_timing(store.stage_durations(run_id, repo)))
     finally:
         store.close()
@@ -649,13 +721,14 @@ def _execute(
         raise typer.Exit(_STATE_EXIT_CODES.get(result.state, 0))
 
 
-@app.command()
+@review_app.command("start")
 def review(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Run a review of the pull request head."""
     _execute(lambda engine: asyncio.run(engine.run_review(run_id)), config, repo_root)
 
 
-@app.command()
+@_deprecated_command("decide", "review decide")
+@review_app.command("decide")
 def decide(
     run_id: int,
     accept: Annotated[list[int] | None, typer.Option("--accept")] = None,
@@ -689,7 +762,8 @@ def decide(
     _execute(lambda engine: asyncio.run(engine.decide(run_id, decisions)), config, repo_root)
 
 
-@app.command("request-approval")
+@_deprecated_command("request-approval", "approval request")
+@approval_app.command("request")
 def request_approval(
     run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None
 ) -> None:
@@ -697,7 +771,8 @@ def request_approval(
     _execute(lambda engine: asyncio.run(engine.request_approval(run_id)), config, repo_root)
 
 
-@app.command()
+@_deprecated_command("approve", "approval record")
+@approval_app.command("record")
 def approve(
     run_id: int,
     reason: Annotated[str, typer.Option("--reason", help="Reason for approval.")],
@@ -795,7 +870,8 @@ def question(
         raise _fail(str(error), 4) from error
 
 
-@app.command()
+@_deprecated_report("overview", "overview")
+@report_app.command("overview")
 def overview(
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
@@ -828,7 +904,8 @@ def overview(
         raise typer.Exit(code)
 
 
-@reviewer_app.command("setup")
+@_deprecated_command("reviewer-app setup", "setup reviewer-app", reviewer_app)
+@setup_app.command("reviewer-app")
 def reviewer_app_setup(
     org: Annotated[
         str | None, typer.Option("--org", help="Register under an organization.")
@@ -892,7 +969,8 @@ def new(
         raise typer.Exit(code)
 
 
-@app.command()
+@_deprecated_command("protection", "setup protection")
+@setup_app.command("protection")
 def protection(
     branch: Annotated[
         list[str] | None,

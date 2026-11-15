@@ -137,7 +137,7 @@ def test_cli_exit_codes(
     monkeypatch.setattr(cli_app, "GitHubClient", lambda *args: client)
     result = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb"}).invoke(
         cli_app.app,
-        ["protection", "--repo-root", str(tmp_path), "--config", str(config)],
+        ["setup", "protection", "--repo-root", str(tmp_path), "--config", str(config)],
     )
     assert result.exit_code == code, result.output
     assert expected in result.output
@@ -154,6 +154,7 @@ def test_cli_repeated_branches_replace_defaults_and_error_takes_precedence(
     result = CliRunner().invoke(
         cli_app.app,
         [
+            "setup",
             "protection",
             "--repo-root",
             str(tmp_path),

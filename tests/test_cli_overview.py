@@ -63,7 +63,7 @@ def install(
 
 def invoke(root: Path, *args: str, columns: str = "200") -> Any:
     runner = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": columns})
-    return runner.invoke(cli_app.app, ["overview", "--repo-root", str(root), *args])
+    return runner.invoke(cli_app.app, ["report", "overview", "--repo-root", str(root), *args])
 
 
 def full_port() -> FakePort:
@@ -121,7 +121,7 @@ def test_report_lists_every_section_without_a_summary(
     assert "blocked by #20, #21" in text
     assert "waiting for a decision" in text and "fugue question 3" in text
     assert "fugue question 4" in text
-    assert "fugue decide 2 --accept INDEX --reject 'INDEX:reason text'" in text
+    assert "fugue review decide 2 --accept INDEX --reject 'INDEX:reason text'" in text
     assert "fugue resume 3" in text
     assert "open pull requests" in text and "aaaaaaa" in text and "aaaaaaaa" not in text
     assert "recently merged pull requests" in text and "merged thirty" in text
@@ -206,7 +206,7 @@ def test_unreachable_github_shows_local_runs_and_exits_zero(
     text = outcome.output
     assert outcome.exit_code == 0
     assert "note: GitHub unreachable (" in text and "); showing local runs only" in text
-    assert "fugue decide 2" in text and "fugue resume 3" in text
+    assert "fugue review decide 2" in text and "fugue resume 3" in text
     assert calls["adapter"] == 0
 
 
@@ -296,7 +296,9 @@ def test_outside_a_git_repository_fails_before_any_call(
 ) -> None:
     calls = install(monkeypatch, full_port(), adapter(result("#1 x.")))
     monkeypatch.chdir(tmp_path)
-    outcome = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb"}).invoke(cli_app.app, ["overview"])
+    outcome = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb"}).invoke(
+        cli_app.app, ["report", "overview"]
+    )
     assert outcome.exit_code == 2
     assert "error:" in outcome.output
     assert calls == {"github": 0, "adapter": 0}

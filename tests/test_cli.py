@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
@@ -149,7 +150,7 @@ def test_version_option() -> None:
 
 
 def test_config_show_defaults(tmp_path: Path) -> None:
-    result = runner.invoke(cli_app.app, ["config", "show", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "[roles.implementer]" in result.output
     assert 'provider = "codex"' in result.output
@@ -159,7 +160,7 @@ def test_config_show_defaults(tmp_path: Path) -> None:
 
 def test_config_show_reads_discovered_file(tmp_path: Path) -> None:
     (tmp_path / "fugue.toml").write_text('[github]\nrepo = "o/n"\nproject_number = 3\n')
-    result = runner.invoke(cli_app.app, ["config", "show", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "[github]" in result.output
     assert 'repo = "o/n"' in result.output
@@ -169,7 +170,7 @@ def test_config_show_reads_discovered_file(tmp_path: Path) -> None:
 def test_config_show_invalid_file_names_key_path(tmp_path: Path) -> None:
     path = tmp_path / "bad.toml"
     path.write_text("[limits]\nmax_repair_attempts = 0\n")
-    result = runner.invoke(cli_app.app, ["config", "show", "--config", str(path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--config", str(path)])
     assert result.exit_code == 2
     assert "limits.max_repair_attempts" in result.output
 
@@ -280,7 +281,7 @@ def test_batch_labels_progress_and_prints_summary(
         ["#3", "waiting_for_ci", "30", "pull"],
     ]
     assert "pull request #101" in summary
-    assert "#1 next: fugue review 10" in summary
+    assert "#1 next: fugue review start 10" in summary
     assert all(engine.closed for engine in engines)
     assert sorted(t for engine in engines for t in engine.tickets) == [1, 2, 3]
 
@@ -503,7 +504,7 @@ def test_explain_leaves_other_errors_unchanged() -> None:
 
 
 def test_config_show_lists_database_wait_seconds(tmp_path: Path) -> None:
-    result = runner.invoke(cli_app.app, ["config", "show", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--repo-root", str(tmp_path)])
     assert "database_wait_seconds = 30" in result.output
 
 
@@ -513,7 +514,7 @@ def test_render_skip_lists_blockers() -> None:
 
 def test_status_lists_recent_runs(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "#5" in result.output
     assert "#6" in result.output
@@ -523,7 +524,9 @@ def test_status_lists_recent_runs(isolated_state: Path, tmp_path: Path) -> None:
 
 def test_status_ticket_filter(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "--ticket", "5", "--repo-root", str(tmp_path)])
+    result = runner.invoke(
+        cli_app.app, ["report", "runs", "--ticket", "5", "--repo-root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "#5" in result.output
     assert "#6" not in result.output
@@ -534,18 +537,18 @@ def test_status_lists_repository_and_filters_by_repo(isolated_state: Path, tmp_p
     with Store(isolated_state / "fugue.db") as store:
         store.create_run(5, "other/repo")
     base = ["--repo-root", str(tmp_path)]
-    everything = runner.invoke(cli_app.app, ["status", *base])
+    everything = runner.invoke(cli_app.app, ["report", "runs", *base])
     assert everything.output.splitlines()[0].split()[:3] == ["id", "repo", "ticket"]
     assert "owner/repo" in everything.output and "other/repo" in everything.output
-    only = runner.invoke(cli_app.app, ["status", "--repo", "other/repo", *base])
+    only = runner.invoke(cli_app.app, ["report", "runs", "--repo", "other/repo", *base])
     assert "other/repo" in only.output and "owner/repo" not in only.output
-    unknown = runner.invoke(cli_app.app, ["status", "--repo", "no/such", *base])
+    unknown = runner.invoke(cli_app.app, ["report", "runs", "--repo", "no/such", *base])
     assert unknown.exit_code == 0
     assert unknown.output.strip() == "No runs."
 
 
 def test_status_without_store_is_empty(tmp_path: Path, isolated_state: Path) -> None:
-    result = runner.invoke(cli_app.app, ["status", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "No runs." in result.output
     assert not isolated_state.exists()
@@ -553,7 +556,7 @@ def test_status_without_store_is_empty(tmp_path: Path, isolated_state: Path) -> 
 
 def test_status_run_detail(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "2", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "2", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     output = result.output
     assert "stage attempts:" in output
@@ -568,15 +571,16 @@ def test_status_run_detail(isolated_state: Path, tmp_path: Path) -> None:
 
 def test_status_unknown_run_exits_two(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "99", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "99", "--repo-root", str(tmp_path)])
     assert result.exit_code == 2
-    assert "Unknown run id 99" in result.output
+    assert result.stdout == ""
+    assert result.stderr == "error: Unknown run id 99\nnext: fugue report runs\n"
 
 
 def test_status_run_with_mismatched_ticket_exits_two(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
     result = runner.invoke(
-        cli_app.app, ["status", "2", "--ticket", "5", "--repo-root", str(tmp_path)]
+        cli_app.app, ["report", "runs", "2", "--ticket", "5", "--repo-root", str(tmp_path)]
     )
     assert result.exit_code == 2
 
@@ -664,3 +668,41 @@ def test_render_roles_without_api_key_has_no_warning() -> None:
 def test_render_config_has_no_secret_fields() -> None:
     text = render.render_config(FugueConfig())
     assert "token" not in text.replace("tokens", "").lower()
+
+
+def test_report_help_lists_new_names_and_hides_legacy_names() -> None:
+    root_help = runner.invoke(cli_app.app, ["--help"])
+    assert root_help.exit_code == 0
+    assert "report" in root_help.stdout
+    for old in ("status", "usage", "timing", "overview"):
+        assert old not in root_help.stdout.split()
+    report_help = runner.invoke(cli_app.app, ["report", "--help"])
+    assert report_help.exit_code == 0
+    for name in ("runs", "usage", "timing", "overview"):
+        assert name in report_help.stdout.split()
+    no_command = runner.invoke(cli_app.app, ["report"])
+    assert no_command.exit_code == 2
+    assert "Usage:" in no_command.output
+
+
+@pytest.mark.parametrize("width", [60, 80, 200])
+def test_top_level_help_lists_exactly_ten_commands(width: int) -> None:
+    result = runner.invoke(cli_app.app, ["--help"], env={"COLUMNS": str(width)})
+    assert result.exit_code == 0
+    commands = result.stdout.split("Commands", 1)[1]
+    # Wrapped descriptions leave the command column blank.
+    names = set(re.findall(r"^│ ([a-z][a-z-]*)\s", commands, re.MULTILINE))
+    assert names == {
+        "run",
+        "resume",
+        "new",
+        "question",
+        "children",
+        "merge",
+        "report",
+        "review",
+        "approval",
+        "setup",
+    }
+    for old in ("config", "reviewer-app", "protection"):
+        assert old not in result.stdout.split()

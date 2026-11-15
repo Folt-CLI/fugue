@@ -91,7 +91,7 @@ def directory(root: Path) -> Path:
 
 def invoke(root: Path, *args: str) -> Any:
     return CliRunner().invoke(
-        app, ["reviewer-app", "setup", "--repo-root", str(root), "--timeout", "3", *args]
+        app, ["setup", "reviewer-app", "--repo-root", str(root), "--timeout", "3", *args]
     )
 
 
@@ -290,9 +290,9 @@ def test_scenario_11_routes_and_public_record(root: Path, monkeypatch: pytest.Mo
 def test_scenario_12_help_options() -> None:
     runner = CliRunner(env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"})
     for args, expected in (
-        (["--help"], ["reviewer-app"]),
-        (["reviewer-app", "--help"], ["setup"]),
-        (["reviewer-app", "setup", "--help"], ["--org", "--timeout", "--config", "--repo-root"]),
+        (["--help"], ["setup"]),
+        (["setup", "--help"], ["protection", "config", "reviewer-app"]),
+        (["setup", "reviewer-app", "--help"], ["--org", "--timeout", "--config", "--repo-root"]),
     ):
         result = runner.invoke(app, args)
         assert result.exit_code == 0

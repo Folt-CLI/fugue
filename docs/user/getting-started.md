@@ -49,7 +49,7 @@ storage locations.
 Pass the target repository explicitly when running outside its checkout:
 
 ```sh
-fugue config show --repo-root /path/to/repository
+fugue setup config --repo-root /path/to/repository
 fugue run 47 --repo-root /path/to/repository
 ```
 
@@ -64,9 +64,9 @@ The output gives a run id. A ticket number identifies the GitHub issue; a run id
 identifies the local execution. For an example run id of 1:
 
 ```sh
-fugue status 1 --repo-root /path/to/repository
-fugue usage --by run --repo-root /path/to/repository
-fugue timing 1 --repo-root /path/to/repository
+fugue report runs 1 --repo-root /path/to/repository
+fugue report usage --by run --repo-root /path/to/repository
+fugue report timing 1 --repo-root /path/to/repository
 ```
 
 Use the same configuration and state directory for later commands. Read the
