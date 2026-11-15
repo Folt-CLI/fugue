@@ -689,7 +689,6 @@ def test_menu_full_analysis_prints_complete_analysis(monkeypatch: pytest.MonkeyP
     assert client.calls == []
 
 
-
 def test_cli_selected_question_resumes_proposal_directly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
