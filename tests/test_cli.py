@@ -149,7 +149,7 @@ def test_version_option() -> None:
 
 
 def test_config_show_defaults(tmp_path: Path) -> None:
-    result = runner.invoke(cli_app.app, ["config", "show", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "[roles.implementer]" in result.output
     assert 'provider = "codex"' in result.output
@@ -159,7 +159,7 @@ def test_config_show_defaults(tmp_path: Path) -> None:
 
 def test_config_show_reads_discovered_file(tmp_path: Path) -> None:
     (tmp_path / "fugue.toml").write_text('[github]\nrepo = "o/n"\nproject_number = 3\n')
-    result = runner.invoke(cli_app.app, ["config", "show", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "[github]" in result.output
     assert 'repo = "o/n"' in result.output
@@ -169,7 +169,7 @@ def test_config_show_reads_discovered_file(tmp_path: Path) -> None:
 def test_config_show_invalid_file_names_key_path(tmp_path: Path) -> None:
     path = tmp_path / "bad.toml"
     path.write_text("[limits]\nmax_repair_attempts = 0\n")
-    result = runner.invoke(cli_app.app, ["config", "show", "--config", str(path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--config", str(path)])
     assert result.exit_code == 2
     assert "limits.max_repair_attempts" in result.output
 
@@ -503,7 +503,7 @@ def test_explain_leaves_other_errors_unchanged() -> None:
 
 
 def test_config_show_lists_database_wait_seconds(tmp_path: Path) -> None:
-    result = runner.invoke(cli_app.app, ["config", "show", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["setup", "config", "--repo-root", str(tmp_path)])
     assert "database_wait_seconds = 30" in result.output
 
 
@@ -682,3 +682,28 @@ def test_report_help_lists_new_names_and_hides_legacy_names() -> None:
     no_command = runner.invoke(cli_app.app, ["report"])
     assert no_command.exit_code == 2
     assert "Usage:" in no_command.output
+
+
+def test_top_level_help_lists_exactly_ten_commands() -> None:
+    result = runner.invoke(cli_app.app, ["--help"])
+    assert result.exit_code == 0
+    commands = result.stdout.split("Commands", 1)[1]
+    names = {
+        line.strip(" │").split()[0]
+        for line in commands.splitlines()
+        if line.strip(" │") and line.strip(" │")[0].isascii() and line.strip(" │")[0].isalpha()
+    }
+    assert names == {
+        "run",
+        "resume",
+        "new",
+        "question",
+        "children",
+        "merge",
+        "report",
+        "review",
+        "approval",
+        "setup",
+    }
+    for old in ("config", "reviewer-app", "protection"):
+        assert old not in result.stdout.split()

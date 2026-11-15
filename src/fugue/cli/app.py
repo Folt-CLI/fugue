@@ -60,9 +60,11 @@ class _ReviewGroup(TyperGroup):
 
 app = typer.Typer(name="fugue", no_args_is_help=True, add_completion=False)
 reviewer_app = typer.Typer(no_args_is_help=True)
-app.add_typer(reviewer_app, name="reviewer-app", help="Set up a reviewer identity.")
+app.add_typer(reviewer_app, name="reviewer-app", hidden=True)
 config_app = typer.Typer(no_args_is_help=True)
-app.add_typer(config_app, name="config", help="Inspect configuration.")
+app.add_typer(config_app, name="config", hidden=True)
+setup_app = typer.Typer(no_args_is_help=True)
+app.add_typer(setup_app, name="setup", help="Configure Fugue and check repository setup.")
 
 report_app = typer.Typer(no_args_is_help=True)
 app.add_typer(report_app, name="report", help="Inspect runs and repository reports.")
@@ -76,7 +78,7 @@ _CommandParams = ParamSpec("_CommandParams")
 
 
 def _deprecated_command(
-    old: str, new: str
+    old: str, new: str, legacy_app: typer.Typer | None = None
 ) -> Callable[[Callable[_CommandParams, None]], Callable[_CommandParams, None]]:
     def decorate(body: Callable[_CommandParams, None]) -> Callable[_CommandParams, None]:
         @wraps(body)
@@ -84,7 +86,8 @@ def _deprecated_command(
             terminal.deprecated_name(f"fugue {old}", f"fugue {new}", "0.4.0")
             body(*args, **kwargs)
 
-        app.command(old, hidden=True)(alias)
+        target = app if legacy_app is None else legacy_app
+        target.command(old.split()[-1], hidden=True)(alias)
         return body
 
     return decorate
@@ -354,7 +357,8 @@ def _lenient_root(repo_root: Path | None) -> Path:
         return Path.cwd()
 
 
-@config_app.command("show")
+@_deprecated_command("config show", "setup config", config_app)
+@setup_app.command("config")
 def config_show(config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Print the effective configuration."""
     _print(render.render_config(_load(config, _lenient_root(repo_root))))
@@ -900,7 +904,8 @@ def overview(
         raise typer.Exit(code)
 
 
-@reviewer_app.command("setup")
+@_deprecated_command("reviewer-app setup", "setup reviewer-app", reviewer_app)
+@setup_app.command("reviewer-app")
 def reviewer_app_setup(
     org: Annotated[
         str | None, typer.Option("--org", help="Register under an organization.")
@@ -964,7 +969,8 @@ def new(
         raise typer.Exit(code)
 
 
-@app.command()
+@_deprecated_command("protection", "setup protection")
+@setup_app.command("protection")
 def protection(
     branch: Annotated[
         list[str] | None,

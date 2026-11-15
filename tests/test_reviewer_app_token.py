@@ -79,7 +79,7 @@ def test_missing_or_invalid_files(tmp_path: Path, record: ReviewerAppRecord, fai
         data = json.loads(path.read_text())
         data["repo" if failure == "wrong-repo" else "app_id"] = SECRET
         path.write_text(json.dumps(data))
-    with pytest.raises(ConfigError, match="fugue reviewer-app setup") as error:
+    with pytest.raises(ConfigError, match="fugue setup reviewer-app") as error:
         ReviewerTokenProvider(REPO, tmp_path)
     assert SECRET not in "".join(traceback.format_exception(error.value))
 
@@ -112,7 +112,7 @@ def test_authentication_failures_hide_secrets(
             signing.side_effect = subprocess.CalledProcessError(
                 1, ["openssl"], output=SECRET, stderr=SECRET
             )
-        with pytest.raises(ConfigError, match="fugue reviewer-app setup") as error:
+        with pytest.raises(ConfigError, match="fugue setup reviewer-app") as error:
             asyncio.run(provider.token())
     diagnostic = "".join(traceback.format_exception(error.value))
     assert SECRET not in diagnostic
@@ -151,7 +151,7 @@ def test_shared_wiring_honors_flag_and_config_directory(
     config.github.reviewer_identity_separate = True
     token = reviewer_token(config, REPO, {"XDG_CONFIG_HOME": str(tmp_path)}, tmp_path / "unused")
     assert token is not None
-    with pytest.raises(ConfigError, match="fugue reviewer-app setup"):
+    with pytest.raises(ConfigError, match="fugue setup reviewer-app"):
         reviewer_token(config, REPO, {}, tmp_path / "unused")
 
 

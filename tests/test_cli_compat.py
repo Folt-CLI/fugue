@@ -183,3 +183,73 @@ def test_review_approval_help_hides_old_names() -> None:
         assert help_result.exit_code == 0
         for command in commands:
             assert command in help_result.stdout
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_setup_config_compatibility(tmp_path: Path, invalid: bool) -> None:
+    config = tmp_path / "fugue.toml"
+    config.write_text("invalid = [" if invalid else '[github]\nrepo = "o/r"\n')
+    options = ["--config", str(config), "--repo-root", str(tmp_path)]
+    assert_same_behaviour(["config", "show", *options], ["setup", "config", *options])
+    legacy = runner.invoke(cli_app.app, ["config", "show", *options])
+    current = runner.invoke(cli_app.app, ["setup", "config", *options])
+    assert current.exit_code == (2 if invalid else 0)
+    assert legacy.stderr == (
+        "warning: fugue config show is deprecated; use fugue setup config instead. "
+        "It will be removed in 0.4.0.\n" + current.stderr
+    )
+
+
+@pytest.mark.parametrize("code", [0, 3, 4])
+def test_setup_protection_compatibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    from test_cli_protection import FakeClient, failure, rules
+
+    (tmp_path / "fugue.toml").write_text('[github]\nrepo = "o/r"\n')
+    response = failure("HTTP 403") if code == 4 else rules(count=0 if code == 3 else 1)
+    client = FakeClient({"custom": response})
+    monkeypatch.setattr(cli_app, "GitHubClient", lambda *args: client)
+    options = ["--repo-root", str(tmp_path), "--branch", "custom"]
+    assert_same_behaviour(["protection", *options], ["setup", "protection", *options])
+    legacy = runner.invoke(cli_app.app, ["protection", *options])
+    current = runner.invoke(cli_app.app, ["setup", "protection", *options])
+    assert current.exit_code == code
+    assert legacy.stderr == (
+        "warning: fugue protection is deprecated; use fugue setup protection instead. "
+        "It will be removed in 0.4.0.\n" + current.stderr
+    )
+
+
+@pytest.mark.parametrize("code", [0, 2, 4, 6])
+def test_setup_reviewer_app_compatibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    from fugue.cli import reviewer_app as reviewer_command
+    from fugue.config import FugueConfig
+
+    calls: list[tuple[str | None, float]] = []
+
+    def setup(config: FugueConfig, root: Path, *, org: str | None, timeout: float) -> int:
+        assert root == tmp_path
+        calls.append((org, timeout))
+        terminal.print_text("reviewer app setup")
+        if code == 2:
+            raise ValueError("invalid setup")
+        if code == 4:
+            raise RuntimeError("setup failed")
+        if code == 6:
+            raise KeyboardInterrupt
+        return 0
+
+    monkeypatch.setattr(reviewer_command, "run_setup", setup)
+    options = ["--repo-root", str(tmp_path), "--org", "X", "--timeout", "5"]
+    assert_same_behaviour(["reviewer-app", "setup", *options], ["setup", "reviewer-app", *options])
+    legacy = runner.invoke(cli_app.app, ["reviewer-app", "setup", *options])
+    current = runner.invoke(cli_app.app, ["setup", "reviewer-app", *options])
+    assert current.exit_code == code
+    assert calls == [("X", 5.0)] * 4
+    assert legacy.stderr == (
+        "warning: fugue reviewer-app setup is deprecated; use fugue setup reviewer-app instead. "
+        "It will be removed in 0.4.0.\n" + current.stderr
+    )

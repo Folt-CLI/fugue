@@ -291,7 +291,7 @@ def test_batch_lines_stay_whole_and_prefixed(
 def test_config_show_prints_brackets_literally(tmp_path: Path) -> None:
     (tmp_path / "fugue.toml").write_text("")
     result = runner.invoke(
-        cli_app.app, ["config", "show", "--config", str(tmp_path / "fugue.toml")]
+        cli_app.app, ["setup", "config", "--config", str(tmp_path / "fugue.toml")]
     )
     assert result.exit_code == 0
     expected = render.render_config(cli_app._load(tmp_path / "fugue.toml", tmp_path))

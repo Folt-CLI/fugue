@@ -13,7 +13,7 @@ from fugue.config import ConfigError
 from fugue.reviewer_app.store import ReviewerAppRecord, app_dir
 
 Transport = Callable[[str, str, Mapping[str, str]], Mapping[str, object]]
-_SETUP = "Run fugue reviewer-app setup for this repository."
+_SETUP = "Run fugue setup reviewer-app for this repository."
 
 
 def default_transport(method: str, url: str, headers: Mapping[str, str]) -> Mapping[str, object]:
