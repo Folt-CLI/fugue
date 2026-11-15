@@ -1,6 +1,7 @@
 """Run the ordered children of a parent as sequential stack layers."""
 
 import asyncio
+import json
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -87,7 +88,8 @@ async def run_parent(
 
     Work ids are saved before any per-ticket execution. Delivered work is never
     repeated on re-entry, including interruption between delivery and the next
-    work. Existing pipeline operations reconcile unfinished work in place.
+    work. Delivery alone does not satisfy a later request to reach green CI.
+    Existing pipeline operations reconcile unfinished work in place.
     """
     # Import lazily: analysis uses the engine package too.
     from fugue.analysis.stage import analyse
@@ -130,7 +132,10 @@ async def run_parent(
                     )
                     store.set_work_run(parent.id, ticket.number, run.id)
                     finished = store.begin_operation(run.id, "parent_work", "delivered", {})
-                    if finished.status == "done" or run.state == RunState.COMPLETED:
+                    reached_green = json.loads(finished.result_json or "{}").get("ci_green", False)
+                    if run.state == RunState.COMPLETED or (
+                        finished.status == "done" and (not until_green or reached_green)
+                    ):
                         if ticket.issue_type != IssueType.QUESTION:
                             lower = ticket.number
                         continue
@@ -190,7 +195,7 @@ async def run_parent(
                     )
                     if not delivered:
                         return stop(outcome.state)
-                    store.complete_operation(finished.id, {})
+                    store.complete_operation(finished.id, {"ci_green": outcome.ci_green})
                     lower = ticket.number
             return stop(RunState.COMPLETED)
         except (asyncio.CancelledError, KeyboardInterrupt):

@@ -333,3 +333,69 @@ def test_parent_green_work_is_recorded_and_never_repeated(
     assert second.state == RunState.COMPLETED
     assert second.outcomes == ()
     assert calls == [33]
+
+
+@pytest.mark.parametrize("legacy_delivery", [False, True])
+def test_parent_to_green_monitors_previously_delivered_children(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_delivery: bool,
+) -> None:
+    h, stack, catalog = parent_stack
+    delivered = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    saved = {number: outcome.run_id for number, outcome in delivered.outcomes}
+    if legacy_delivery:
+        for run_id in saved.values():
+            operation = h.deps.store.begin_operation(run_id, "parent_work", "delivered", {})
+            h.deps.store.complete_operation(operation.id, {})
+    calls: list[int] = []
+
+    async def green(self: Engine, number: int) -> RunOutcome:
+        run = self._find_or_create_run(number)
+        assert run.id == saved[number]
+        calls.append(number)
+        return RunOutcome(run.id, RunState.RUNNING, pr_number=71, ci_green=True)
+
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.run_to_green", green)
+    monitored = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
+    assert monitored.state == RunState.COMPLETED
+    assert calls == [33, 34]
+    assert all(outcome.ci_green for _, outcome in monitored.outcomes)
+    repeated = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
+    assert repeated.state == RunState.COMPLETED
+    assert repeated.outcomes == ()
+    assert calls == [33, 34]
+    assert len(h.github.created) == 1
+    assert stack.submits == 1
+
+
+def test_parent_to_green_retries_failed_monitoring_without_repeating_green_children(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, stack, catalog = parent_stack
+    delivered = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    saved = {number: outcome.run_id for number, outcome in delivered.outcomes}
+    calls: list[int] = []
+    failing = True
+
+    async def green(self: Engine, number: int) -> RunOutcome:
+        run = self._find_or_create_run(number)
+        assert run.id == saved[number]
+        calls.append(number)
+        if number == 34 and failing:
+            h.deps.store.set_run_state(run.id, RunState.BLOCKED)
+            return RunOutcome(run.id, RunState.BLOCKED, problems=("CI checks failed",))
+        return RunOutcome(run.id, RunState.RUNNING, pr_number=71, ci_green=True)
+
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.run_to_green", green)
+    blocked = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
+    assert blocked.state == RunState.BLOCKED
+    assert calls == [33, 34]
+    assert blocked.outcomes[-1][1].problems == ("CI checks failed",)
+    failing = False
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
+    assert resumed.state == RunState.COMPLETED
+    assert calls == [33, 34, 34]
+    assert len(h.github.created) == 1
+    assert stack.submits == 1
