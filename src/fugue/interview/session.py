@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
 from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
@@ -16,11 +17,12 @@ from rich.text import Text
 from fugue.agents import AgentEvent, AgentRequest, AgentResult, ProviderAdapter
 from fugue.cli import terminal
 from fugue.cli.chat import ChatSession, default_reader
-from fugue.cli.choices import Chooser
+from fugue.cli.choices import ChoiceItem, Chooser, make_chooser
 from fugue.config.schema import Limits
 from fugue.interview.prompts import StandInReply, strip_ready
 from fugue.interview.record import InterviewRecord, Speaker
 from fugue.interview.render import render_conversation, render_turn_count
+from fugue.interview.request import InteractionRequest, InterviewReply
 from fugue.interview.store import InterviewStore
 from fugue.models import Role
 from fugue.workflow import RunState
@@ -91,22 +93,17 @@ class _InterviewChat(ChatSession):
     after_turn: Callable[[], Awaitable[None]]
 
     async def ask(self, question: str, *, record: bool = True) -> bool:
-        succeeded = (
-            await super().ask(question, record=record)
-            if self.console is None
-            else await self._ask_markdown(question, record=record)
-        )
+        succeeded = await self._ask_markdown(question, record=record)
         if succeeded:
             await self.after_turn()
         return succeeded
 
     async def _ask_markdown(self, question: str, *, record: bool) -> bool:
         console = self.console
-        assert console is not None
         chunks: list[str] = []
         display = (
             Live(Markdown(""), console=console, refresh_per_second=8)
-            if self.live and terminal.supports_rich(console)
+            if self.live and console is not None and terminal.supports_rich(console)
             else None
         )
 
@@ -120,18 +117,23 @@ class _InterviewChat(ChatSession):
         with display if display is not None else nullcontext():
             result = await self.adapter.run(request, on_event)
             answer = "".join(chunks) or result.final_text
+            if self.on_result is not None:
+                self.on_result(result)
             if result.ok:
                 if self.transform_answer is not None:
                     answer = self.transform_answer(answer)
                 if display is not None:
                     display.update(Markdown(answer))
-        if self.on_result is not None:
-            self.on_result(result)
         if not result.ok:
             self.emit(Text(f"Follow-up failed: {result.error}"))
             return False
         if display is None:
-            if chunks and self.write is not None and not terminal.supports_rich(console):
+            if (
+                chunks
+                and self.write is not None
+                and console is not None
+                and not terminal.supports_rich(console)
+            ):
                 # Buffer plain output until the final ready marker has been removed.
                 self.write(answer + ("" if answer.endswith("\n") else "\n"))
             else:
@@ -171,6 +173,8 @@ class InterviewSession:
             else interactive
         )
         self.ready = False
+        self.reply: InterviewReply | None = None
+        self.pending_request: InteractionRequest | None = None
         self.record = record
         self.store = store
         self.limits = limits or Limits()
@@ -202,6 +206,14 @@ class InterviewSession:
         self.analyst_calls = 0
 
     def _result(self, role: Role, result: AgentResult) -> None:
+        if role == Role.ANALYST:
+            self.reply = None
+            self.pending_request = None
+            try:
+                if result.structured_output is not None:
+                    self.reply = InterviewReply.model_validate(result.structured_output)
+            except ValidationError:
+                pass
         if role == Role.STAND_IN:
             self.record.standin_provider = result.provider
         if self.on_result:
@@ -228,10 +240,21 @@ class InterviewSession:
         return self.make_request(Role.ANALYST, text)
 
     def _answer(self, text: str) -> str:
+        if self.reply is not None:
+            self.ready = self.reply.ready
+            self.pending_request = self.reply.request
+            return self.reply.message
         answer, self.ready = strip_ready(text)
         return answer
 
     async def _confirm_ready(self) -> None:
+        request = self.pending_request
+        if self.speaker == "person" and request is not None and request.kind == "information":
+            if self.console is None:
+                self.print(Text(request.question))
+            else:
+                terminal.print_panel("Information", request.question, console=self.console)
+            self.pending_request = None
         ready, self.ready = self.ready, False
         if not (
             ready
@@ -258,7 +281,46 @@ class InterviewSession:
     def _read(self, prompt: str) -> str:
         if self.failed or self.record.status == "proceeded":
             raise EOFError
-        return self.reader(prompt)
+        request, self.pending_request = self.pending_request, None
+        if request is None or self.record.turn_count >= self.limits.interview_max_turns:
+            return self.reader(prompt)
+        if request.kind == "free_text":
+            self.print(Text(request.question))
+            return self.reader(prompt)
+        # Prompt libraries run their own event loop; leave the chat loop's thread.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            answer = executor.submit(self._choose_answer, request).result()
+        if answer is None:
+            raise EOFError
+        return answer
+
+    def _choose_answer(self, request: InteractionRequest) -> str | None:
+        chooser = self.chooser or make_chooser()
+        if request.kind == "confirmation":
+            # confirm() collapses cancellation into False. Keep the same Yes/No
+            # choice prompt with No as default, while preserving cancellation.
+            selected = chooser.choose(request.question, ("Yes", "No"), default=1)
+            return None if selected is None else "Yes" if selected == 0 else "No"
+        options = request.options or []
+        items = [
+            ChoiceItem(option.label, option.description, index == request.recommended)
+            for index, option in enumerate(options)
+        ]
+        if request.allow_custom:
+            items.append(ChoiceItem("Other"))
+        if request.kind == "single_choice":
+            selected = chooser.choose(request.question, items, default=request.recommended or 0)
+            indexes = None if selected is None else [selected]
+        else:
+            indexes = chooser.choose_many(request.question, items)
+        if indexes is None:
+            return None
+        labels = [options[index].label for index in indexes if index < len(options)]
+        if len(options) in indexes:
+            custom = self.reader("you> ")
+            if custom.strip():
+                labels.append(custom)
+        return ", ".join(labels)
 
     async def _proceed(self, argument: str = "") -> bool:
         self.record.status = "proceeded"
@@ -280,7 +342,7 @@ class InterviewSession:
             reader=self._read,
             emit=self.print,
             console=self.console,
-            live=self.live,
+            live=self.live and not automatic,
             write=self.write,
             commands={"/proceed": self._proceed},
             max_turns=self.limits.interview_max_turns,

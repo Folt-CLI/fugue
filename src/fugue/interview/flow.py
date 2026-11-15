@@ -16,6 +16,7 @@ from fugue.engine.pipeline import model_choice, role_adapter, usage_choice
 from fugue.interview.prompts import ANALYST_PROMPT, STAND_IN_PROMPT, STAND_IN_SCHEMA
 from fugue.interview.record import InterviewRecord
 from fugue.interview.render import render_conversation, render_header
+from fugue.interview.request import reply_schema
 from fugue.interview.session import InterviewSession
 from fugue.interview.store import InterviewStore
 from fugue.models import IssueType, Role, Size, Status, Ticket
@@ -86,7 +87,7 @@ async def interview_then_analyse(
             ),
             cwd=deps.repo_root,
             access=AccessMode.READ_ONLY,
-            output_schema=STAND_IN_SCHEMA if role == Role.STAND_IN else None,
+            output_schema=STAND_IN_SCHEMA if role == Role.STAND_IN else reply_schema(),
             timeout_seconds=deps.config.limits.interview_call_timeout_seconds,
             model=choice.models.get(config.provider),
             models=choice.models,

@@ -1,7 +1,7 @@
 """Bounded scripted interviews without provider or GitHub access."""
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from functools import partial
 from io import StringIO
@@ -19,6 +19,7 @@ from fugue.agents import (
     ScriptedAdapter,
     ScriptStep,
 )
+from fugue.cli.choices import ChoiceItem, LineChooser
 from fugue.config.schema import Limits
 from fugue.interview.record import InterviewRecord
 from fugue.interview.render import render_conversation, render_header
@@ -614,3 +615,250 @@ def test_live_reply_finishes_before_confirmation_or_failure(tmp_path: Path, fail
     else:
         assert interview.record.turns[0].text == "**Directions**"
         assert "Start the analysis?" in shown.getvalue()
+
+
+class RequestChooser:
+    def __init__(self, indexes: list[int] | None = None, *, confirmed: bool = False) -> None:
+        self.indexes = indexes
+        self.confirmed = confirmed
+        self.calls: list[tuple[str, object]] = []
+
+    def choose(
+        self, message: str, choices: Sequence[str | ChoiceItem], default: int = 0
+    ) -> int | None:
+        self.calls.append((message, list(choices)))
+        assert default == 1
+        return None if self.indexes is None else self.indexes[0]
+
+    def choose_many(
+        self,
+        message: str,
+        items: Sequence[str | ChoiceItem],
+        defaults: Sequence[int] = (),
+        *,
+        allow_empty: bool = False,
+    ) -> list[int] | None:
+        self.calls.append((message, list(items)))
+        return self.indexes
+
+    def confirm(self, message: str, default: bool = False) -> bool:
+        assert default is False
+        self.calls.append((message, default))
+        return self.confirmed
+
+
+def typed_reply(kind: str, *, allow_custom: bool = False) -> dict[str, object]:
+    request: dict[str, object] = {"kind": kind, "question": "Pick a direction"}
+    if kind in {"single_choice", "multiple_choice"}:
+        request.update(
+            options=[
+                {"label": "Small", "description": "Less work"},
+                {"label": "Large", "description": "More coverage"},
+            ],
+            recommended=1,
+            allow_custom=allow_custom,
+        )
+    return {"message": "Consider **these** directions.", "request": request, "ready": False}
+
+
+@pytest.mark.parametrize(
+    ("kind", "indexes", "confirmed", "expected"),
+    [
+        ("single_choice", [1], False, "Large"),
+        ("multiple_choice", [0, 1], False, "Small, Large"),
+        ("confirmation", [0], True, "Yes"),
+        ("confirmation", [1], False, "No"),
+        ("free_text", None, False, "My direction"),
+        ("information", None, False, None),
+    ],
+)
+def test_typed_requests_record_answers(
+    tmp_path: Path, kind: str, indexes: list[int] | None, confirmed: bool, expected: str | None
+) -> None:
+    commands = ["My direction", "/proceed"] if kind == "free_text" else ["/proceed"]
+    interview, _, messages = session(tmp_path, commands)
+    chooser = RequestChooser(indexes, confirmed=confirmed)
+    interview.chooser = chooser
+    set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.turns[0].text == "Consider **these** directions."
+    assert [turn.text for turn in interview.record.turns if turn.speaker == "person"] == (
+        [] if expected is None else [expected]
+    )
+    if kind in {"information", "free_text"}:
+        assert chooser.calls == []
+        assert "Pick a direction" in [str(message) for message in messages]
+    elif kind in {"single_choice", "multiple_choice"}:
+        assert chooser.calls[0][1] == [
+            ChoiceItem("Small", "Less work"),
+            ChoiceItem("Large", "More coverage", recommended=True),
+        ]
+    saved = interview.store.load("owner/name", 90)
+    assert saved is not None and saved.turns == interview.record.turns
+
+
+@pytest.mark.parametrize("kind", ["single_choice", "multiple_choice"])
+def test_custom_choice_uses_chat_line(tmp_path: Path, kind: str) -> None:
+    interview, _, _ = session(tmp_path, ["Custom direction", "/proceed"])
+    chooser = RequestChooser([2] if kind == "single_choice" else [0, 2])
+    interview.chooser = chooser
+    set_analyst_reply(
+        interview, ScriptStep(result=result(structured_output=typed_reply(kind, allow_custom=True)))
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.turns[1].text == (
+        "Custom direction" if kind == "single_choice" else "Small, Custom direction"
+    )
+    assert chooser.calls[0][1] == [
+        ChoiceItem("Small", "Less work"),
+        ChoiceItem("Large", "More coverage", recommended=True),
+        ChoiceItem("Other"),
+    ]
+
+
+@pytest.mark.parametrize("structured", [None, {}, {"message": ""}, {"request": {"kind": "bad"}}])
+def test_invalid_typed_reply_falls_back(tmp_path: Path, structured: object) -> None:
+    interview, _, messages = session(tmp_path, ["/proceed"])
+    set_analyst_reply(
+        interview,
+        ScriptStep(
+            result=result("Plain question?\n[INTERVIEW_READY]", structured_output=structured)
+        ),
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.turns[0].text == "Plain question?"
+    assert "Plain question?" in [str(message) for message in messages]
+
+
+@pytest.mark.parametrize("kind", ["single_choice", "multiple_choice", "confirmation"])
+def test_cancelled_request_records_no_answer(tmp_path: Path, kind: str) -> None:
+    interview, _, _ = session(tmp_path, [])
+    interview.chooser = RequestChooser()
+    set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
+    assert asyncio.run(interview.run()) == RunState.INTERRUPTED
+    assert [turn.speaker for turn in interview.record.turns] == ["analyst"]
+    saved = interview.store.load("owner/name", 90)
+    assert saved is not None
+    interview.record = saved
+    interview.reader = read(iter(["Resumed answer", "/proceed"]))
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.turns[1].text == "Resumed answer"
+
+
+@pytest.mark.parametrize(
+    ("kind", "line", "expected"),
+    [("single_choice", "1\n", "Small"), ("multiple_choice", "1,2\n", "Small, Large")],
+)
+def test_nonterminal_typed_request(tmp_path: Path, kind: str, line: str, expected: str) -> None:
+    interview, _, _ = session(tmp_path, ["/proceed"])
+    shown = StringIO()
+    interview.chooser = LineChooser(stdin=StringIO(line), stdout=shown)
+    interview.interactive = False
+    set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert "1. Small" in shown.getvalue()
+    assert "2. Large [recommended]" in shown.getvalue()
+    assert interview.record.turns[1].text == expected
+
+
+def test_typed_ready_finishes_live_before_confirmation(tmp_path: Path) -> None:
+    interview, _, _ = session(tmp_path, [])
+    shown = StringIO()
+    console = Console(file=shown, force_terminal=True, width=80, _environ={"TERM": "xterm"})
+
+    class ReadyChooser(RequestChooser):
+        def confirm(self, message: str, default: bool = False) -> bool:
+            assert not console._live_stack
+            return super().confirm(message, default)
+
+    interview.console = console
+    interview.print = console.print
+    interview.live = True
+    interview.interactive = True
+    chooser = ReadyChooser(confirmed=True)
+    interview.chooser = chooser
+    set_analyst_reply(
+        interview,
+        ScriptStep(result=result(structured_output={"message": "**Ready**", "ready": True})),
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.ended_by == "person_and_analyst"
+    assert chooser.calls == [("Start the analysis?", False)]
+    assert "**Ready**" not in shown.getvalue()
+
+
+@pytest.mark.parametrize("kind", ["single_choice", "information"])
+def test_automatic_typed_reply_never_prompts_or_shows_panel(tmp_path: Path, kind: str) -> None:
+    from fugue.interview.session import _TimedAdapter
+
+    interview, _, _ = session(tmp_path, [])
+    shown = StringIO()
+    console = Console(file=shown, force_terminal=True, width=80, _environ={"TERM": "xterm"})
+    interview.console = console
+    interview.print = console.print
+    interview.live = True
+    chooser = RequestChooser([1])
+    interview.chooser = chooser
+    set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
+
+    def standin_call(request: AgentRequest) -> None:
+        assert not console._live_stack
+
+    interview.standin = _TimedAdapter(
+        ScriptedAdapter(
+            [
+                ScriptStep(
+                    result=result(
+                        structured_output={
+                            "reply": "Enough known",
+                            "proceed": True,
+                            "needs_human": False,
+                            "reason": "",
+                        }
+                    ),
+                    side_effect=standin_call,
+                )
+            ]
+        ),
+        300,
+    )
+    assert asyncio.run(interview.run(automatic=True)) == RunState.WAITING_FOR_SELECTION
+    assert chooser.calls == []
+    assert "Pick a direction" not in shown.getvalue()
+    assert "Information" not in shown.getvalue()
+
+
+def set_analyst_reply(interview: InterviewSession, step: ScriptStep) -> None:
+    interview.analyst.adapter = ScriptedAdapter([step, ScriptStep(result=result())])
+
+
+@pytest.mark.parametrize("kind", ["single_choice", "multiple_choice", "confirmation"])
+@pytest.mark.parametrize("keys", ["\x1b", "\x03\r"])
+def test_terminal_request_cancellation_keeps_record(tmp_path: Path, kind: str, keys: str) -> None:
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from fugue.cli.choices import PromptChooser
+
+    interview, _, _ = session(tmp_path, [])
+    shown = StringIO()
+    console = Console(file=shown, width=80, force_terminal=True, _environ={"TERM": "xterm"})
+    interview.console = console
+    interview.live = True
+    set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
+    with create_pipe_input() as pipe:
+        pipe.send_text(keys)
+        interview.chooser = PromptChooser(input=pipe, output=DummyOutput(), stdout=shown)
+        assert asyncio.run(interview.run()) == RunState.INTERRUPTED
+    assert not console._live_stack
+    assert [turn.speaker for turn in interview.record.turns] == ["analyst"]
+    assert interview.record.status == "open"
+
+
+@pytest.mark.parametrize("kind", ["single_choice", "multiple_choice", "confirmation"])
+def test_request_eof_does_not_record_answer(tmp_path: Path, kind: str) -> None:
+    interview, _, _ = session(tmp_path, [])
+    interview.chooser = LineChooser(stdin=StringIO(""), stdout=StringIO())
+    set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
+    assert asyncio.run(interview.run()) == RunState.INTERRUPTED
+    assert interview.record.turn_count == 0
