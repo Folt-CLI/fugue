@@ -247,3 +247,14 @@ def test_callbacks_and_unrecorded_exchange() -> None:
     assert not asyncio.run(harness.session.ask("failed"))
     assert turns == [("question", "answer")]
     assert len(results) == 3
+
+
+def test_interview_help_describes_proceed_alias() -> None:
+    harness = Harness([], ["/help"])
+
+    async def proceed(argument: str) -> bool:
+        return True
+
+    harness.session.commands = {"/proceed": proceed}
+    harness.run()
+    assert "/proceed    confirm the end and start analysis" in harness.shown.getvalue()

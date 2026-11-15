@@ -234,3 +234,42 @@ def test_recorded_upload_is_reused_by_later_publication_run(tmp_path: Path) -> N
         assert github.contents[saved.upload.href] == render_conversation(saved).encode()
     finally:
         deps.store.close()
+
+
+def test_confirmed_interview_publishes_clean_conversation(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+
+    deps, github, _ = make_deps(tmp_path, size=Size.L)
+    github.ticket.issue_type = IssueType.QUESTION
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(f"Three directions.\n{READY_MARKER}")),
+            ScriptStep(result=result("", structured_output=handoff().model_dump())),
+        ]
+    )
+    deps.registry.register("claude", lambda config: adapter)
+    shown = StringIO()
+    try:
+        outcome = asyncio.run(
+            interview_then_analyse(
+                deps,
+                github.ticket,
+                chooser=LineChooser(stdin=StringIO("1\n"), stdout=shown),
+                interactive=True,
+                reader=read(iter([])),
+                print_fn=lambda text: None,
+            )
+        )
+        assert outcome.state == RunState.WAITING_FOR_SELECTION
+        saved = InterviewStore(tmp_path).finished(github.repo, 43)
+        assert saved is not None and saved.upload is not None
+        assert saved.ended_by == "person_and_analyst"
+        conversation = github.contents[saved.upload.href].decode()
+        assert READY_MARKER not in conversation
+        assert "Ended by: person and analyst" in conversation
+        assert shown.getvalue().count("Start the analysis?") == 1
+    finally:
+        deps.store.close()

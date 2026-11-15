@@ -57,11 +57,13 @@ class ChatSession:
         max_turns: int | None = None,
         on_result: Callable[[AgentResult], None] | None = None,
         on_turn: Callable[[str, str], None] | None = None,
+        transform_answer: Callable[[str], str] | None = None,
     ) -> None:
         self.commands = commands or {}
         self.max_turns = max_turns
         self.on_result = on_result
         self.on_turn = on_turn
+        self.transform_answer = transform_answer
         self.adapter = adapter
         self.make_request = make_request
         self.reader = reader
@@ -108,9 +110,12 @@ class ChatSession:
         if not result.ok:
             self.emit(Text(f"Follow-up failed: {result.error}"))
             return False
-        if not streamed:
-            self.emit(Text(result.final_text))
-            streamed = result.final_text
+        if self.transform_answer is not None:
+            streamed = self.transform_answer(streamed or result.final_text)
+        if not chunks:
+            if self.transform_answer is None:
+                streamed = result.final_text
+            self.emit(Text(streamed))
         elif display is None:
             if self.write is None:
                 self.emit(Text(streamed))
@@ -154,7 +159,12 @@ class ChatSession:
         while True:
             limited = self.max_turns is not None and len(self.turns) >= self.max_turns
             if limited and not limit_announced:
-                self.emit(Text("Turn limit reached; use /proceed, /save PATH or /quit."))
+                self.emit(
+                    Text(
+                        "Turn limit reached; confirm the end with /proceed, "
+                        "save with /save PATH or exit with /quit."
+                    )
+                )
                 limit_announced = True
             try:
                 message = self.read_message()
@@ -174,7 +184,20 @@ class ChatSession:
                 elif command == "/quit":
                     return
                 if command == "/help":
-                    self.emit(Text(HELP + "".join(f"\n  {name}" for name in self.commands)))
+                    self.emit(
+                        Text(
+                            HELP
+                            + "".join(
+                                f"\n  {name}"
+                                + (
+                                    "    confirm the end and start analysis"
+                                    if name == "/proceed"
+                                    else ""
+                                )
+                                for name in self.commands
+                            )
+                        )
+                    )
                 elif command == "/save":
                     self.emit(Text(self.save(argument.strip())))
                 else:

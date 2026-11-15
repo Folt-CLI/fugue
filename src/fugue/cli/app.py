@@ -743,6 +743,7 @@ def question(
     repo_root: RepoRootOption = None,
 ) -> None:
     """Browse a Question and explicitly select its implementation scope."""
+    from fugue.cli.choices import make_chooser
     from fugue.cli.question import analysis_pending, build_question
     from fugue.interview.flow import interview_then_analyse
 
@@ -768,6 +769,7 @@ def question(
                             engine.deps,
                             live,
                             automatic=automatic,
+                            chooser=make_chooser(),
                             reader=walkthrough.prompt,
                             print_fn=walkthrough.print,
                         )

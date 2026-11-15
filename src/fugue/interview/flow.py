@@ -8,6 +8,7 @@ from rich.console import RenderableType
 from fugue.agents import AccessMode, AgentRequest, AgentResult
 from fugue.analysis.stage import analyse
 from fugue.cli.chat import default_reader
+from fugue.cli.choices import Chooser
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.pipeline import model_choice, role_adapter, usage_choice
 from fugue.interview.prompts import ANALYST_PROMPT, STAND_IN_PROMPT, STAND_IN_SCHEMA
@@ -25,6 +26,8 @@ async def interview_then_analyse(
     ticket: Ticket,
     *,
     automatic: bool = False,
+    chooser: Chooser | None = None,
+    interactive: bool | None = None,
     reader: Callable[[str], str] = default_reader,
     print_fn: Callable[[RenderableType], None] = print,
 ) -> RunOutcome:
@@ -106,6 +109,8 @@ async def interview_then_analyse(
         store,
         analyst,
         request,
+        chooser=chooser,
+        interactive=interactive,
         limits=deps.config.limits,
         standin=standin,
         reader=reader,

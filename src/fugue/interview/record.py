@@ -37,7 +37,7 @@ class InterviewRecord(BaseModel):
     standin_provider: str | None = None
     turns: list[Turn] = Field(default_factory=list)
     status: Literal["open", "proceeded"] = "open"
-    ended_by: Literal["person", "stand_in", "turn_limit"] | None = None
+    ended_by: Literal["person", "person_and_analyst", "stand_in", "turn_limit"] | None = None
     started: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished: datetime | None = None
     upload: Upload | None = None

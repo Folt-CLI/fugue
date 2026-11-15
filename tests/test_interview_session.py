@@ -252,3 +252,156 @@ def test_needs_human_at_last_turn_preserves_capacity_after_reload(
     assert final.turns[-2].speaker == "person"
     assert final.turns[-2].text == "Internal developers"
     assert any("Turn limit reached" in str(message) for message in messages)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "ready"),
+    [
+        ("Directions\n[INTERVIEW_READY]", "Directions", True),
+        ("Directions\n[INTERVIEW_READY]\n", "Directions", True),
+        ("[INTERVIEW_READY]", "", True),
+        ("Directions\r\n[INTERVIEW_READY]\r\n", "Directions", True),
+        ("Directions\n[INTERVIEW_READY]\n\n", "Directions\n[INTERVIEW_READY]\n\n", False),
+        ("[INTERVIEW_READY]\nMore", "[INTERVIEW_READY]\nMore", False),
+        ("Directions [INTERVIEW_READY]", "Directions [INTERVIEW_READY]", False),
+        ("Directions\n[INTERVIEW_READY] extra", "Directions\n[INTERVIEW_READY] extra", False),
+    ],
+)
+def test_ready_marker_only_on_final_line(text: str, expected: str, ready: bool) -> None:
+    from fugue.interview.prompts import strip_ready
+
+    assert strip_ready(text) == (expected, ready)
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_ready_confirmation_and_noninteractive_proceed(tmp_path: Path, interactive: bool) -> None:
+    from io import StringIO
+
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+
+    interview, _, messages = session(tmp_path, ["/proceed"])
+    shown = StringIO()
+    interview.chooser = LineChooser(stdin=StringIO("1\n"), stdout=shown)
+    interview.interactive = interactive
+    interview.analyst.adapter = ScriptedAdapter(
+        [ScriptStep(result=result(f"Three directions.\n{READY_MARKER}"))]
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.ended_by == ("person_and_analyst" if interactive else "person")
+    assert shown.getvalue().count("Start the analysis?") == int(interactive)
+    assert interview.record.turns[0].text == "Three directions."
+    assert all(READY_MARKER not in str(message) for message in messages)
+    saved = interview.store.finished("owner/name", 90)
+    assert saved is not None and saved.ended_by == interview.record.ended_by
+
+
+@pytest.mark.parametrize("answer", ["2\n", "q\n"])
+def test_decline_or_cancel_waits_for_another_signal(tmp_path: Path, answer: str) -> None:
+    from io import StringIO
+
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+
+    interview, _, _ = session(tmp_path, ["more detail", "done"])
+    shown = StringIO()
+    interview.chooser = LineChooser(stdin=StringIO(answer + "1\n"), stdout=shown)
+    interview.interactive = True
+    interview.analyst.adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result(f"Directions\n{READY_MARKER}")),
+            ScriptStep(result=result("Another question?")),
+            ScriptStep(result=result(f"Updated directions\n{READY_MARKER}")),
+        ]
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert shown.getvalue().count("Start the analysis?") == 2
+    assert interview.record.turn_count == 2
+    assert interview.record.ended_by == "person_and_analyst"
+
+
+def test_automatic_ignores_analyst_ready_signal(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+    from fugue.interview.session import _TimedAdapter
+
+    interview, _, _ = session(tmp_path, [])
+    shown = StringIO()
+    interview.chooser = LineChooser(stdin=StringIO("1\n"), stdout=shown)
+    interview.interactive = True
+    interview.analyst.adapter = ScriptedAdapter(
+        [ScriptStep(result=result(f"Directions\n{READY_MARKER}"))]
+    )
+    interview.standin = _TimedAdapter(
+        ScriptedAdapter(
+            [
+                ScriptStep(
+                    result=result(
+                        structured_output={
+                            "reply": "Enough known",
+                            "proceed": True,
+                            "needs_human": False,
+                            "reason": "",
+                        }
+                    )
+                )
+            ]
+        ),
+        300,
+    )
+    assert asyncio.run(interview.run(automatic=True)) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.ended_by == "stand_in"
+    assert shown.getvalue() == ""
+    assert interview.record.turns[0].text == "Directions"
+
+
+def test_marker_in_middle_does_not_ask_for_confirmation(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from fugue.agents import AgentEvent
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+
+    interview, _, _ = session(tmp_path, ["/proceed"])
+    shown = StringIO()
+    interview.chooser = LineChooser(stdin=StringIO("1\n"), stdout=shown)
+    interview.interactive = True
+    answer = f"Directions\n{READY_MARKER}\nMore questions?"
+    interview.analyst.adapter = ScriptedAdapter(
+        [ScriptStep(result=result(answer), events=[AgentEvent("text", answer)])]
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert interview.record.ended_by == "person"
+    assert interview.record.turns[0].text == answer
+    assert shown.getvalue() == ""
+
+
+def test_confirmation_eof_keeps_interview_open_and_streamed_marker_is_removed(
+    tmp_path: Path,
+) -> None:
+    from io import StringIO
+
+    from fugue.agents import AgentEvent
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+
+    interview, _, messages = session(tmp_path, ["/quit"])
+    shown = StringIO()
+    interview.chooser = LineChooser(stdin=StringIO(""), stdout=shown)
+    interview.interactive = True
+    interview.analyst.adapter = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=result(),
+                events=[AgentEvent("text", "Directions\n"), AgentEvent("text", READY_MARKER)],
+            )
+        ]
+    )
+    assert asyncio.run(interview.run()) == RunState.INTERRUPTED
+    assert interview.record.status == "open"
+    assert interview.record.ended_by is None
+    assert interview.record.turns[0].text == "Directions"
+    assert all(READY_MARKER not in str(message) for message in messages)
+    assert shown.getvalue().count("Start the analysis?") == 1
