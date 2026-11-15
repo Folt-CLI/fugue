@@ -77,6 +77,59 @@ def test_colour_is_used_on_a_colour_terminal() -> None:
     assert ESCAPE in sink.getvalue()
 
 
+@pytest.mark.parametrize("helper", ["table", "panel", "markdown"])
+@pytest.mark.parametrize(
+    ("width", "env", "piped", "rich_output"),
+    [
+        (100, {}, False, True),
+        (59, {}, False, False),
+        (60, {}, False, True),
+        (100, {"NO_COLOR": "1"}, False, False),
+        (100, {"TERM": "dumb"}, False, False),
+        (100, {}, True, False),
+    ],
+    ids=["wide", "width-59", "width-60", "no-color", "dumb", "piped"],
+)
+def test_helpers_choose_rich_or_plain_output(
+    helper: str, width: int, env: dict[str, str], piped: bool, rich_output: bool
+) -> None:
+    settings = {"TERM": "xterm-256color", "COLUMNS": str(width), **env}
+    if piped:
+        sink = StringIO()
+        console = terminal.console_for(settings, file=sink)
+    else:
+        console, sink = terminal_console(settings)
+
+    if helper == "table":
+        terminal.print_table(["id", "state"], [["123", "ok"]], title="Title", console=console)
+    elif helper == "panel":
+        terminal.print_panel("Title", "body [literal]", console=console)
+    else:
+        terminal.print_markdown("# Heading\n\n**body** [literal]", console=console)
+
+    output = re.sub(r"\x1b\[[0-9;]*m", "", sink.getvalue())
+    if helper == "table":
+        assert ("─" in output) is rich_output
+        assert "Title" in output
+        assert "123" in output and "ok" in output
+        if not rich_output:
+            assert [line.split() for line in output.splitlines()] == [
+                ["Title"],
+                ["id", "state"],
+                ["123", "ok"],
+            ]
+    elif helper == "panel":
+        assert ("╭" in output) is rich_output
+        assert "body [literal]" in output
+        if not rich_output:
+            assert output == "Title\nbody [literal]\n"
+    elif rich_output:
+        assert "Heading" in output and "body" in output
+        assert "# Heading" not in output and "**body**" not in output
+    else:
+        assert output == "# Heading\n\n**body** [literal]\n"
+
+
 def test_blocking_wording_survives_without_colour() -> None:
     console, sink = terminal_console({"NO_COLOR": "1", "TERM": "xterm"})
     terminal.print_text("Blocking: missing test", console=console)

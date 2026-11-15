@@ -408,7 +408,7 @@ Status: decided.
 
 ### terminal layer
 
-the one module every command uses for styled status, tables, panels, Markdown and progress; it degrades to plain text when output is piped, captured, or `NO_COLOR` or `TERM=dumb` is set.
+the one module every command uses for styled status, tables, panels, Markdown and progress; it degrades to plain text when output is piped, captured, or `NO_COLOR` or `TERM=dumb` is set. Tables, panels and Markdown also degrade to plain text when the terminal width is below 60 columns.
 
 Status: decided.
 
