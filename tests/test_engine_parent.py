@@ -1,10 +1,14 @@
 """Ordering, filtering and dependency-cycle cases for children of a parent."""
 
 import asyncio
+import sys
 from collections.abc import Iterator
 from itertools import permutations
 
 import pytest
+from test_engine_review import BLOCKING, FIXED, LINES, review, write
+from test_engine_review import Harness as ReviewHarness
+from test_engine_review import harness as _review_harness
 from test_engine_to_pr import Harness, result
 from test_engine_to_pr import harness as harness
 from test_stack import FakeStack
@@ -13,11 +17,14 @@ from fugue.agents import AgentRequest, ScriptedAdapter, ScriptStep
 from fugue.engine import Engine, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
 from fugue.engine.locks import TicketLock, TicketLocked
-from fugue.engine.parent import order_children, run_parent
+from fugue.engine.parent import _prompt_decisions, order_children, run_parent
+from fugue.engine.review import Decision, Finding
 from fugue.github import PullRequest
 from fugue.github.stack import StackProbe
 from fugue.models import IssueType, Priority, Size, Status, Ticket
 from fugue.workflow import RunState
+
+review_harness = _review_harness
 
 
 def child(
@@ -147,6 +154,12 @@ def parent_stack(
     monkeypatch.setattr(h.github, "get_ticket", get_ticket)
     monkeypatch.setattr(h.github, "set_status", set_status)
     monkeypatch.setattr(h.github, "find_pr", find_pr)
+
+    async def clean(self: Engine, run_id: int) -> RunOutcome:
+        h.deps.store.set_run_state(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+        return RunOutcome(run_id, RunState.WAITING_FOR_MERGE_APPROVAL, ci_green=True)
+
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.continue_review", clean)
     yield h, fake, catalog
 
 
@@ -160,7 +173,9 @@ def test_parent_runs_children_as_one_stack(
     outcome = asyncio.run(run_parent(h.deps, 100, list(reversed(list(catalog.values())))))
     assert outcome.state == RunState.COMPLETED
     assert [number for number, _ in outcome.outcomes] == [33, 34]
-    assert all(result.state == RunState.WAITING_FOR_CI for _, result in outcome.outcomes)
+    assert all(
+        result.state == RunState.WAITING_FOR_MERGE_APPROVAL for _, result in outcome.outcomes
+    )
     work = h.deps.store.list_work(outcome.parent_run_id)
     assert [item.ticket_number for item in work] == [33, 34]
     assert [item.run_id for item in work] == [result.run_id for _, result in outcome.outcomes]
@@ -183,7 +198,7 @@ def test_parent_reentry_keeps_delivered_lower_and_resumes_upper(
     assert all(item.run_id is not None for item in before)
     lower_id = before[0].run_id
     assert lower_id is not None
-    assert h.deps.store.get_run(lower_id).state == RunState.WAITING_FOR_CI
+    assert h.deps.store.get_run(lower_id).state == RunState.WAITING_FOR_MERGE_APPROVAL
     outcome = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
     assert outcome.parent_run_id == parent.id
     assert [number for number, _ in outcome.outcomes] == [34]
@@ -335,67 +350,145 @@ def test_parent_green_work_is_recorded_and_never_repeated(
     assert calls == [33]
 
 
-@pytest.mark.parametrize("legacy_delivery", [False, True])
-def test_parent_to_green_monitors_previously_delivered_children(
+@pytest.mark.parametrize("state", [RunState.BLOCKED, RunState.FAILED, RunState.PROVIDER_LIMITED])
+def test_review_failure_keeps_lower_and_retries_only_upper(
     parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
     monkeypatch: pytest.MonkeyPatch,
-    legacy_delivery: bool,
+    state: RunState,
 ) -> None:
     h, stack, catalog = parent_stack
-    delivered = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    saved = {number: outcome.run_id for number, outcome in delivered.outcomes}
-    if legacy_delivery:
-        for run_id in saved.values():
-            operation = h.deps.store.begin_operation(run_id, "parent_work", "delivered", {})
-            h.deps.store.complete_operation(operation.id, {})
-    calls: list[int] = []
-
-    async def green(self: Engine, number: int) -> RunOutcome:
-        run = self._find_or_create_run(number)
-        assert run.id == saved[number]
-        calls.append(number)
-        return RunOutcome(run.id, RunState.RUNNING, pr_number=71, ci_green=True)
-
-    monkeypatch.setattr("fugue.engine.parent._WorkEngine.run_to_green", green)
-    monitored = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
-    assert monitored.state == RunState.COMPLETED
-    assert calls == [33, 34]
-    assert all(outcome.ci_green for _, outcome in monitored.outcomes)
-    repeated = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
-    assert repeated.state == RunState.COMPLETED
-    assert repeated.outcomes == ()
-    assert calls == [33, 34]
-    assert len(h.github.created) == 1
-    assert stack.submits == 1
-
-
-def test_parent_to_green_retries_failed_monitoring_without_repeating_green_children(
-    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    h, stack, catalog = parent_stack
-    delivered = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    saved = {number: outcome.run_id for number, outcome in delivered.outcomes}
     calls: list[int] = []
     failing = True
 
-    async def green(self: Engine, number: int) -> RunOutcome:
-        run = self._find_or_create_run(number)
-        assert run.id == saved[number]
+    async def review_work(self: Engine, run_id: int) -> RunOutcome:
+        number = h.deps.store.get_run(run_id).ticket_number
         calls.append(number)
-        if number == 34 and failing:
-            h.deps.store.set_run_state(run.id, RunState.BLOCKED)
-            return RunOutcome(run.id, RunState.BLOCKED, problems=("CI checks failed",))
-        return RunOutcome(run.id, RunState.RUNNING, pr_number=71, ci_green=True)
+        outcome_state = state if number == 34 and failing else RunState.WAITING_FOR_MERGE_APPROVAL
+        h.deps.store.set_run_state(run_id, outcome_state)
+        return RunOutcome(run_id, outcome_state)
 
-    monkeypatch.setattr("fugue.engine.parent._WorkEngine.run_to_green", green)
-    blocked = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
-    assert blocked.state == RunState.BLOCKED
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.continue_review", review_work)
+    blocked = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert blocked.state == state
     assert calls == [33, 34]
-    assert blocked.outcomes[-1][1].problems == ("CI checks failed",)
     failing = False
-    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values()), until_green=True))
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
     assert resumed.state == RunState.COMPLETED
     assert calls == [33, 34, 34]
     assert len(h.github.created) == 1
     assert stack.submits == 1
+
+
+def test_parent_clean_review_reaches_merge_approval(review_harness: ReviewHarness) -> None:
+    h = review_harness
+    h.script(write(LINES), review("No findings."))
+    outcome = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert outcome.state == RunState.COMPLETED
+    assert outcome.outcomes[0][1].state == RunState.WAITING_FOR_MERGE_APPROVAL
+    assert len(h.reviewer_requests()) == 1
+    assert len(h.github.posted) == 1
+    repeated = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert repeated.outcomes == ()
+    assert len(h.reviewer_requests()) == 1
+
+
+def test_parent_without_terminal_waits_and_resumes_decision(
+    review_harness: ReviewHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = review_harness
+    h.script(write(LINES), review(BLOCKING), write(FIXED), review("No findings."))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    pending = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert pending.state == RunState.WAITING_FOR_DECISION
+    run_id = pending.outcomes[0][1].run_id
+    assert len(h.reviewer_requests()) == 1
+    repeated = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert repeated.state == RunState.WAITING_FOR_DECISION
+    assert repeated.outcomes[0][1].run_id == run_id
+    assert len(h.reviewer_requests()) == 1
+    with (
+        TicketLock(h.deps.state_dir, h.github.repo, 100),
+        TicketLock(h.deps.state_dir, h.github.repo, h.github.ticket.number),
+    ):
+        pass
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("fugue.cli.choices.LineChooser.choose", lambda *args, **kwargs: 0)
+    repaired = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert repaired.state == RunState.COMPLETED
+    assert repaired.outcomes[0][1].state == RunState.WAITING_FOR_MERGE_APPROVAL
+    assert (h.worktree / "allowed.txt").read_text() == FIXED
+    assert len(h.reviewer_requests()) == 2
+    assert len(h.github.posted) == 2
+
+
+def test_parent_resumes_interrupted_accepted_repair(
+    review_harness: ReviewHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = review_harness
+    h.script(write(LINES), review(BLOCKING), write(FIXED), review("No findings."))
+    monkeypatch.setattr(
+        "fugue.engine.parent._prompt_decisions", lambda outcome: {1: Decision(True)}
+    )
+    original = Engine._apply_fixes
+
+    async def interrupt(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Engine, "_apply_fixes", interrupt)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert Engine._apply_fixes is original
+    # Saved acceptance resumes even when there is no terminal after interruption.
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    resumed = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
+    assert resumed.state == RunState.COMPLETED
+    assert len(h.reviewer_requests()) == 2
+    assert (h.worktree / "allowed.txt").read_text() == FIXED
+
+
+@pytest.mark.parametrize("choice", [None, 2])
+def test_undecided_blocking_finding_stops_before_next_child(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+    monkeypatch: pytest.MonkeyPatch,
+    choice: int | None,
+) -> None:
+    h, _, catalog = parent_stack
+    finding = Finding(1, "High", "Crash", "allowed.txt", 1, 1, None, True)
+
+    async def pending(self: Engine, run_id: int) -> RunOutcome:
+        h.deps.store.set_run_state(run_id, RunState.WAITING_FOR_DECISION)
+        return RunOutcome(run_id, RunState.WAITING_FOR_DECISION, findings=(finding,))
+
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.continue_review", pending)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("fugue.cli.choices.LineChooser.choose", lambda *args, **kwargs: choice)
+    outcome = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert outcome.state == RunState.WAITING_FOR_DECISION
+    assert h.deps.store.list_work(outcome.parent_run_id)[1].run_id is None
+    assert worktree_path(h.deps.worktrees_root, catalog[33]).exists()
+
+
+@pytest.mark.parametrize(
+    ("choice", "answer", "blocking", "expected"),
+    [
+        (1, "Reason", True, {1: Decision(False, reason="Reason")}),
+        (1, "  ", True, None),
+        (2, "42", False, {1: Decision(False, deferred_to=42)}),
+        (2, "0", False, None),
+        (2, "invalid", False, None),
+    ],
+)
+def test_review_choice_validates_reason_and_deferred_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+    choice: int,
+    answer: str,
+    blocking: bool,
+    expected: dict[int, Decision] | None,
+) -> None:
+    finding = Finding(1, "Low", "Finding", None, None, None, None, blocking)
+    outcome = RunOutcome(1, RunState.WAITING_FOR_DECISION, findings=(finding,))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("fugue.cli.choices.LineChooser.choose", lambda *args, **kwargs: choice)
+    monkeypatch.setattr("builtins.input", lambda message: answer)
+    assert _prompt_decisions(outcome) == expected

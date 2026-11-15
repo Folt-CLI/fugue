@@ -1,7 +1,7 @@
 """Run the ordered children of a parent as sequential stack layers."""
 
 import asyncio
-import json
+import sys
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -10,6 +10,7 @@ from heapq import heapify, heappop, heappush
 from fugue.engine.facts import selected_solution
 from fugue.engine.locks import TicketLock
 from fugue.engine.pipeline import Engine, EngineDeps, RunOutcome
+from fugue.engine.review import Decision
 from fugue.github.stack import lower_branch
 from fugue.models import IssueType, Size, Status, Ticket
 from fugue.store import Run
@@ -86,10 +87,9 @@ async def run_parent(
 ) -> ParentOutcome:
     """Hold the parent lock while executing one child at a time.
 
-    Work ids are saved before any per-ticket execution. Delivered work is never
-    repeated on re-entry, including interruption between delivery and the next
-    work. Delivery alone does not satisfy a later request to reach green CI.
-    Existing pipeline operations reconcile unfinished work in place.
+    Work ids and delivery are saved before review. Each work reaches merge
+    approval before the next child starts. Existing pipeline operations
+    reconcile interrupted delivery, decisions and repairs in place.
     """
     # Import lazily: analysis uses the engine package too.
     from fugue.analysis.stage import analyse
@@ -132,16 +132,13 @@ async def run_parent(
                     )
                     store.set_work_run(parent.id, ticket.number, run.id)
                     finished = store.begin_operation(run.id, "parent_work", "delivered", {})
-                    reached_green = json.loads(finished.result_json or "{}").get("ci_green", False)
+                    reviewed = store.begin_operation(run.id, "parent_work", "reviewed", {})
                     if run.state == RunState.COMPLETED or (
-                        finished.status == "done" and (not until_green or reached_green)
+                        reviewed.status == "done"
+                        and run.state == RunState.WAITING_FOR_MERGE_APPROVAL
                     ):
                         if ticket.issue_type != IssueType.QUESTION:
                             lower = ticket.number
-                        continue
-                    if run.state == RunState.WAITING_FOR_CI and not until_green:
-                        store.complete_operation(finished.id, {})
-                        lower = ticket.number
                         continue
                     if ticket.issue_type == IssueType.QUESTION:
                         if not selected_solution(ticket):
@@ -184,18 +181,30 @@ async def run_parent(
                             store.set_run_state(run.id, RunState.BLOCKED)
                             return stop(RunState.BLOCKED, f"gh stack unavailable: {probe.reason}")
                     engine = _WorkEngine(deps, run, lower)
-                    outcome = await (
-                        engine.run_to_green(ticket.number)
-                        if until_green
-                        else engine.run_to_pr(ticket.number)
-                    )
+                    if finished.status != "done":
+                        if run.state != RunState.WAITING_FOR_CI:
+                            outcome = await (
+                                engine.run_to_green(ticket.number)
+                                if until_green
+                                else engine.run_to_pr(ticket.number)
+                            )
+                            delivered = outcome.state == RunState.WAITING_FOR_CI or (
+                                outcome.state == RunState.RUNNING and outcome.ci_green
+                            )
+                            if not delivered:
+                                outcomes.append((ticket.number, outcome))
+                                return stop(outcome.state)
+                        store.complete_operation(finished.id, {})
+                    outcome = await engine.continue_review(run.id)
+                    while outcome.state == RunState.WAITING_FOR_DECISION:
+                        decisions = _prompt_decisions(outcome)
+                        if decisions is None:
+                            break
+                        outcome = await engine.decide(run.id, decisions)
                     outcomes.append((ticket.number, outcome))
-                    delivered = outcome.state == RunState.WAITING_FOR_CI or (
-                        outcome.state == RunState.RUNNING and outcome.ci_green
-                    )
-                    if not delivered:
+                    if outcome.state != RunState.WAITING_FOR_MERGE_APPROVAL:
                         return stop(outcome.state)
-                    store.complete_operation(finished.id, {"ci_green": outcome.ci_green})
+                    store.complete_operation(reviewed.id, {})
                     lower = ticket.number
             return stop(RunState.COMPLETED)
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -204,3 +213,43 @@ async def run_parent(
         except Exception:
             store.set_parent_state(parent.id, RunState.BLOCKED)
             raise
+
+
+def _prompt_decisions(outcome: RunOutcome) -> dict[int, Decision] | None:
+    """Collect a complete round of decisions, leaving cancellation pending."""
+    from fugue.cli.choices import make_chooser
+
+    if not sys.stdin.isatty():
+        return None
+    chooser = make_chooser()
+    decisions: dict[int, Decision] = {}
+    for finding in outcome.findings:
+        choice = chooser.choose(
+            f"{finding.index}. {'Blocking' if finding.blocking else 'Non-blocking'}: "
+            f"{finding.summary} ({finding.location or 'no location'})",
+            ("Accept", "Reject with a reason", "Defer"),
+            default=2,
+        )
+        if choice is None:
+            return None
+        if choice == 0:
+            decisions[finding.index] = Decision(True)
+        elif choice == 1:
+            try:
+                reason = input("Reason for rejecting: ").strip()
+            except EOFError:
+                return None
+            if not reason:
+                return None
+            decisions[finding.index] = Decision(False, reason=reason)
+        elif finding.blocking:
+            return None
+        else:
+            try:
+                number = int(input("Defer to ticket number: "))
+            except (EOFError, ValueError):
+                return None
+            if number <= 0:
+                return None
+            decisions[finding.index] = Decision(False, deferred_to=number)
+    return decisions

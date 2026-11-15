@@ -1348,6 +1348,15 @@ class Engine:
 
         return await self._guarded(run_id, work)
 
+    async def continue_review(self, run_id: int) -> RunOutcome:
+        """Resume a saved decision before continuing review for a parent work."""
+        pending = [
+            row for row in _operations(self.deps.store, run_id, "decision") if row[2] != "done"
+        ]
+        if pending:
+            return await self.decide(run_id, _decisions(pending[-1][3]))
+        return await self.run_review(run_id)
+
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome:
         """Apply decisions to the findings of the open round, then review again if needed.
 
