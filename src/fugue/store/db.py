@@ -17,6 +17,8 @@ from fugue.store.records import (
     Approval,
     Artifact,
     Operation,
+    ParentRun,
+    ParentRunWork,
     Run,
     StageAttempt,
     StageDuration,
@@ -145,6 +147,60 @@ class Store:
 
     def get_run(self, id: int) -> Run:
         return self._one(Run, "SELECT * FROM runs WHERE id = ?", (id,))
+
+    def create_parent_run(self, parent_number: int, repo: str) -> ParentRun:
+        return self._insert(
+            ParentRun,
+            "parent_runs",
+            dict(repo=repo, parent_number=parent_number, state="created", created_at=self._now()),
+        )
+
+    def find_open_parent_run(self, repo: str, parent_number: int) -> ParentRun | None:
+        row = self._connection.execute(
+            "SELECT * FROM parent_runs WHERE repo = ? AND parent_number = ? "
+            "AND state != 'completed' ORDER BY id DESC LIMIT 1",
+            (repo, parent_number),
+        ).fetchone()
+        return None if row is None else _record(ParentRun, row)
+
+    def add_work(self, parent_run_id: int, ticket_number: int, position: int) -> ParentRunWork:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO parent_run_work (parent_run_id, ticket_number, position) "
+                "VALUES (?, ?, ?)",
+                (parent_run_id, ticket_number, position),
+            )
+            return self._one(
+                ParentRunWork,
+                "SELECT * FROM parent_run_work WHERE parent_run_id = ? AND ticket_number = ?",
+                (parent_run_id, ticket_number),
+            )
+
+    def list_work(self, parent_run_id: int) -> list[ParentRunWork]:
+        return [
+            _record(ParentRunWork, row)
+            for row in self._connection.execute(
+                "SELECT * FROM parent_run_work WHERE parent_run_id = ? "
+                "ORDER BY position, ticket_number",
+                (parent_run_id,),
+            )
+        ]
+
+    def set_work_run(self, parent_run_id: int, ticket_number: int, run_id: int | None) -> None:
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE parent_run_work SET run_id = ? "
+                "WHERE parent_run_id = ? AND ticket_number = ?",
+                (run_id, parent_run_id, ticket_number),
+            )
+            if cursor.rowcount != 1:
+                raise StoreError(
+                    f"No parent_run_work record for parent run {parent_run_id} "
+                    f"and ticket {ticket_number}"
+                )
+
+    def set_parent_state(self, id: int, state: str) -> None:
+        self._update("parent_runs", id, dict(state=state))
 
     def set_run_state(self, id: int, state: str) -> None:
         self._update("runs", id, dict(state=state, updated_at=self._now()))

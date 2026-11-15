@@ -19,6 +19,23 @@ class Run:
 
 
 @dataclass(frozen=True)
+class ParentRun:
+    id: int
+    repo: str
+    parent_number: int
+    state: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ParentRunWork:
+    parent_run_id: int
+    ticket_number: int
+    position: int
+    run_id: int | None
+
+
+@dataclass(frozen=True)
 class StageAttempt:
     id: int
     run_id: int
