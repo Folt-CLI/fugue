@@ -106,6 +106,13 @@ class ResolvePermissionError(GitHubError):
     """Resolving a review thread was refused for lack of permission."""
 
 
+class EmptyJSONReply(GitHubError):
+    """A successful JSON command returned no content."""
+
+    def __init__(self, argv: Sequence[str]) -> None:
+        super().__init__(argv, "Empty JSON reply")
+
+
 REVIEW_EVENTS = frozenset({"COMMENT", "APPROVE", "REQUEST_CHANGES"})
 _PERMISSION_MARKERS = ("resource not accessible", "permission", "forbidden", "403")
 
@@ -211,6 +218,8 @@ class GitHubClient:
         )
         if result.returncode not in allowed_codes or result.timed_out or result.cancelled:
             raise GitHubError(argv, result.stderr)
+        if result.returncode != 0 and not result.stdout.strip():
+            raise GitHubError(argv, result.stderr or "Empty output from a non-zero exit")
         if result.stdout_truncated:
             if tail_on_truncation:
                 # run_command keeps the final ceil(cap / 2) bytes. Slice bytes
@@ -220,8 +229,11 @@ class GitHubClient:
             raise GitHubError(argv, result.stderr + "\noutput truncated")
         return result.stdout
 
-    async def _json(self, *args: str) -> Any:
-        return json.loads(await self._run(*args))
+    async def _json(self, *args: str, allowed_codes: Sequence[int] = (0,)) -> Any:
+        output = await self._run(*args, allowed_codes=allowed_codes)
+        if not output.strip():
+            raise EmptyJSONReply((*self.gh_executable, *args))
+        return json.loads(output)
 
     async def download_attachment(self, url: str, dest: Path) -> Path:
         from fugue.github.attachments import download_attachment
@@ -532,7 +544,7 @@ class GitHubClient:
 
     async def checks(self, pr: PullRequest) -> list[CheckResult]:
         # gh returns 1 for failed checks and 8 for pending checks with valid JSON.
-        output = await self._run(
+        items = await self._json(
             "pr",
             "checks",
             str(pr.number),
@@ -542,7 +554,7 @@ class GitHubClient:
             "name,bucket,link",
             allowed_codes=(0, 1, 8),
         )
-        return [CheckResult(**item) for item in json.loads(output)]
+        return [CheckResult(**item) for item in items]
 
     def _actions_run_id(self, run_link: str) -> str:
         link = urlparse(run_link.strip())

@@ -1,17 +1,28 @@
-"""Pure helpers that summarize checks and classify check failures."""
+"""Helpers that read and summarize checks and classify check failures."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
 from fugue.github import CheckResult
+from fugue.github.client import EmptyJSONReply
 
 GREEN_BUCKETS = frozenset({"pass", "skipping"})
 FAILED_BUCKETS = frozenset({"fail", "cancel"})
 
 
 _RUN_SEGMENT = re.compile(r"/actions/runs/(\d+)")
+
+
+async def read_checks(read: Callable[[], Awaitable[list[CheckResult]]]) -> list[CheckResult]:
+    """Try a monitor read at most three times, retrying only empty JSON replies."""
+    for _ in range(2):
+        try:
+            return await read()
+        except EmptyJSONReply:
+            pass
+    return await read()
 
 
 def actions_run_key(link: str) -> str:
