@@ -16,8 +16,10 @@ from fugue.agents import (
     AgentEvent,
     AgentRequest,
     AgentResult,
+    Capability,
     ScriptedAdapter,
     ScriptStep,
+    Unavailable,
 )
 from fugue.cli.choices import ChoiceItem, LineChooser
 from fugue.config.schema import Limits
@@ -681,7 +683,7 @@ def test_typed_requests_record_answers(
     interview.chooser = chooser
     set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
     assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
-    assert interview.record.turns[0].text == "Consider **these** directions."
+    assert interview.record.turns[0].text.startswith("Consider **these** directions.\n\n")
     assert [turn.text for turn in interview.record.turns if turn.speaker == "person"] == (
         [] if expected is None else [expected]
     )
@@ -862,3 +864,180 @@ def test_request_eof_does_not_record_answer(tmp_path: Path, kind: str) -> None:
     set_analyst_reply(interview, ScriptStep(result=result(structured_output=typed_reply(kind))))
     assert asyncio.run(interview.run()) == RunState.INTERRUPTED
     assert interview.record.turn_count == 0
+
+
+@pytest.mark.parametrize(
+    "kind", ["confirmation", "single_choice", "multiple_choice", "information", "free_text"]
+)
+@pytest.mark.parametrize("automatic", [False, True])
+def test_request_context_reaches_later_calls_and_saved_conversation(
+    tmp_path: Path, kind: str, automatic: bool
+) -> None:
+    from fugue.interview.session import _TimedAdapter
+
+    interview, _, _ = session(tmp_path, ["More details", "/proceed"])
+    interview.chooser = RequestChooser([0]) if kind == "confirmation" else RequestChooser([1])
+    payload = typed_reply(kind)
+    if kind == "confirmation":
+        payload = {
+            "message": "One more detail.",
+            "request": {
+                "kind": "confirmation",
+                "question": "Must exports include archived records?",
+            },
+        }
+    analyst = ScriptedAdapter(
+        [
+            ScriptStep(result=result(structured_output=payload)),
+            ScriptStep(result=result()),
+            ScriptStep(result=result()),
+        ]
+    )
+    interview.analyst.adapter = analyst
+    interview.make_request = lambda role, text: AgentRequest(
+        role, render_conversation(interview.record) + text, tmp_path, AccessMode.READ_ONLY
+    )
+    standin = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=result(
+                    structured_output={
+                        "reply": "Known scope",
+                        "proceed": False,
+                        "needs_human": False,
+                        "reason": "",
+                    }
+                )
+            ),
+            ScriptStep(
+                result=result(
+                    structured_output={
+                        "reply": "Enough known",
+                        "proceed": True,
+                        "needs_human": False,
+                        "reason": "",
+                    }
+                )
+            ),
+        ]
+    )
+    interview.standin = _TimedAdapter(standin, 300)
+    assert asyncio.run(interview.run(automatic=automatic)) == RunState.WAITING_FOR_SELECTION
+    expected_question = (
+        "Must exports include archived records?" if kind == "confirmation" else "Pick a direction"
+    )
+    conversations = [analyst.requests[1].prompt]
+    if automatic:
+        conversations.append(standin.requests[0].prompt)
+    saved = interview.store.load("owner/name", 90)
+    assert saved is not None
+    conversations.append(render_conversation(saved))
+    for conversation in conversations:
+        assert expected_question in conversation
+        if kind in {"single_choice", "multiple_choice"}:
+            assert "1. Small: Less work" in conversation
+            assert "2. Large (recommended): More coverage" in conversation
+    if kind == "confirmation" and not automatic:
+        assert "person: Yes" in conversations[0]
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("failure", ["none", "exit", "provider_error", "no_completion"])
+def test_real_adapter_plain_reply_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, failure: str
+) -> None:
+    import json
+    from importlib import import_module
+
+    from fugue.agents import ClaudeAdapter, CodexAdapter
+    from fugue.interview.request import reply_schema
+    from fugue.process.runner import CommandResult
+
+    text = "Intent?\n[INTERVIEW_READY]"
+
+    async def command(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        receive = kwargs["on_stdout_line"]
+        if provider == "claude":
+            await receive(
+                json.dumps(
+                    {"type": "result", "result": text, "is_error": failure == "provider_error"}
+                )
+            )
+        else:
+            Path(argv[argv.index("-o") + 1]).write_text(text)
+            if failure == "provider_error":
+                await receive(json.dumps({"type": "error", "message": "Offline"}))
+            if failure not in {"exit", "no_completion"}:
+                await receive(json.dumps({"type": "turn.completed", "usage": {}}))
+        return CommandResult(
+            argv=tuple(argv),
+            returncode=1 if failure == "exit" else 0,
+            timed_out=False,
+            cancelled=False,
+            stdout="",
+            stderr="",
+            stdout_truncated=False,
+            stderr_truncated=False,
+            callback_line_truncated=False,
+            full_output_path=None,
+            duration_seconds=0.1,
+        )
+
+    monkeypatch.setattr(import_module(f"fugue.agents.{provider}"), "run_command", command)
+    interview, _, _ = session(tmp_path, [])
+    adapter = (
+        ClaudeAdapter(spool_dir=tmp_path / "logs")
+        if provider == "claude"
+        else CodexAdapter(spool_dir=tmp_path / "logs")
+    )
+    interview.analyst.adapter = adapter
+    interview.make_request = lambda role, text: AgentRequest(
+        role, text, tmp_path, AccessMode.READ_ONLY, output_schema=reply_schema()
+    )
+    interview.interactive = True
+    interview.chooser = RequestChooser(confirmed=True)
+    seen: list[AgentResult] = []
+    interview.on_result = lambda role, result: seen.append(result)
+    recovered = failure == "none" or (provider == "claude" and failure == "no_completion")
+    assert asyncio.run(interview.run()) == (
+        RunState.WAITING_FOR_SELECTION if recovered else RunState.FAILED
+    )
+    assert seen[0].ok is recovered
+    if recovered:
+        assert seen[0].error is None
+        assert interview.record.turns[0].text == "Intent?"
+        assert interview.record.ended_by == "person_and_analyst"
+    else:
+        assert interview.record.turns == []
+        assert interview.record.status == "open"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"timed_out": True},
+        {"cancelled": True},
+        {"provider_limited": True},
+        {"unavailable": Unavailable.UNREACHABLE},
+        {"unsupported": Capability.STRUCTURED_OUTPUT},
+        {"error": "Offline; Claude result is missing requested structured_output"},
+    ],
+)
+def test_schema_fallback_preserves_genuine_failure_flags(
+    tmp_path: Path, changes: dict[str, Any]
+) -> None:
+    from fugue.interview.request import reply_schema
+
+    interview, _, _ = session(tmp_path, [])
+    values = {
+        "ok": False,
+        "error": "Claude result is missing requested structured_output",
+        **changes,
+    }
+    set_analyst_reply(interview, ScriptStep(result=result("Intent?", **values)))
+    interview.make_request = lambda role, text: AgentRequest(
+        role, text, tmp_path, AccessMode.READ_ONLY, output_schema=reply_schema()
+    )
+    assert asyncio.run(interview.run()) != RunState.WAITING_FOR_SELECTION
+    assert interview.failed
+    assert interview.record.turns == []

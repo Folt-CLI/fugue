@@ -6,6 +6,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
@@ -101,6 +102,8 @@ class _InterviewChat(ChatSession):
     async def _ask_markdown(self, question: str, *, record: bool) -> bool:
         console = self.console
         chunks: list[str] = []
+        provider_failed = False
+        completed = False
         display = (
             Live(Markdown(""), console=console, refresh_per_second=8)
             if self.live and console is not None and terminal.supports_rich(console)
@@ -108,6 +111,11 @@ class _InterviewChat(ChatSession):
         )
 
         async def on_event(event: AgentEvent) -> None:
+            nonlocal provider_failed, completed
+            if event.kind == "error":
+                provider_failed = True
+            elif event.kind == "usage":
+                completed = True
             if event.kind == "text" and event.text:
                 chunks.append(event.text)
                 if display is not None:
@@ -117,6 +125,30 @@ class _InterviewChat(ChatSession):
         with display if display is not None else nullcontext():
             result = await self.adapter.run(request, on_event)
             answer = "".join(chunks) or result.final_text
+            schema_only = (
+                result.provider == "claude"
+                and result.error == "Claude result is missing requested structured_output"
+            ) or (
+                result.provider == "codex"
+                and (result.error or "").startswith("Invalid Codex structured output: ")
+                and completed
+                and not provider_failed
+            )
+            if (
+                not result.ok
+                and request.output_schema is not None
+                and result.structured_output is None
+                and result.final_text.strip()
+                and schema_only
+                and not result.timed_out
+                and not result.cancelled
+                and not result.provider_limited
+                and result.unavailable is None
+                and result.unsupported is None
+            ):
+                # Only the interview accepts plain text when structured output is absent.
+                # Do this before result callbacks so they see the recovered call as well.
+                result = replace(result, ok=True, error=None)
             if self.on_result is not None:
                 self.on_result(result)
             if result.ok:
@@ -275,6 +307,17 @@ class InterviewSession:
             self.store.save(self.record)
 
     def _turn(self, question: str, answer: str) -> None:
+        if self.reply is not None and self.reply.request is not None:
+            request = self.reply.request
+            parts = [answer, f"Interaction request ({request.kind}): {request.question}"]
+            for index, option in enumerate(request.options or []):
+                recommended = " (recommended)" if index == request.recommended else ""
+                parts.append(f"{index + 1}. {option.label}{recommended}: {option.description}")
+                if option.preview is not None:
+                    parts.append(option.preview)
+            if request.allow_custom:
+                parts.append("Other: enter a custom answer.")
+            answer = "\n\n".join(parts)
         self.record.add_turn("analyst", answer, max_turns=self.limits.interview_max_turns)
         self.store.save(self.record)
 
