@@ -1,6 +1,7 @@
 """Native stack scenarios using fake stack commands and local Git repositories."""
 
 import asyncio
+import json
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -83,6 +84,8 @@ def test_probe_outcomes(
     [
         ("init", ("develop", ["lower", "upper"]), ("init", "--base", "develop", "lower", "upper")),
         ("add", ("upper",), ("add", "upper")),
+        ("link", ("168", "upper"), ("link", "168", "upper")),
+        ("link", (["bottom", "lower"], "upper"), ("link", "bottom", "lower", "upper")),
         ("submit", (), ("submit",)),
         ("view", (), ("view",)),
         ("rebase", (), ("rebase",)),
@@ -120,8 +123,26 @@ class FakeStack(StackClient):
         self.initializations = 0
         self.view_codes: list[int] = []
         self.repository_status = 200
+        self.links: list[tuple[str | Sequence[str], str]] = []
+        self.ready: list[str] = []
+
+    def save_stack(self) -> None:
+        (self.cwd / ".git" / "gh-stack").write_text(
+            json.dumps(
+                {
+                    "stacks": [
+                        {
+                            "number": 168,
+                            "branches": [{"branch": branch} for branch in self.branches],
+                        }
+                    ]
+                }
+            )
+        )
 
     async def _result(self, *argv: str) -> CommandResult:
+        if argv == ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"):
+            return command_result(argv, str(self.cwd / ".git"))
         if argv == ("gh", "stack", "view"):
             code = 0 if self.branches else 2
             self.view_codes.append(code)
@@ -162,8 +183,18 @@ class FakeStack(StackClient):
 
     async def init(self, base: str, branches: Sequence[str]) -> str:
         assert base == "develop"
+        assert not set(branches).intersection(self.branches), "branch already exists in a stack"
         self.initializations += 1
         self.branches = list(branches)
+        self.save_stack()
+        return ""
+
+    async def link(self, stack_number_or_branches: str | Sequence[str], branch: str) -> str:
+        self.links.append((stack_number_or_branches, branch))
+        assert stack_number_or_branches == "168" or list(stack_number_or_branches) == self.branches
+        if branch not in self.branches:
+            self.branches.append(branch)
+        self.save_stack()
         return ""
 
     async def submit(self) -> str:
@@ -181,6 +212,10 @@ class FakeStack(StackClient):
         self, repo: str, branch: str, title: str, body: str, assignee: str, milestone: str
     ) -> None:
         self.metadata.append((repo, branch, title, body, assignee, milestone))
+
+    async def ready_pr(self, repo: str, branch: str) -> None:
+        assert self.metadata[-1][:2] == (repo, branch)
+        self.ready.append(branch)
 
 
 @pytest.fixture
@@ -226,6 +261,8 @@ def test_scenario_1_lower_open_pr_selects_base_and_native_submit(
     assert fake.branches == [lower, branch_name(harness.github.ticket)]
     assert fake.submits == 1
     assert fake.initializations == 1
+    assert fake.links == []
+    assert fake.ready == [branch_name(harness.github.ticket)]
     assert 2 in fake.view_codes
     assert "Stack position: above https://example.test/pr/70" in fake.metadata[0][3]
     assert harness.github.created == []
@@ -642,3 +679,122 @@ def test_fresh_clone_disabled_repository_blocks_before_worktree(
     assert not worktree_path(harness.deps.worktrees_root, harness.github.ticket).exists()
     assert fake.initializations == fake.submits == 0
     assert harness.github.pr is None
+
+
+@pytest.mark.parametrize("number", [168, None])
+def test_find_stack_from_new_worktree_uses_shared_state(tmp_path: Path, number: int | None) -> None:
+    common = tmp_path / "common"
+    common.mkdir()
+    (common / "gh-stack").write_text(
+        json.dumps(
+            {
+                "stacks": [
+                    {
+                        "number": 99,
+                        "trunk": {"branch": "develop"},
+                        "branches": [{"branch": "lower-other"}],
+                    },
+                    {
+                        "number": number,
+                        "trunk": {"branch": "develop"},
+                        "branches": [{"branch": "bottom"}, {"branch": "lower"}],
+                    },
+                ]
+            }
+        )
+    )
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        assert tuple(argv) == ("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+        assert kwargs["cwd"] == tmp_path
+        return command_result(argv, str(common))
+
+    client = StackClient(tmp_path, runner=runner)
+    assert asyncio.run(client.find_stack("lower")) == (
+        str(number) if number else ["bottom", "lower"]
+    )
+    assert asyncio.run(client.find_stack("develop")) is None
+    assert asyncio.run(client.find_stack("missing")) is None
+
+
+@pytest.mark.parametrize("state", [None, '{"stacks": []}', "invalid", '{"stacks": [{}]}'])
+def test_find_stack_missing_or_invalid_state(tmp_path: Path, state: str | None) -> None:
+    if state is not None:
+        (tmp_path / "gh-stack").write_text(state)
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        return command_result(argv, str(tmp_path))
+
+    client = StackClient(tmp_path, runner=runner)
+    if state in (None, '{"stacks": []}'):
+        assert asyncio.run(client.find_stack("lower")) is None
+    else:
+        with pytest.raises(ValueError):
+            asyncio.run(client.find_stack("lower"))
+
+
+def test_find_stack_command_failure_stops(tmp_path: Path) -> None:
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        return command_result(argv, code=1)
+
+    with pytest.raises(GitHubError):
+        asyncio.run(StackClient(tmp_path, runner=runner).find_stack("lower"))
+
+
+def test_find_stack_rejects_ambiguous_layer(tmp_path: Path) -> None:
+    (tmp_path / "gh-stack").write_text(
+        json.dumps({"stacks": [{"branches": [{"branch": "lower"}]}] * 2})
+    )
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        return command_result(argv, str(tmp_path))
+
+    with pytest.raises(ValueError, match="belongs to multiple tracked stacks"):
+        asyncio.run(StackClient(tmp_path, runner=runner).find_stack("lower"))
+
+
+def test_link_command_failure_stops(tmp_path: Path) -> None:
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        assert tuple(argv) == ("gh", "stack", "link", "168", "upper")
+        return command_result(argv, code=1)
+
+    with pytest.raises(GitHubError):
+        asyncio.run(StackClient(tmp_path, runner=runner).link("168", "upper"))
+
+
+@pytest.mark.parametrize(
+    "draft,view_code,ready_code",
+    [("true", 0, 0), ("false", 0, 0), ("", 1, 0), ("unknown", 0, 0), ("true", 0, 1)],
+)
+def test_ready_pr_checks_draft_state_and_propagates_failures(
+    tmp_path: Path, draft: str, view_code: int, ready_code: int
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        calls.append(tuple(argv))
+        assert kwargs == {"cwd": tmp_path, "timeout": 60}
+        if argv[2] == "view":
+            assert tuple(argv) == (
+                "gh",
+                "pr",
+                "view",
+                "upper",
+                "--repo",
+                "owner/repo",
+                "--json",
+                "isDraft",
+                "--jq",
+                ".isDraft",
+            )
+            return command_result(argv, draft, view_code)
+        assert tuple(argv) == ("gh", "pr", "ready", "upper", "--repo", "owner/repo")
+        return command_result(argv, code=ready_code)
+
+    client = StackClient(tmp_path, runner=runner)
+    if view_code or ready_code or draft not in ("true", "false"):
+        with pytest.raises(GitHubError):
+            asyncio.run(client.ready_pr("owner/repo", "upper"))
+    else:
+        asyncio.run(client.ready_pr("owner/repo", "upper"))
+    assert len(calls) == (2 if draft == "true" and not view_code else 1)

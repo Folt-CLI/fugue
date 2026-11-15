@@ -1,5 +1,6 @@
 """Native stack operations; unavailable features never fall back to plain PRs."""
 
+import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -92,6 +93,44 @@ class StackClient:
     async def add(self, branch: str) -> str:
         return await self._run("add", branch)
 
+    async def link(self, stack_number_or_branches: str | Sequence[str], branch: str) -> str:
+        existing = (
+            [stack_number_or_branches]
+            if isinstance(stack_number_or_branches, str)
+            else stack_number_or_branches
+        )
+        return await self._run("link", *existing, branch)
+
+    async def find_stack(self, branch: str) -> str | list[str] | None:
+        """Find a tracked layer in shared state, including from a new worktree."""
+        result = await self._result(
+            "git", "rev-parse", "--path-format=absolute", "--git-common-dir"
+        )
+        if result.returncode:
+            raise GitHubError(result.argv, result.stderr)
+        path = Path(result.stdout.strip()) / "gh-stack"
+        try:
+            state = json.loads(path.read_text())
+        except FileNotFoundError:
+            return None
+        if not isinstance(state, dict) or not isinstance(state.get("stacks"), list):
+            raise ValueError("Invalid tracked stack state")
+        matches: list[str | list[str]] = []
+        for stack in state["stacks"]:
+            if not isinstance(stack, dict) or not isinstance(stack.get("branches"), list):
+                raise ValueError("Invalid tracked stack branches")
+            branches: list[str] = []
+            for layer in stack["branches"]:
+                if not isinstance(layer, dict) or not isinstance(layer.get("branch"), str):
+                    raise ValueError("Invalid tracked stack branch")
+                branches.append(layer["branch"])
+            if branch in branches:
+                number = stack.get("number")
+                matches.append(str(number) if type(number) is int and number > 0 else branches)
+        if len(matches) > 1:
+            raise ValueError(f"Branch {branch!r} belongs to multiple tracked stacks")
+        return matches[0] if matches else None
+
     async def submit(self) -> str:
         return await self._run("submit")
 
@@ -134,6 +173,20 @@ class StackClient:
         result = await self._result(*argv)
         if result.returncode:
             raise GitHubError(argv, result.stderr)
+
+    async def ready_pr(self, repo: str, branch: str) -> None:
+        result = await self._result(
+            "gh", "pr", "view", branch, "--repo", repo, "--json", "isDraft", "--jq", ".isDraft"
+        )
+        if result.returncode or result.stdout.strip() not in ("true", "false"):
+            raise GitHubError(
+                result.argv, result.stderr or "Cannot establish pull request readiness"
+            )
+        if result.stdout.strip() == "false":
+            return
+        result = await self._result("gh", "pr", "ready", branch, "--repo", repo)
+        if result.returncode:
+            raise GitHubError(result.argv, result.stderr)
 
 
 class StackGitHubPort(Protocol):
