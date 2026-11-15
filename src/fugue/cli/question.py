@@ -1,13 +1,14 @@
 """Interactive Question walkthrough with injectable terminal functions."""
 
+import asyncio
+import re
+import sys
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
-from rich.console import Console, RenderableType
-from rich.markdown import Markdown
-from rich.table import Table
+from rich.console import RenderableType
 
 from fugue.agents import (
     AccessMode,
@@ -21,6 +22,7 @@ from fugue.agents import (
 )
 from fugue.cli import terminal, wiring
 from fugue.cli.chat import ChatSession, default_reader
+from fugue.cli.choices import Chooser, make_chooser
 from fugue.config import FugueConfig
 from fugue.models import IssueType, Role, Size, Status, Ticket
 from fugue.questions.decision import QuestionClient, QuestionGitHubClient, record_decision
@@ -46,26 +48,41 @@ class QuestionWalkthrough:
         config: FugueConfig | None = None,
         prompt: Callable[[str], str] = default_reader,
         print_fn: Callable[[RenderableType], None] | None = None,
+        chooser: Chooser | None = None,
     ) -> None:
         self.client = client
         self.repo_root = repo_root
         self.adapter = adapter
         self.config = config or FugueConfig()
         self.prompt = prompt
+        self._chooser = chooser
         self._console = None if print_fn else terminal.console_for()
-        self.print: Callable[[RenderableType], None] = print_fn or (
-            self._console.print if self._console else Console().print
-        )
+        self.print: Callable[[RenderableType], None] = print_fn or self._emit
+
+    def _emit(self, content: RenderableType) -> None:
+        console = self._console or terminal.console_for()
+        if isinstance(content, str):
+            terminal.print_text(content, console=console)
+        else:
+            console.print(content)
+
+    def _markdown(self, text: str) -> None:
+        if self._console is not None:
+            terminal.print_markdown(text, console=self._console)
+        else:
+            self.print(text)
+
+    def _selected(self, number: int, option: int) -> None:
+        self.print(f"Selected option {option}.")
+        self.print(f"next: fugue children {number}")
 
     def _show_option(self, option: Option) -> None:
-        self.print(
-            Markdown(
-                f"### Option {option.number}: {option.name}\n\n"
-                f"**You get**\n\n{option.you_get or 'Not provided.'}\n\n"
-                f"**Changes**\n\n{option.changes or 'Not provided.'}\n\n"
-                f"**Watch out**\n\n{option.watch_out or 'Not provided.'}\n\n"
-                f"**Implementation scope:** [{option.scope_name}]({option.scope_url})"
-            )
+        self._markdown(
+            f"### Option {option.number}: {option.name}\n\n"
+            f"**You get**\n\n{option.you_get or 'Not provided.'}\n\n"
+            f"**Changes**\n\n{option.changes or 'Not provided.'}\n\n"
+            f"**Watch out**\n\n{option.watch_out or 'Not provided.'}\n\n"
+            f"**Implementation scope:** [{option.scope_name}]({option.scope_url})"
         )
 
     async def run(
@@ -83,36 +100,85 @@ class QuestionWalkthrough:
         label = "Question" if is_question else "Ticket"
         if not analysis.options:
             raise ValueError(f"{label} #{number} has no Analysis options")
-        self.print(Markdown(f"# {label} #{number}: {ticket.title}\n\n{analysis.overview}"))
+        self._markdown(f"# {label} #{number}: {ticket.title}\n\n{analysis.overview}")
         for option in analysis.options:
             self.print(f"{option.number}: {option.name}")
-        self.print(Markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}"))
+        self._markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}")
         if select is not None:
             await record_decision(
                 self.client, number, body, analysis.option(select), reason=reason, by=by
             )
-            self.print(f"Selected option {select}.")
+            self._selected(number, select)
             return
+        menu = sys.stdin.isatty() and terminal.is_interactive(
+            self._console or terminal.console_for()
+        )
+        chooser = (self._chooser or make_chooser()) if menu else None
+        recommended = re.match(r"Option ([1-9][0-9]*):", analysis.recommendation)
+        labels = [
+            f"Option {option.number}: {option.name}"
+            + (" (recommended)" if recommended and int(recommended[1]) == option.number else "")
+            for option in analysis.options
+        ]
         while True:
             try:
-                command = self.prompt("Option, c compare, a ask, s N select, q quit: ").strip()
-            except EOFError:
+                if chooser is not None:
+                    action = await asyncio.to_thread(
+                        chooser.choose,
+                        "Question walkthrough",
+                        [*labels, "Compare options", "Ask a follow-up", "Select an option", "Quit"],
+                    )
+                    if action is None:
+                        return
+                    if action < len(labels):
+                        command = str(analysis.options[action].number)
+                    else:
+                        command = ("c", "a", "select", "q")[action - len(labels)]
+                    if command == "select":
+                        selection = await asyncio.to_thread(
+                            chooser.choose, "Select an option", labels
+                        )
+                        if selection is None:
+                            return
+                        selected = analysis.options[selection]
+                        confirmed = await asyncio.to_thread(
+                            chooser.confirm, f"Select option {selected.number}: {selected.name}?"
+                        )
+                        if not confirmed:
+                            continue
+                        selected_reason = reason
+                        if selected_reason is None:
+                            selected_reason = self.prompt("Reason (optional): ").strip() or None
+                        await record_decision(
+                            self.client, number, body, selected, reason=selected_reason, by=by
+                        )
+                        self._selected(number, selected.number)
+                        return
+                else:
+                    command = self.prompt("Option, c compare, a ask, s N select, q quit: ").strip()
+            except (EOFError, KeyboardInterrupt):
                 return
             if command == "q":
                 return
             if command == "c":
-                table = Table(title="Compare options")
-                table.add_column("Option")
-                for label in ("You get", "Changes", "Watch out"):
-                    table.add_column(label)
-                for option in analysis.options:
-                    table.add_row(
+                rows = [
+                    [
                         f"{option.number}: {option.name}",
                         option.you_get,
                         option.changes,
                         option.watch_out,
+                    ]
+                    for option in analysis.options
+                ]
+                header = ["Option", "You get", "Changes", "Watch out"]
+                if self._console is not None:
+                    terminal.print_table(
+                        header, rows, title="Compare options", console=self._console
                     )
-                self.print(table)
+                else:
+                    self.print("Compare options")
+                    for line in terminal.table_text(header, rows):
+                        self.print(line)
             elif command == "a":
                 if self.adapter is None:
                     self.print("No analyst adapter configured; follow-up skipped.")
@@ -122,7 +188,7 @@ class QuestionWalkthrough:
                     continue
                 try:
                     question = self.prompt("Follow-up question: ").strip()
-                except EOFError:
+                except (EOFError, KeyboardInterrupt):
                     return
                 if not question:
                     self.print("Enter a non-empty follow-up question.")
@@ -171,7 +237,7 @@ class QuestionWalkthrough:
                     self.print("Select an available option using s N.")
                     continue
                 await record_decision(self.client, number, body, selected, reason=reason, by=by)
-                self.print(f"Selected option {selected.number}.")
+                self._selected(number, selected.number)
                 return
             else:
                 self.print("Use an option number, c, a, s N or q.")
