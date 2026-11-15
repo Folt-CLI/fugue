@@ -426,6 +426,21 @@ def test_theme_helpers_share_active_console() -> None:
     assert sink.getvalue() == "[Ready]\nTitle\nOverview\n1. Option\nstage: completed\n"
 
 
+def test_format_error_lines() -> None:
+    assert terminal.format_error("bad") == ["error: bad"]
+    assert terminal.format_error("bad", "fugue x") == ["error: bad", "next: fugue x"]
+    assert terminal.format_error("bad", "") == ["error: bad"]
+
+
+def test_problem_prefix_is_styled_yellow_and_plain_when_piped() -> None:
+    console, sink = terminal_console({"TERM": "xterm"})
+    terminal.print_text("problem: tests failed", console=console)
+    assert "\x1b[33mproblem:" in sink.getvalue()
+    plain = StringIO()
+    terminal.print_text("problem: tests failed", console=terminal.console_for({}, file=plain))
+    assert plain.getvalue() == "problem: tests failed\n"
+
+
 def test_theme_styles_are_available_on_command_console() -> None:
     console, _ = terminal_console({"TERM": "xterm-256color"})
     for name, style in terminal.THEME.items():

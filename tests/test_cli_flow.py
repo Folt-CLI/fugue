@@ -489,3 +489,22 @@ def test_resume_keeps_requested_run_when_ticket_has_newer_run(tmp_path: Path) ->
 )
 def test_review_approval_hints_use_grouped_names(state: RunState, expected: str) -> None:
     assert render.next_step_for(state, 7, 41) == expected
+
+
+@pytest.mark.parametrize(
+    ("state", "hinted"),
+    [
+        (RunState.FAILED, True),
+        (RunState.BLOCKED, True),
+        (RunState.COMPLETED, False),
+        (RunState.WAITING_FOR_SELECTION, False),
+    ],
+)
+def test_outcome_hints_resume_only_for_failed_or_blocked(state: RunState, hinted: bool) -> None:
+    text = render.render_outcome(RunOutcome(7, state, problems=("tests failed",)))
+    lines = text.splitlines()
+    assert "problem: tests failed" in lines
+    if hinted:
+        assert lines[-1] == "next: fugue resume 7"
+    else:
+        assert not any(line.startswith("next:") for line in lines)

@@ -149,6 +149,8 @@ _OUTCOME_HINT_STATES = frozenset(
         RunState.WAITING_FOR_MERGE_APPROVAL,
         RunState.INTERRUPTED,
         RunState.PROVIDER_LIMITED,
+        RunState.BLOCKED,
+        RunState.FAILED,
     }
 )
 
@@ -541,7 +543,7 @@ def render_overview(overview: Overview, summary: SummaryResult | None) -> list[O
                     f"#{r.ticket_number}",
                     r.state,
                     format_elapsed(r.age_seconds),
-                    "next: " + (next_step_for(r.state, r.id, r.ticket_number) or "-"),
+                    next_step_for(r.state, r.id, r.ticket_number) or "-",
                 ]
                 for r in overview.runs
             ],
