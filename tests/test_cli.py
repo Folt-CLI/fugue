@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
@@ -684,15 +685,13 @@ def test_report_help_lists_new_names_and_hides_legacy_names() -> None:
     assert "Usage:" in no_command.output
 
 
-def test_top_level_help_lists_exactly_ten_commands() -> None:
-    result = runner.invoke(cli_app.app, ["--help"])
+@pytest.mark.parametrize("width", [60, 80, 200])
+def test_top_level_help_lists_exactly_ten_commands(width: int) -> None:
+    result = runner.invoke(cli_app.app, ["--help"], env={"COLUMNS": str(width)})
     assert result.exit_code == 0
     commands = result.stdout.split("Commands", 1)[1]
-    names = {
-        line.strip(" │").split()[0]
-        for line in commands.splitlines()
-        if line.strip(" │") and line.strip(" │")[0].isascii() and line.strip(" │")[0].isalpha()
-    }
+    # Wrapped descriptions leave the command column blank.
+    names = set(re.findall(r"^│ ([a-z][a-z-]*)\s", commands, re.MULTILINE))
     assert names == {
         "run",
         "resume",
