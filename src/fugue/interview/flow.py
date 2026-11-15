@@ -15,7 +15,7 @@ from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.pipeline import model_choice, role_adapter, usage_choice
 from fugue.interview.prompts import ANALYST_PROMPT, STAND_IN_PROMPT, STAND_IN_SCHEMA
 from fugue.interview.record import InterviewRecord
-from fugue.interview.render import render_conversation
+from fugue.interview.render import render_conversation, render_header
 from fugue.interview.session import InterviewSession
 from fugue.interview.store import InterviewStore
 from fugue.models import IssueType, Role, Size, Status, Ticket
@@ -112,6 +112,7 @@ async def interview_then_analyse(
         store,
         analyst,
         request,
+        header=render_header(ticket.number, ticket.title, ticket.body_sections.get("Summary", "")),
         chooser=chooser,
         interactive=interactive,
         limits=deps.config.limits,

@@ -1,7 +1,15 @@
-"""Deterministic conversation attachment text."""
+"""Deterministic interview display and conversation attachment text."""
 
 from fugue.interview.record import InterviewRecord
 from fugue.tickets.draft import redact
+
+
+def render_header(number: int, title: str, summary: str) -> str:
+    return f"Ticket #{number}: {title}\n\nSummary:\n{summary}"
+
+
+def render_turn_count(record: InterviewRecord) -> str:
+    return f"Interview turns: {record.turn_count}"
 
 
 def render_conversation(record: InterviewRecord) -> str:

@@ -21,7 +21,7 @@ from fugue.agents import (
 )
 from fugue.config.schema import Limits
 from fugue.interview.record import InterviewRecord
-from fugue.interview.render import render_conversation
+from fugue.interview.render import render_conversation, render_header
 from fugue.interview.session import InterviewSession
 from fugue.interview.store import InterviewStore
 from fugue.models import AuthenticationMode, Role
@@ -99,6 +99,92 @@ def test_human_saves_each_turn_and_proceeds(tmp_path: Path) -> None:
     assert len(analyst.requests) == 2
 
 
+@pytest.mark.parametrize("history", ["new", "opening", "reply", "interrupted", "no_analyst"])
+def test_header_and_resume_precede_prompt_without_calling_analyst(
+    tmp_path: Path, history: str
+) -> None:
+    interview, analyst, messages = session(tmp_path, [])
+    interview.header = render_header(90, "Choose [directions]", "Keep **intent**.\nBoundaries.")
+    if history not in {"new", "no_analyst"}:
+        interview.record.add_turn("analyst", "Earlier question?")
+    if history in {"reply", "interrupted", "no_analyst"}:
+        interview.record.add_turn("person", "Earlier answer")
+    if history == "reply":
+        interview.record.add_turn("analyst", "Latest **question**?")
+    original = interview.record.model_copy(deep=True)
+
+    def reader(prompt: str) -> str:
+        assert prompt == "you> "
+        output = [str(message) for message in messages]
+        assert output[0] == interview.header
+        if history == "new":
+            assert output[1:] == ["Intent?"]
+        else:
+            assert output[1] == f"Interview turns: {original.turn_count}"
+            expected = (
+                []
+                if history == "no_analyst"
+                else ["Latest **question**?" if history == "reply" else "Earlier question?"]
+            )
+            assert output[2:] == expected
+            assert analyst.requests == []
+            assert interview.record.turns == original.turns
+        return "/quit"
+
+    interview.reader = reader
+    assert asyncio.run(interview.run()) == RunState.INTERRUPTED
+    assert len(analyst.requests) == (1 if history == "new" else 0)
+
+
+@pytest.mark.parametrize("mode", ["terminal", "piped", "no_color", "dumb", "narrow"])
+def test_resume_uses_reply_rendering(tmp_path: Path, mode: str) -> None:
+    shown = StringIO()
+    console = Console(
+        file=shown,
+        width=59 if mode == "narrow" else 80,
+        force_terminal=mode != "piped",
+        no_color=mode == "no_color",
+        _environ={"TERM": "dumb" if mode == "dumb" else "xterm"},
+    )
+    interview, analyst, _ = session(tmp_path, [])
+    interview.header = render_header(90, "Choose [directions]", "Keep **intent**.")
+    interview.record.add_turn("analyst", "Choose **small** steps with `literal` text.")
+    interview.console = console
+    interview.print = console.print
+    interview.live = True
+
+    def reader(prompt: str) -> str:
+        output = shown.getvalue()
+        assert "Ticket #90: Choose [directions]" in output
+        assert "Summary:\nKeep **intent**." in output
+        assert output.index("Ticket #90") < output.index("Interview turns: 0")
+        assert output.index("Interview turns: 0") < output.index(
+            "Choose", output.index("Interview turns")
+        )
+        if mode == "terminal":
+            assert "**small**" not in output
+            assert "`literal`" not in output
+        else:
+            assert interview.record.turns[0].text in output
+            assert "\x1b" not in output
+        assert not console._live_stack
+        return "/quit"
+
+    interview.reader = reader
+    assert asyncio.run(interview.run()) == RunState.INTERRUPTED
+    assert analyst.requests == []
+
+
+def test_finished_interview_does_not_display_header_or_replay(tmp_path: Path) -> None:
+    interview, analyst, messages = session(tmp_path, [])
+    interview.header = "Ticket header"
+    interview.record.add_turn("analyst", "Earlier question?")
+    interview.record.status = "proceeded"
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    assert messages == []
+    assert analyst.requests == []
+
+
 @pytest.mark.parametrize("commands", [["/quit"], []])
 def test_quit_eof_and_resume(tmp_path: Path, commands: list[str]) -> None:
     interview, analyst, _ = session(tmp_path, ["earlier", *commands])
@@ -156,6 +242,7 @@ def test_interrupt_keeps_person_turn(tmp_path: Path) -> None:
 @pytest.mark.parametrize("ending", ["proceed", "needs_human", "limit"])
 def test_automatic_endings_and_human_continuation(tmp_path: Path, ending: str) -> None:
     interview, analyst, messages = session(tmp_path, [], maximum=2)
+    interview.header = "Ticket header"
     reply = {
         "reply": "Only the given scope",
         "proceed": ending == "proceed",
@@ -169,6 +256,8 @@ def test_automatic_endings_and_human_continuation(tmp_path: Path, ending: str) -
 
     interview.standin = _TimedAdapter(standin, 300)
     state = asyncio.run(interview.run(automatic=True))
+    assert "Ticket header" not in [str(message) for message in messages]
+    assert not any("Interview turns:" in str(message) for message in messages)
     assert len(standin.requests) <= 2
     assert len(analyst.requests) <= 3
     assert any(turn.speaker == "stand_in" for turn in interview.record.turns)

@@ -20,7 +20,7 @@ from fugue.cli.choices import Chooser
 from fugue.config.schema import Limits
 from fugue.interview.prompts import StandInReply, strip_ready
 from fugue.interview.record import InterviewRecord, Speaker
-from fugue.interview.render import render_conversation
+from fugue.interview.render import render_conversation, render_turn_count
 from fugue.interview.store import InterviewStore
 from fugue.models import Role
 from fugue.workflow import RunState
@@ -77,6 +77,12 @@ class _TimedAdapter:
 
 
 class _InterviewChat(ChatSession):
+    def show_reply(self, answer: str) -> None:
+        if self.console is None:
+            self.emit(Text(answer))
+        else:
+            terminal.print_markdown(answer, console=self.console)
+
     @property
     def transcript(self) -> str:
         return self.conversation()
@@ -129,7 +135,7 @@ class _InterviewChat(ChatSession):
                 # Buffer plain output until the final ready marker has been removed.
                 self.write(answer + ("" if answer.endswith("\n") else "\n"))
             else:
-                terminal.print_markdown(answer, console=console)
+                self.show_reply(answer)
         if record:
             self.turns.append((question, answer))
             if self.on_turn is not None:
@@ -145,6 +151,7 @@ class InterviewSession:
         analyst: ProviderAdapter,
         make_request: Callable[[Role, str], AgentRequest],
         *,
+        header: str | None = None,
         chooser: Chooser | None = None,
         interactive: bool | None = None,
         limits: Limits | None = None,
@@ -156,6 +163,7 @@ class InterviewSession:
         write: Callable[[str], None] | None = None,
         on_result: Callable[[Role, AgentResult], None] | None = None,
     ) -> None:
+        self.header = header
         self.chooser = chooser
         self.interactive = (
             sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
@@ -288,6 +296,17 @@ class InterviewSession:
                 async with asyncio.timeout(self.limits.interview_automatic_max_seconds):
                     await self._automatic(chat)
             else:
+                if self.header is not None:
+                    if self.console is None:
+                        self.print(Text(self.header))
+                    else:
+                        terminal.print_text(self.header, console=self.console)
+                if self.record.turns:
+                    self.print(Text(render_turn_count(self.record)))
+                    for turn in reversed(self.record.turns):
+                        if turn.speaker == "analyst":
+                            chat.show_reply(turn.text)
+                            break
                 if not self.record.turns:
                     await chat.ask("")
                     chat.turns.clear()

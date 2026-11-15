@@ -108,6 +108,39 @@ def test_quit_then_resume_guard_and_human_restart(tmp_path: Path) -> None:
         deps.store.close()
 
 
+@pytest.mark.parametrize("resumed", [False, True])
+def test_interview_displays_ticket_and_summary_before_prompt(tmp_path: Path, resumed: bool) -> None:
+    deps, github, _ = make_deps(tmp_path, size=Size.L)
+    github.ticket.issue_type = IssueType.QUESTION
+    adapter = ScriptedAdapter([ScriptStep(result=result("Opening question?"))])
+    deps.registry.register("claude", lambda config: adapter)
+    if resumed:
+        record = InterviewRecord(repo=github.repo, ticket=github.ticket.number)
+        record.add_turn("analyst", "Previous question?")
+        InterviewStore(tmp_path).save(record)
+    messages: list[object] = []
+
+    def reader(prompt: str) -> str:
+        assert prompt == "you> "
+        output = [str(message) for message in messages]
+        assert output[0] == (f"Ticket #43: {github.ticket.title}\n\nSummary:\nNeed analysis")
+        assert output[1:] == (
+            ["Interview turns: 0", "Previous question?"] if resumed else ["Opening question?"]
+        )
+        return "/quit"
+
+    try:
+        outcome = asyncio.run(
+            interview_then_analyse(deps, github.ticket, reader=reader, print_fn=messages.append)
+        )
+        assert outcome.state == RunState.INTERRUPTED
+        assert outcome.problems == ()
+        assert len(adapter.requests) == (0 if resumed else 1)
+        assert github.uploads == []
+    finally:
+        deps.store.close()
+
+
 @pytest.mark.parametrize("finished", [False, True])
 def test_analysis_with_existing_record(tmp_path: Path, finished: bool) -> None:
     deps, github, adapter = make_deps(tmp_path)
