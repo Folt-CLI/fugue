@@ -187,7 +187,9 @@ their defaults. TOML has no null literal; omit an optional field to leave it uns
 The default `human` profile preserves developer solution selection and explicit
 approval. `campaign` represents the repository's
 [autonomy exceptions](../dev/process.md#autonomous-development-campaign-exceptions);
-choosing the value is not a substitute for actual consent or credentials.
+choosing the value is not a substitute for actual consent or credentials. The
+`human` profile still stops a run at the stack approval unless you pass
+`fugue run --authorise` for that invocation.
 
 ### Interview configuration
 

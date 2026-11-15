@@ -30,6 +30,10 @@ GitHub Projects or repository process metadata. See
   their own configured gate. Passing a local gate does not establish green CI.
 - Default policy keeps solution selection and merge approval with the developer.
   A waiting state is not consent. Any new head commit invalidates approval.
+  A stack approval covers each layer only at its recorded head SHA, and
+  `fugue run --authorise` grants it for that invocation only. The earlier review,
+  decision, approval and merge commands are deprecated aliases until 0.4.0; the
+  run covers them.
 - In single-account GitHub use, reviews use COMMENT because the author cannot
   approve their own pull request. A clean required review and Fugue approval
   still have distinct purposes. See [reviewer identity setup](reviewer-identity.md)
@@ -68,7 +72,9 @@ GitHub Projects or repository process metadata. See
 - `fugue run` accepts several ticket numbers, runs at most
   `limits.max_concurrent_runs` at once, labels progress lines `[#N]` and prints
   a summary. A ticket with an open blocker is skipped. Skipped and
-  lock-conflicted tickets exit with code 3.
+  lock-conflicted tickets exit with code 3. A run of a Question or Epic works
+  its children as one stack; a Question child without an answer is a stop point
+  that exits with code 7 until you answer it with `fugue question` and run again.
 - Shared Git steps in the primary checkout are serialised across processes by a
   repository lock; agent work is not.
 - Concurrent runs in one process share the provider cool-down, so one run's
