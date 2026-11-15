@@ -1072,18 +1072,23 @@ class Engine:
                 remote = await Git(identity.path)._run(
                     "ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}"
                 )
+
+                async def initialize() -> None:
+                    view = await stack.view()
+                    if view is None or identity.branch not in view.split():
+                        existing = await stack.find_stack(lower)
+                        if existing is None:
+                            await stack.init(self.deps.base_branch, [lower, identity.branch])
+                        else:
+                            await stack.link(existing, identity.branch)
+                            await stack.track(lower, identity.branch)
+
+                await self._operation(run_id, "stack_init", {"branch": identity.branch}, initialize)
                 if (
                     remote.split()[:1] == [head]
                     and await self.deps.github.find_pr(identity.branch) is not None
                 ):
                     return
-
-                async def initialize() -> None:
-                    view = await stack.view()
-                    if view is None or identity.branch not in view.split():
-                        await stack.init(self.deps.base_branch, [lower, identity.branch])
-
-                await self._operation(run_id, "stack_init", {"branch": identity.branch}, initialize)
                 await stack.submit()
 
             await self._operation(
@@ -1124,6 +1129,14 @@ class Engine:
                     body,
                     ",".join(ticket.assignees) or "Bojan-Ivanovski",
                     ticket.milestone or "0.1.0",
+                ),
+            )
+            await self._operation(
+                run_id,
+                "stack_ready",
+                {"branch": identity.branch, "head": await git.head_sha()},
+                lambda: self.deps.stack_factory(identity.path).ready_pr(
+                    self.deps.github.repo, identity.branch
                 ),
             )
             return
