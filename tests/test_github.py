@@ -21,7 +21,7 @@ from fugue.github import (
     PullRequest,
     ReviewComment,
 )
-from fugue.github.client import PostedReview, ResolvePermissionError
+from fugue.github.client import EmptyJSONReply, PostedReview, ResolvePermissionError
 from fugue.github.parse import parse_body_sections, parse_ticket
 from fugue.models import Component, Disposition, Priority, Size, Status
 
@@ -124,6 +124,18 @@ Fake = Callable[..., tuple[GitHubClient, Callable[[], list[dict[str, Any]]]]]
 
 def response(value: object, code: int = 0) -> dict[str, Any]:
     return {"stdout": json.dumps(value), "exit_code": code}
+
+
+@pytest.mark.parametrize("output", ["", " \n\t"])
+@pytest.mark.parametrize("read", ["checks", "find_pr"])
+def test_empty_json_reply_names_command(fake: Fake, output: str, read: str) -> None:
+    command = ["pr", "checks" if read == "checks" else "list"]
+    client, calls = fake([(command, {"stdout": output})])
+    with pytest.raises(EmptyJSONReply, match="Empty JSON reply") as error:
+        asyncio.run(client.checks(PR) if read == "checks" else client.find_pr("feature/example"))
+    assert error.value.argv[2:4] == tuple(command)
+    assert repr(error.value.argv) in str(error.value)
+    assert len(calls()) == 1
 
 
 def test_parse_ticket() -> None:
