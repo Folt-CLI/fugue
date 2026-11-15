@@ -100,6 +100,10 @@ class PromptChooser(LineChooser):
         def cancel(event: KeyPressEvent) -> None:
             event.app.exit(result=None)
 
+        @bindings.add("c-c")
+        def interrupt(event: KeyPressEvent) -> None:
+            event.app.exit(exception=KeyboardInterrupt)
+
         def text() -> str:
             entries = "\n".join(
                 f"{'>' if index == selected else ' '} {label}"

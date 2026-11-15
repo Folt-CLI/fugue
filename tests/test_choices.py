@@ -128,6 +128,31 @@ def test_prompt_selection(keys: str, default: int, expected: int | None) -> None
         assert chooser.choose("Pick", ["first", "second"], default) == expected
 
 
+def test_prompt_ctrl_c_interrupts_choice() -> None:
+    with create_pipe_input() as pipe:
+        pipe.send_text("\x03\r")
+        output = StringIO()
+        chooser = choices.PromptChooser(
+            stdin=StringIO("2\n"), stdout=output, input=pipe, output=DummyOutput()
+        )
+        with pytest.raises(KeyboardInterrupt):
+            chooser.choose("Pick", ["first", "second"])
+        assert output.getvalue() == ""
+
+
+@pytest.mark.parametrize("default", [False, True])
+def test_prompt_ctrl_c_interrupts_confirmation(default: bool) -> None:
+    with create_pipe_input() as pipe:
+        pipe.send_text("\x03\r")
+        output = StringIO()
+        chooser = choices.PromptChooser(
+            stdin=StringIO("1\n"), stdout=output, input=pipe, output=DummyOutput()
+        )
+        with pytest.raises(KeyboardInterrupt):
+            chooser.confirm("Continue?", default)
+        assert output.getvalue() == ""
+
+
 def test_prompt_eof_cancels() -> None:
     with create_pipe_input() as pipe:
         pipe.close()
