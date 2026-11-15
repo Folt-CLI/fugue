@@ -3,14 +3,25 @@
 import asyncio
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from functools import partial
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 
-from fugue.agents import AccessMode, AgentRequest, AgentResult, ScriptedAdapter, ScriptStep
+from fugue.agents import (
+    AccessMode,
+    AgentEvent,
+    AgentRequest,
+    AgentResult,
+    ScriptedAdapter,
+    ScriptStep,
+)
 from fugue.config.schema import Limits
 from fugue.interview.record import InterviewRecord
+from fugue.interview.render import render_conversation
 from fugue.interview.session import InterviewSession
 from fugue.interview.store import InterviewStore
 from fugue.models import AuthenticationMode, Role
@@ -405,3 +416,112 @@ def test_confirmation_eof_keeps_interview_open_and_streamed_marker_is_removed(
     assert interview.record.turns[0].text == "Directions"
     assert all(READY_MARKER not in str(message) for message in messages)
     assert shown.getvalue().count("Start the analysis?") == 1
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("mode", ["terminal", "piped", "no_color", "dumb", "narrow"])
+def test_markdown_display_preserves_turns_and_transcript(
+    tmp_path: Path, streamed: bool, live: bool, mode: str
+) -> None:
+    shown = StringIO()
+    console = Console(
+        file=shown,
+        width=59 if mode == "narrow" else 60,
+        force_terminal=mode != "piped",
+        no_color=mode == "no_color",
+        _environ={"TERM": "dumb" if mode == "dumb" else "xterm"},
+    )
+    answer = "## Directions\n\nChoose **small** steps with `literal` text."
+    chunks = [answer[:20], answer[20:]]
+    analyst = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=result(answer),
+                events=[AgentEvent("text", chunk) for chunk in chunks] if streamed else [],
+            )
+        ]
+    )
+    target = tmp_path / "conversation.md"
+    commands = read(iter([f"/save {target}", "/proceed"]))
+
+    def reader(prompt: str) -> str:
+        assert not console._live_stack
+        command = commands(prompt)
+        if command == "/proceed":
+            assert target.read_text(encoding="utf-8") == render_conversation(interview.record)
+        return command
+
+    interview = InterviewSession(
+        InterviewRecord(repo="owner/name", ticket=90),
+        InterviewStore(tmp_path),
+        analyst,
+        lambda role, text: AgentRequest(role, text, tmp_path, AccessMode.READ_ONLY),
+        reader=reader,
+        print_fn=console.print,
+        console=console,
+        live=live,
+        write=partial(console.out, end=""),
+    )
+    assert asyncio.run(interview.run()) == RunState.WAITING_FOR_SELECTION
+    output = shown.getvalue()
+    if mode == "terminal":
+        assert "## Directions" not in output
+        assert "**small**" not in output
+        assert "`literal`" not in output
+        assert "Directions" in output
+    else:
+        assert answer in output
+        assert "\x1b" not in output
+    assert interview.record.turns[0].text == answer
+    saved = interview.store.load("owner/name", 90)
+    assert saved is not None and saved.turns[0].text == answer
+    assert answer in target.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_live_reply_finishes_before_confirmation_or_failure(tmp_path: Path, failed: bool) -> None:
+    from fugue.cli.choices import LineChooser
+    from fugue.interview.prompts import READY_MARKER
+
+    shown = StringIO()
+    console = Console(file=shown, width=80, force_terminal=True, _environ={"TERM": "xterm"})
+    answer = f"**Directions**\n{READY_MARKER}"
+    analyst = ScriptedAdapter(
+        [
+            ScriptStep(
+                result=result(answer, ok=not failed, error="Offline" if failed else None),
+                events=[AgentEvent("text", answer)],
+            )
+        ]
+    )
+
+    class ReadyChooser(LineChooser):
+        def confirm(self, message: str, default: bool = False) -> bool:
+            assert not console._live_stack
+            return super().confirm(message, default=default)
+
+    interview = InterviewSession(
+        InterviewRecord(repo="owner/name", ticket=90),
+        InterviewStore(tmp_path),
+        analyst,
+        lambda role, text: AgentRequest(role, text, tmp_path, AccessMode.READ_ONLY),
+        reader=read(iter([])),
+        chooser=ReadyChooser(stdin=StringIO("1\n"), stdout=shown),
+        interactive=True,
+        print_fn=console.print,
+        console=console,
+        live=True,
+    )
+    assert asyncio.run(interview.run()) == (
+        RunState.FAILED if failed else RunState.WAITING_FOR_SELECTION
+    )
+    assert not console._live_stack
+    assert READY_MARKER not in shown.getvalue()
+    if failed:
+        assert "Follow-up failed: Offline" in shown.getvalue()
+        assert interview.record.turns == []
+        assert "Start the analysis?" not in shown.getvalue()
+    else:
+        assert interview.record.turns[0].text == "**Directions**"
+        assert "Start the analysis?" in shown.getvalue()

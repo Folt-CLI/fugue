@@ -2,11 +2,13 @@
 
 from collections.abc import Callable
 from dataclasses import asdict
+from functools import partial
 
-from rich.console import RenderableType
+from rich.console import Console, RenderableType
 
 from fugue.agents import AccessMode, AgentRequest, AgentResult
 from fugue.analysis.stage import analyse
+from fugue.cli import terminal
 from fugue.cli.chat import default_reader
 from fugue.cli.choices import Chooser
 from fugue.engine import Engine, EngineDeps, RunOutcome
@@ -30,6 +32,7 @@ async def interview_then_analyse(
     interactive: bool | None = None,
     reader: Callable[[str], str] = default_reader,
     print_fn: Callable[[RenderableType], None] = print,
+    console: Console | None = None,
 ) -> RunOutcome:
     if ticket.issue_type != IssueType.QUESTION:
         raise ValueError("Interview requires a Question")
@@ -115,6 +118,9 @@ async def interview_then_analyse(
         standin=standin,
         reader=reader,
         print_fn=print_fn,
+        console=console,
+        live=console is not None and terminal.supports_rich(console),
+        write=partial(console.out, end="") if console is not None else None,
         on_result=usage,
     )
     state = await session.run(automatic=automatic)

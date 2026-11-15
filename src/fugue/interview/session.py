@@ -5,11 +5,16 @@ import os
 import sys
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import UTC, datetime
 
-from rich.console import RenderableType
+from rich.console import Console, RenderableType
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.text import Text
 
 from fugue.agents import AgentEvent, AgentRequest, AgentResult, ProviderAdapter
+from fugue.cli import terminal
 from fugue.cli.chat import ChatSession, default_reader
 from fugue.cli.choices import Chooser
 from fugue.config.schema import Limits
@@ -80,10 +85,56 @@ class _InterviewChat(ChatSession):
     after_turn: Callable[[], Awaitable[None]]
 
     async def ask(self, question: str, *, record: bool = True) -> bool:
-        succeeded = await super().ask(question, record=record)
+        succeeded = (
+            await super().ask(question, record=record)
+            if self.console is None
+            else await self._ask_markdown(question, record=record)
+        )
         if succeeded:
             await self.after_turn()
         return succeeded
+
+    async def _ask_markdown(self, question: str, *, record: bool) -> bool:
+        console = self.console
+        assert console is not None
+        chunks: list[str] = []
+        display = (
+            Live(Markdown(""), console=console, refresh_per_second=8)
+            if self.live and terminal.supports_rich(console)
+            else None
+        )
+
+        async def on_event(event: AgentEvent) -> None:
+            if event.kind == "text" and event.text:
+                chunks.append(event.text)
+                if display is not None:
+                    display.update(Markdown(strip_ready("".join(chunks))[0]))
+
+        request = self.make_request(question)
+        with display if display is not None else nullcontext():
+            result = await self.adapter.run(request, on_event)
+            answer = "".join(chunks) or result.final_text
+            if result.ok:
+                if self.transform_answer is not None:
+                    answer = self.transform_answer(answer)
+                if display is not None:
+                    display.update(Markdown(answer))
+        if self.on_result is not None:
+            self.on_result(result)
+        if not result.ok:
+            self.emit(Text(f"Follow-up failed: {result.error}"))
+            return False
+        if display is None:
+            if chunks and self.write is not None and not terminal.supports_rich(console):
+                # Buffer plain output until the final ready marker has been removed.
+                self.write(answer + ("" if answer.endswith("\n") else "\n"))
+            else:
+                terminal.print_markdown(answer, console=console)
+        if record:
+            self.turns.append((question, answer))
+            if self.on_turn is not None:
+                self.on_turn(question, answer)
+        return True
 
 
 class InterviewSession:
@@ -100,6 +151,9 @@ class InterviewSession:
         standin: ProviderAdapter | None = None,
         reader: Callable[[str], str] = default_reader,
         print_fn: Callable[[RenderableType], None] = print,
+        console: Console | None = None,
+        live: bool = False,
+        write: Callable[[str], None] | None = None,
         on_result: Callable[[Role, AgentResult], None] | None = None,
     ) -> None:
         self.chooser = chooser
@@ -129,6 +183,9 @@ class InterviewSession:
         self.make_request = make_request
         self.reader = reader
         self.print = print_fn
+        self.console = console
+        self.live = live
+        self.write = write
         self.on_result = on_result
         self.state = RunState.INTERRUPTED
         self.reason = ""
@@ -214,6 +271,9 @@ class InterviewSession:
             self._request,
             reader=self._read,
             emit=self.print,
+            console=self.console,
+            live=self.live,
+            write=self.write,
             commands={"/proceed": self._proceed},
             max_turns=self.limits.interview_max_turns,
             on_result=lambda result: self._result(Role.ANALYST, result),
