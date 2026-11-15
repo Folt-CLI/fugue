@@ -16,6 +16,7 @@ from test_engine_to_pr import harness as harness
 from test_stack import FakeStack
 
 from fugue.agents import AgentRequest, ScriptedAdapter, ScriptStep
+from fugue.cli.render import render_parent_summary
 from fugue.engine import Engine, RunOutcome
 from fugue.engine.facts import branch_name, worktree_path
 from fugue.engine.locks import RepoLock, TicketLock, TicketLocked
@@ -211,6 +212,72 @@ def test_parent_reentry_keeps_delivered_lower_and_resumes_upper(
     assert stack.submits == 1
 
 
+def test_three_layer_summary_is_bottom_up_and_survives_reentry(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+) -> None:
+    h, _, catalog = parent_stack
+    catalog[35] = catalog[34].model_copy(
+        update={
+            "number": 35,
+            "title": "Top child",
+            "blocked_by": [34],
+            "body_sections": {
+                **catalog[34].body_sections,
+                "Solution": "[35-solution-1.md](https://github.com/user-attachments/files/scope)",
+            },
+        }
+    )
+
+    def implement(request: AgentRequest) -> None:
+        (request.cwd / "allowed.txt").write_text(f"child {h.github.ticket.number}")
+
+    adapter = ScriptedAdapter(
+        [ScriptStep(result=result(), side_effect=implement) for _ in range(3)]
+    )
+    h.deps.registry.register("codex", lambda config: adapter)
+    outcome = asyncio.run(run_parent(h.deps, 100, list(reversed(list(catalog.values())))))
+    assert outcome.state == RunState.COMPLETED
+    summary = outcome.next_step
+    assert summary is not None
+    blocks = summary.split("\n\n")
+    assert blocks[0] == (
+        "In phase 1, approve and merge each layer with the existing commands, bottom layer first."
+    )
+    assert len(blocks) == 4
+    for block, (number, layer) in zip(blocks[1:], outcome.outcomes, strict=True):
+        identity = Engine(h.deps)._saved_identity(layer.run_id)
+        assert identity is not None
+        pr = asyncio.run(h.github.find_pr(identity.branch))
+        assert pr is not None
+        assert block.splitlines() == [
+            f"ticket #{number}",
+            f"pull request: #{pr.number}",
+            f"run {layer.run_id}: waiting_for_merge_approval",
+            f"next: fugue approval request {layer.run_id}",
+            f"then fugue approval record {layer.run_id} --reason 'reason text'",
+            f"then fugue merge {layer.run_id}",
+        ]
+        assert h.deps.store.get_run(layer.run_id).state == RunState.WAITING_FOR_MERGE_APPROVAL
+    assert [number for number, _ in outcome.outcomes] == [33, 34, 35]
+    repeated = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert repeated.outcomes == ()
+    assert repeated.next_step == summary
+
+
+def test_summary_handles_a_layer_without_a_pull_request() -> None:
+    summary = render_parent_summary([(33, RunOutcome(7, RunState.WAITING_FOR_MERGE_APPROVAL))])
+    assert "ticket #33\npull request: -\nrun 7: waiting_for_merge_approval" in summary
+
+
+def test_empty_parent_has_no_approval_summary(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+) -> None:
+    h, _, _ = parent_stack
+    outcome = asyncio.run(run_parent(h.deps, 100, []))
+    assert outcome.state == RunState.COMPLETED
+    assert outcome.next_step is None
+
+
 def test_parent_question_stops_before_worktree_and_releases_locks(
     parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
 ) -> None:
@@ -219,6 +286,7 @@ def test_parent_question_stops_before_worktree_and_releases_locks(
     outcome = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
     assert outcome.state == RunState.WAITING_FOR_DECISION
     assert outcome.next_step == "fugue question 33"
+    assert "phase 1" not in outcome.next_step
     assert not h.deps.worktrees_root.exists()
     assert h.deps.store.list_work(outcome.parent_run_id)[1].run_id is None
     with (
@@ -374,6 +442,8 @@ def test_review_failure_keeps_lower_and_retries_only_upper(
     monkeypatch.setattr("fugue.engine.parent._WorkEngine.continue_review", review_work)
     blocked = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
     assert blocked.state == state
+    assert blocked.next_step is None
+    assert blocked.outcomes[-1][0] == 34
     assert calls == [33, 34]
     failing = False
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))

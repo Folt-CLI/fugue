@@ -185,6 +185,27 @@ def next_step(outcome: RunOutcome) -> str | None:
     return next_step_for(outcome.state, outcome.run_id, 0)
 
 
+def render_parent_summary(layers: Sequence[tuple[int, RunOutcome]]) -> str:
+    """Render the bottom-up phase 1 handoff without performing any approval or merge."""
+    lines = [
+        "In phase 1, approve and merge each layer with the existing commands, bottom layer first."
+    ]
+    for number, outcome in layers:
+        pr = f"#{outcome.pr_number}" if outcome.pr_number is not None else "-"
+        lines.extend(
+            [
+                "",
+                f"ticket #{number}",
+                f"pull request: {pr}",
+                f"run {outcome.run_id}: {outcome.state}",
+                f"next: fugue approval request {outcome.run_id}",
+                f"then fugue approval record {outcome.run_id} --reason 'reason text'",
+                f"then fugue merge {outcome.run_id}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class BatchRow:
     ticket: int

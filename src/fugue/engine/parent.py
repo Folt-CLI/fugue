@@ -393,7 +393,34 @@ async def run_parent(
                     if refreshing is not None:
                         store.complete_operation(refreshing.id, {})
                     lower = ticket.number
-            return stop(RunState.COMPLETED)
+            # Include saved layers too: re-entry can finish without new outcomes.
+            from fugue.cli.render import render_parent_summary
+
+            layers: list[tuple[int, RunOutcome]] = []
+            tickets = {ticket.number: ticket for ticket in ordered}
+            for item in store.list_work(parent.id):
+                layer_ticket = tickets.get(item.ticket_number)
+                if (
+                    layer_ticket is None
+                    or layer_ticket.issue_type == IssueType.QUESTION
+                    or item.run_id is None
+                ):
+                    continue
+                saved = store.get_run(item.run_id)
+                identity = Engine(deps)._saved_identity(saved.id)
+                pr = await deps.github.find_pr(identity.branch) if identity is not None else None
+                layers.append(
+                    (
+                        layer_ticket.number,
+                        RunOutcome(
+                            saved.id, RunState(saved.state), pr_number=pr.number if pr else None
+                        ),
+                    )
+                )
+            return stop(
+                RunState.COMPLETED,
+                next_step=render_parent_summary(layers) if layers else None,
+            )
         except (asyncio.CancelledError, KeyboardInterrupt):
             store.set_parent_state(parent.id, RunState.INTERRUPTED)
             raise
