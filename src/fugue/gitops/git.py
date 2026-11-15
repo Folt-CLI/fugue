@@ -72,17 +72,37 @@ class Git:
         options = ("--force",) if force else ()
         await self._run("worktree", "remove", *options, "--", str(path))
 
-    async def delete_local_branch(self, branch: str) -> tuple[bool, str | None]:
-        """Safely delete a local branch, or return the reason it was kept or absent."""
+    async def delete_local_branch(
+        self, branch: str, *, merged_head: str | None = None
+    ) -> tuple[bool, str | None]:
+        """Delete safely using ancestry, or an externally confirmed exact merged head.
+
+        Squash merges do not preserve ancestry. The caller may supply the head of
+        a confirmed merged pull request; deletion then atomically requires that
+        exact head, while still protecting branches checked out in any worktree.
+        """
         await self._validate_branch(branch)
+        if merged_head is not None and not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", merged_head
+        ):
+            raise ValueError("merged_head must be a full commit SHA from a confirmed merge")
+        ref = f"refs/heads/{branch}"
         try:
-            await self._run("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+            await self._run("show-ref", "--verify", "--quiet", ref)
         except GitError as error:
             if error.returncode == 1:
                 return False, "Branch is already absent"
             raise
         try:
-            await self._run("branch", "-d", "--", branch)
+            if merged_head is None:
+                await self._run("branch", "-d", "--", branch)
+            else:
+                worktrees = await self._run("worktree", "list", "--porcelain", "-z")
+                if f"branch {ref}" in worktrees.split("\0"):
+                    return False, "Branch is checked out in a worktree"
+                # GitHub's confirmed merge replaces the ancestry check. The old
+                # value prevents deleting any commits added since that merge.
+                await self._run("update-ref", "--no-deref", "-d", ref, merged_head)
         except GitError as error:
             return False, error.stderr.strip() or str(error)
         return True, None

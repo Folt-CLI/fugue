@@ -657,7 +657,10 @@ class Engine:
 
                 await close_step(store, run_id, "worktree", remove)
                 operation = store.begin_operation(
-                    run_id, "closure", "local_branch", {"branch": identity.branch}
+                    run_id,
+                    "closure",
+                    "local_branch",
+                    {"branch": identity.branch, "merged_head": head},
                 )
                 warning: str | None = None
                 if operation.status != "done":
@@ -673,7 +676,7 @@ class Engine:
                             reason = "Branch is the base of another open pull request"
                         else:
                             deleted, reason = await Git(self.deps.repo_root).delete_local_branch(
-                                identity.branch
+                                identity.branch, merged_head=head
                             )
                     except (GitError, GitHubError, OSError) as error:
                         reason = str(error)
