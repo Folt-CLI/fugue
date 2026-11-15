@@ -18,6 +18,11 @@ def render_conversation(record: InterviewRecord) -> str:
     for turn in record.turns:
         speaker = "stand-in (automatic)" if turn.speaker == "stand_in" else turn.speaker
         parts.append(f"{speaker}: {turn.text}")
-    ended = {"person": "person", "stand_in": "stand-in (automatic)", "turn_limit": "turn limit"}
+    ended = {
+        "person": "person",
+        "person_and_analyst": "person and analyst",
+        "stand_in": "stand-in (automatic)",
+        "turn_limit": "turn limit",
+    }
     parts.extend(["## Decision", f"Ended by: {ended.get(record.ended_by or '', 'unfinished')}"])
     return redact("\n\n".join(parts) + "\n")

@@ -1,15 +1,19 @@
 """Bounded human and automatic interviews using the chat component."""
 
 import asyncio
+import os
+import sys
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from rich.console import RenderableType
 
 from fugue.agents import AgentEvent, AgentRequest, AgentResult, ProviderAdapter
 from fugue.cli.chat import ChatSession, default_reader
+from fugue.cli.choices import Chooser
 from fugue.config.schema import Limits
-from fugue.interview.prompts import StandInReply
+from fugue.interview.prompts import StandInReply, strip_ready
 from fugue.interview.record import InterviewRecord, Speaker
 from fugue.interview.render import render_conversation
 from fugue.interview.store import InterviewStore
@@ -73,6 +77,13 @@ class _InterviewChat(ChatSession):
         return self.conversation()
 
     conversation: Callable[[], str]
+    after_turn: Callable[[], Awaitable[None]]
+
+    async def ask(self, question: str, *, record: bool = True) -> bool:
+        succeeded = await super().ask(question, record=record)
+        if succeeded:
+            await self.after_turn()
+        return succeeded
 
 
 class InterviewSession:
@@ -83,12 +94,21 @@ class InterviewSession:
         analyst: ProviderAdapter,
         make_request: Callable[[Role, str], AgentRequest],
         *,
+        chooser: Chooser | None = None,
+        interactive: bool | None = None,
         limits: Limits | None = None,
         standin: ProviderAdapter | None = None,
         reader: Callable[[str], str] = default_reader,
         print_fn: Callable[[RenderableType], None] = print,
         on_result: Callable[[Role, AgentResult], None] | None = None,
     ) -> None:
+        self.chooser = chooser
+        self.interactive = (
+            sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+            if interactive is None
+            else interactive
+        )
+        self.ready = False
         self.record = record
         self.store = store
         self.limits = limits or Limits()
@@ -142,12 +162,36 @@ class InterviewSession:
         self.analyst_calls += 1
         return self.make_request(Role.ANALYST, text)
 
+    def _answer(self, text: str) -> str:
+        answer, self.ready = strip_ready(text)
+        return answer
+
+    async def _confirm_ready(self) -> None:
+        ready, self.ready = self.ready, False
+        if not (
+            ready
+            and self.speaker == "person"
+            and self.interactive
+            and self.chooser is not None
+            and not self.failed
+        ):
+            return
+        # A synchronous terminal chooser needs its own event loop off this thread.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            confirmed = await asyncio.get_running_loop().run_in_executor(
+                executor, self.chooser.confirm, "Start the analysis?"
+            )
+        if confirmed:
+            await self._proceed()
+            self.record.ended_by = "person_and_analyst"
+            self.store.save(self.record)
+
     def _turn(self, question: str, answer: str) -> None:
         self.record.add_turn("analyst", answer, max_turns=self.limits.interview_max_turns)
         self.store.save(self.record)
 
     def _read(self, prompt: str) -> str:
-        if self.failed:
+        if self.failed or self.record.status == "proceeded":
             raise EOFError
         return self.reader(prompt)
 
@@ -174,8 +218,10 @@ class InterviewSession:
             max_turns=self.limits.interview_max_turns,
             on_result=lambda result: self._result(Role.ANALYST, result),
             on_turn=self._turn,
+            transform_answer=self._answer,
         )
         chat.conversation = lambda: render_conversation(self.record)
+        chat.after_turn = self._confirm_ready
         chat.turns = [("", "")] * self.record.turn_count
         try:
             if automatic:

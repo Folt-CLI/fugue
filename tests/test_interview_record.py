@@ -77,3 +77,15 @@ def test_existing_turns_still_count_without_needs_human_metadata() -> None:
     )
     assert record.turn_count == 1
     assert not record.turns[0].needs_human
+
+
+@pytest.mark.parametrize(
+    "ended_by", [None, "person", "stand_in", "turn_limit", "person_and_analyst"]
+)
+def test_end_reasons_load_and_render(ended_by: str | None) -> None:
+    record = InterviewRecord.model_validate(
+        {"repo": "owner/name", "ticket": 90, "ended_by": ended_by}
+    )
+    assert record.ended_by == ended_by
+    if ended_by == "person_and_analyst":
+        assert "Ended by: person and analyst" in render_conversation(record)

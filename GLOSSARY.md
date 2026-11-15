@@ -250,7 +250,7 @@ Status: decided.
 
 ### chat component
 
-the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; the interview and the Question walkthrough's follow-up use it.
+the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; `/proceed` is an interview alias that confirms the end and starts analysis. The interview and the Question walkthrough's follow-up use it.
 
 Status: decided.
 
