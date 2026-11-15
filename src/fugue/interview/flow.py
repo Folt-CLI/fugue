@@ -66,7 +66,7 @@ async def interview_then_analyse(
     )
     if automatic:
         record.standin_provider = deps.config.roles[Role.STAND_IN].provider
-    glossary_path = deps.repo_root / "GLOSSARY.md"
+    glossary_path = deps.effective_code_root / "GLOSSARY.md"
     glossary = glossary_path.read_text(encoding="utf-8") if glossary_path.exists() else ""
 
     def request(role: Role, text: str) -> AgentRequest:
@@ -85,7 +85,7 @@ async def interview_then_analyse(
                 + "\nConversation data:\n"
                 + render_conversation(record)
             ),
-            cwd=deps.repo_root,
+            cwd=deps.effective_code_root,
             access=AccessMode.READ_ONLY,
             output_schema=STAND_IN_SCHEMA if role == Role.STAND_IN else reply_schema(),
             timeout_seconds=deps.config.limits.interview_call_timeout_seconds,

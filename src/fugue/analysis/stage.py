@@ -109,7 +109,7 @@ async def analyse(deps: EngineDeps, ticket: Ticket, *, run_id: int | None = None
                         else ""
                     )
                 ),
-                cwd=deps.repo_root,
+                cwd=deps.effective_code_root,
                 access=AccessMode.READ_ONLY,
                 output_schema=handoff_schema(),
                 timeout_seconds=deps.config.limits.agent_timeout_seconds,

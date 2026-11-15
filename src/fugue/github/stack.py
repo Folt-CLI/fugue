@@ -181,6 +181,24 @@ class StackClient:
             raise GitHubError(result.argv, result.stderr or f"exit code {result.returncode}")
         return result.stdout
 
+    async def merge(self, pr_number: int) -> str:
+        """Merge the entire native stack atomically using merge commits."""
+        if pr_number <= 0:
+            raise ValueError("A positive pull request number is required")
+        return await self._run("merge", str(pr_number), "--merge", "--yes")
+
+    async def tracked_branches(self, branch: str) -> list[str]:
+        """Read every locally tracked layer before authorizing a whole-stack merge."""
+        state = json.loads((await self._tracking_path()).read_text())
+        matches = [
+            [layer["branch"] for layer in stack["branches"]]
+            for stack in state["stacks"]
+            if any(layer["branch"] == branch for layer in stack["branches"])
+        ]
+        if len(matches) != 1:
+            raise ValueError("Expected exactly one tracked stack")
+        return list(matches[0])
+
     async def rebase(self) -> str:
         return await self._run("rebase")
 

@@ -51,6 +51,28 @@ MIGRATIONS: list[str] = [
     ALTER TABLE usage_records ADD COLUMN model TEXT;
     ALTER TABLE usage_records ADD COLUMN tier TEXT;
     """,
+    """
+    CREATE TABLE parent_runs (
+        id INTEGER PRIMARY KEY, repo TEXT NOT NULL, parent_number INT NOT NULL,
+        state TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE parent_run_work (
+        parent_run_id INTEGER NOT NULL REFERENCES parent_runs(id),
+        ticket_number INT NOT NULL, position INT NOT NULL,
+        run_id INTEGER REFERENCES runs(id), UNIQUE(parent_run_id, ticket_number)
+    );
+    """,
+    """
+    CREATE TABLE stack_approval_requests (
+        parent_run_id INTEGER PRIMARY KEY REFERENCES parent_runs(id),
+        heads_json TEXT NOT NULL
+    );
+    CREATE TABLE stack_approvals (
+        approval_id INTEGER PRIMARY KEY REFERENCES approvals(id),
+        parent_run_id INTEGER NOT NULL REFERENCES parent_runs(id),
+        heads_json TEXT NOT NULL
+    );
+    """,
 ]
 
 

@@ -158,19 +158,23 @@ def test_review_approval_old_names_match_new_names(
     fake = FakeEngine()
     monkeypatch.setattr(cli_app, "engine_factory", lambda *args: fake)
     options = ["3", *args, "--repo-root", str(tmp_path)]
-    assert_same_behaviour([*old, *options], [*new, *options])
+    legacy = runner.invoke(cli_app.app, [*old, *options])
+    current = runner.invoke(cli_app.app, [*new, *options])
     assert [name for name, _ in fake.calls] == [action, action]
     if action == "review":
         assert fake.calls[0] == ("review", 3)
-    legacy = runner.invoke(cli_app.app, [*old, *options])
-    current = runner.invoke(cli_app.app, [*new, *options])
+    assert legacy.stdout == current.stdout
+    assert legacy.exit_code == current.exit_code == (0 if action == "approve" else 7)
     old_name = " ".join(old) + (" RUN" if action == "review" else "")
     new_name = " ".join(new) + (" RUN" if action == "review" else "")
-    assert legacy.stderr == (
+    assert legacy.stderr.startswith(
         f"warning: fugue {old_name} is deprecated; use fugue {new_name} instead. "
-        "It will be removed in 0.4.0.\n" + current.stderr
+        "It will be removed in 0.4.0.\n"
     )
-    assert current.exit_code == 0
+    assert current.stderr.startswith(
+        f"warning: fugue {' '.join(new)} is deprecated; use fugue run instead. "
+        "It will be removed in 0.4.0.\n"
+    )
 
 
 def test_review_approval_help_hides_old_names() -> None:
@@ -178,11 +182,47 @@ def test_review_approval_help_hides_old_names() -> None:
     assert result.exit_code == 0
     for old in ["decide", "request-approval", "approve"]:
         assert re.search(rf"^\s*│?\s*{old}\s", result.stdout, re.MULTILINE) is None
+    for group in ["review", "approval"]:
+        assert runner.invoke(cli_app.app, [group, "--help"]).exit_code == 0
+
+
+def test_commands_covered_by_run_are_hidden_from_help() -> None:
+    result = runner.invoke(cli_app.app, ["--help"])
+    assert result.exit_code == 0
+    assert re.search(r"^\s*│?\s*run\s", result.stdout, re.MULTILINE)
     for group, commands in [("review", ["start", "decide"]), ("approval", ["request", "record"])]:
-        help_result = runner.invoke(cli_app.app, [group, "--help"])
-        assert help_result.exit_code == 0
+        group_help = runner.invoke(cli_app.app, [group, "--help"])
+        assert group_help.exit_code == 0
         for command in commands:
-            assert command in help_result.stdout
+            assert re.search(rf"^\s*│?\s*{command}\s", group_help.stdout, re.MULTILINE) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "action"),
+    [
+        (["review", "start"], [], "review"),
+        (["review", "decide"], ["--accept", "1"], "decide"),
+        (["approval", "request"], [], "request-approval"),
+        (["approval", "record"], ["--reason", "ready", "--by", "user"], "approve"),
+    ],
+)
+def test_run_covered_commands_still_run_with_warning(
+    command: list[str],
+    args: list[str],
+    action: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_cli_flow import FakeEngine
+
+    fake = FakeEngine()
+    monkeypatch.setattr(cli_app, "engine_factory", lambda *args: fake)
+    result = runner.invoke(cli_app.app, [*command, "3", *args, "--repo-root", str(tmp_path)])
+    assert [name for name, _ in fake.calls] == [action]
+    assert result.stderr.startswith(
+        f"warning: fugue {' '.join(command)} is deprecated; use fugue run instead. "
+        "It will be removed in 0.4.0.\n"
+    )
 
 
 @pytest.mark.parametrize("invalid", [False, True])

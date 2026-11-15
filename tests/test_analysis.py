@@ -336,8 +336,15 @@ def make_deps(
 
 
 @pytest.mark.parametrize("size", [Size.M, Size.L])
-def test_stage_publishes_and_waits_without_selecting(tmp_path: Path, size: Size) -> None:
+@pytest.mark.parametrize("separate_code_root", [False, True])
+def test_stage_publishes_and_waits_without_selecting(
+    tmp_path: Path, size: Size, separate_code_root: bool
+) -> None:
     deps, github, adapter = make_deps(tmp_path, size=size)
+    code_root = tmp_path / "code" if separate_code_root else tmp_path
+    if separate_code_root:
+        code_root.mkdir()
+        deps.code_root = code_root
     try:
         outcome = asyncio.run(analyse(deps, github.ticket))
         assert outcome.state == RunState.WAITING_FOR_SELECTION
@@ -348,9 +355,11 @@ def test_stage_publishes_and_waits_without_selecting(tmp_path: Path, size: Size)
         assert len(github.edits) == 1
         request = adapter.requests[0]
         assert request.role == Role.ANALYST
+        assert request.cwd == code_root
         assert request.access == AccessMode.READ_ONLY
         assert request.output_schema == handoff_schema()
         assert not (tmp_path / "worktrees").exists()
+        deps.code_root = tmp_path / "other-code"
         again = asyncio.run(analyse(deps, github.ticket))
         assert again.run_id == outcome.run_id
         assert again.problems == ()

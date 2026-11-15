@@ -56,7 +56,10 @@ fugue run 47 --repo-root /path/to/repository
 These examples assume ticket 47 exists and is ready for the workflow. `run` can
 invoke providers, create a worktree, commit and push changes, and open a pull
 request. Read the ticket's scope and effective configuration first. The selected
-solution for a Size M or L ticket requires a developer decision.
+solution for a Size M or L ticket requires a developer decision. On a Question
+or Epic, `run` works the children as one stack and ends with a stack approval
+and a single merge; `--authorise` lets the run record that approval for the
+current heads.
 
 ## Follow the run
 

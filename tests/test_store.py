@@ -32,6 +32,137 @@ def test_migration_and_reopen(tmp_path: Path) -> None:
         assert reopened.list_runs() == [reopened.get_run(run.id)]
 
 
+def test_parent_tables_exist_in_fresh_database(store: Store) -> None:
+    tables = {
+        row[0]
+        for row in store._connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert {"parent_runs", "parent_run_work"} <= tables
+
+
+def test_parent_migration_preserves_existing_rows(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as connection:
+        for migration in MIGRATIONS[:-1]:
+            connection.executescript(migration)
+        connection.execute(f"PRAGMA user_version = {len(MIGRATIONS) - 1}")
+        connection.execute(
+            "INSERT INTO runs VALUES (1, 12, 'o/r', 'implement', ?, ?)",
+            ("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO usage_records "
+            "(run_id, role, provider, authentication_mode, input_tokens, created_at, model, tier) "
+            "VALUES (1, 'implementer', 'provider', 'api_key', 42, ?, 'model', 'small')",
+            ("2026-01-01T00:00:00+00:00",),
+        )
+        tables = [
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        ]
+        before = {
+            table: connection.execute(f"SELECT * FROM {table}").fetchall() for table in tables
+        }
+    with Store(path) as migrated:
+        for table, rows in before.items():
+            assert [
+                tuple(row) for row in migrated._connection.execute(f"SELECT * FROM {table}")
+            ] == rows
+        assert migrated.get_run(1).state == "implement"
+        parent = migrated.create_parent_run(170, "o/r")
+        migrated.add_work(parent.id, 12, 0)
+        migrated.set_work_run(parent.id, 12, 1)
+        assert migrated.list_work(parent.id)[0].run_id == 1
+        assert migrated._connection.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
+
+
+def test_parent_run_lookup_state_clock_and_frozen_records() -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    with Store(":memory:", clock=lambda: now) as store:
+        assert store.find_open_parent_run("o/r", 170) is None
+        parent = store.create_parent_run(170, "o/r")
+        assert parent.repo == "o/r"
+        assert parent.parent_number == 170
+        assert parent.state == "created"
+        assert parent.created_at == now
+        assert store.find_open_parent_run("o/r", 170) == parent
+        assert store.find_open_parent_run("x/y", 170) is None
+        assert store.find_open_parent_run("o/r", 171) is None
+        work = store.add_work(parent.id, 197, 0)
+        with pytest.raises(FrozenInstanceError):
+            parent.state = "completed"  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            work.position = 1  # type: ignore[misc]
+        store.set_parent_state(parent.id, "blocked")
+        pending = store.find_open_parent_run("o/r", 170)
+        assert pending is not None
+        assert pending.state == "blocked"
+        assert pending.created_at == now
+        store.set_parent_state(parent.id, "completed")
+        assert store.find_open_parent_run("o/r", 170) is None
+        replacement = store.create_parent_run(170, "o/r")
+        assert store.find_open_parent_run("o/r", 170) == replacement
+        assert store.list_runs() == []
+
+
+def test_parent_work_order_association_and_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "parents.db"
+    with Store(path) as store:
+        parent = store.create_parent_run(170, "o/r")
+        other = store.create_parent_run(171, "o/r")
+        last = store.add_work(parent.id, 199, 2)
+        first = store.add_work(parent.id, 197, 0)
+        middle = store.add_work(parent.id, 198, 1)
+        separate = store.add_work(other.id, 197, 0)
+        assert last.run_id is None
+        assert store.list_work(parent.id) == [first, middle, last]
+        assert store.list_work(other.id) == [separate]
+        assert store.list_work(999) == []
+        run = store.create_run(197, "o/r")
+        store.set_work_run(parent.id, 197, run.id)
+        assert store.list_work(other.id) == [separate]
+        store.set_parent_state(parent.id, "implement")
+    with Store(path) as reopened:
+        pending = reopened.find_open_parent_run("o/r", 170)
+        assert pending is not None
+        assert pending.id == parent.id
+        assert pending.state == "implement"
+        work = reopened.list_work(parent.id)
+        assert [item.ticket_number for item in work] == [197, 198, 199]
+        assert work[0].run_id == run.id
+        assert work[1:] == [middle, last]
+        reopened.set_work_run(parent.id, 197, None)
+        assert reopened.list_work(parent.id) == [first, middle, last]
+
+
+def test_parent_work_constraints_and_failed_write_recovery(store: Store) -> None:
+    parent = store.create_parent_run(170, "o/r")
+    work = store.add_work(parent.id, 197, 0)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_work(parent.id, 197, 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_work(999, 197, 0)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.set_work_run(parent.id, 197, 999)
+    assert store.list_work(parent.id) == [work]
+    run = store.create_run(197, "o/r")
+    store.set_work_run(parent.id, 197, run.id)
+    assert store.list_work(parent.id)[0].run_id == run.id
+
+
+def test_missing_parent_records(store: Store) -> None:
+    parent = store.create_parent_run(170, "o/r")
+    store.add_work(parent.id, 197, 0)
+    with pytest.raises(StoreError):
+        store.set_parent_state(999, "completed")
+    with pytest.raises(StoreError):
+        store.set_work_run(999, 197, None)
+    with pytest.raises(StoreError):
+        store.set_work_run(parent.id, 198, None)
+    store.set_parent_state(parent.id, "completed")
+    assert store.find_open_parent_run("o/r", 170) is None
+
+
 def test_merge_approvals_lists_valid_approvals_of_one_repository(store: Store) -> None:
     run = store.create_run(1, "o/r")
     other = store.create_run(2, "x/y")

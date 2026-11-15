@@ -23,6 +23,7 @@ from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.facts import selected_solution
 from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
+from fugue.engine.parent import ParentOutcome, run_parent
 from fugue.engine.review import Decision
 from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
@@ -40,6 +41,9 @@ _STATE_EXIT_CODES: dict[str, int] = {
     RunState.FAILED: 4,
     RunState.PROVIDER_LIMITED: 5,
     RunState.INTERRUPTED: 6,
+    RunState.WAITING_FOR_SELECTION: 7,
+    RunState.WAITING_FOR_DECISION: 7,
+    RunState.WAITING_FOR_MERGE_APPROVAL: 7,
 }
 
 
@@ -113,6 +117,26 @@ def _deprecated_report(
     return decorate
 
 
+_SupersededParams = ParamSpec("_SupersededParams")
+
+
+def _superseded(
+    target: typer.Typer, name: str, old: str
+) -> Callable[[Callable[_SupersededParams, None]], Callable[_SupersededParams, None]]:
+    """Hide a command that `fugue run` now covers; it still runs, with a warning."""
+
+    def decorate(body: Callable[_SupersededParams, None]) -> Callable[_SupersededParams, None]:
+        @wraps(body)
+        def alias(*args: _SupersededParams.args, **kwargs: _SupersededParams.kwargs) -> None:
+            terminal.deprecated_name(f"fugue {old}", "fugue run", "0.4.0")
+            body(*args, **kwargs)
+
+        target.command(name, hidden=True)(alias)
+        return body
+
+    return decorate
+
+
 ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to fugue.toml.")]
 RepoRootOption = Annotated[
     Path | None, typer.Option("--repo-root", help="Repository root (default: Git top level).")
@@ -136,11 +160,13 @@ class RunEngine(Protocol):
 
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome: ...
 
-    async def request_approval(self, run_id: int) -> RunOutcome: ...
+    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome: ...
 
-    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval: ...
+    def approve(
+        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
+    ) -> Approval: ...
 
-    async def merge_and_close(self, run_id: int) -> RunOutcome: ...
+    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome: ...
 
     async def resume(self, run_id: int) -> RunOutcome: ...
 
@@ -197,14 +223,28 @@ class _StoreClosingEngine:
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome:
         return await self._engine.decide(run_id, decisions)
 
-    async def request_approval(self, run_id: int) -> RunOutcome:
-        return await self._engine.request_approval(run_id)
+    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome:
+        return (
+            await self._engine.request_approval(run_id, parent=True)
+            if parent
+            else await self._engine.request_approval(run_id)
+        )
 
-    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval:
-        return self._engine.approve(run_id, decided_by, reason)
+    def approve(
+        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
+    ) -> Approval:
+        return (
+            self._engine.approve(run_id, decided_by, reason, parent=True)
+            if parent
+            else self._engine.approve(run_id, decided_by, reason)
+        )
 
-    async def merge_and_close(self, run_id: int) -> RunOutcome:
-        return await self._engine.merge_and_close(run_id)
+    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome:
+        return (
+            await self._engine.merge_and_close(run_id, parent=True)
+            if parent
+            else await self._engine.merge_and_close(run_id)
+        )
 
     async def resume(self, run_id: int) -> RunOutcome:
         """Continue durable progress without supplying a decision or approval."""
@@ -389,7 +429,7 @@ _BATCH_LOCKED = "locked"
 
 
 def _batch_exit_code(states: list[str]) -> int:
-    """Highest precedence first: interrupted, failed, provider limited, then blocked-like."""
+    """Precedence: interrupted, failed, provider limited, blocked-like, then waiting."""
     if RunState.INTERRUPTED in states:
         return _STATE_EXIT_CODES[RunState.INTERRUPTED]
     if _BATCH_FAILED in states:
@@ -398,6 +438,13 @@ def _batch_exit_code(states: list[str]) -> int:
         return _STATE_EXIT_CODES[RunState.PROVIDER_LIMITED]
     if any(state in {RunState.BLOCKED, _BATCH_SKIPPED, _BATCH_LOCKED} for state in states):
         return _STATE_EXIT_CODES[RunState.BLOCKED]
+    for state in (
+        RunState.WAITING_FOR_SELECTION,
+        RunState.WAITING_FOR_DECISION,
+        RunState.WAITING_FOR_MERGE_APPROVAL,
+    ):
+        if state in states:
+            return _STATE_EXIT_CODES[state]
     return 0
 
 
@@ -452,17 +499,39 @@ def _run_single(
     ticket: int,
     to_green: bool,
     progress: terminal.Progress | None = None,
+    *,
+    authorise_merge: bool = False,
+    by: str | None = None,
 ) -> typer.Exit:
     wait = loaded.limits.database_wait_seconds
     try:
-        with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket) as lock:
-            if lock.recovered is not None:
+        with (
+            nullcontext()
+            if authorise_merge
+            else TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket)
+        ) as lock:
+            if lock is not None and lock.recovered is not None:
                 _print(
                     f"note: recovered stale lock left by process {lock.recovered.pid} "
                     f"({format_elapsed(lock.recovered.age_seconds)} ago); resuming"
                 )
 
-            async def go() -> RunOutcome:
+            async def go() -> RunOutcome | ParentOutcome:
+                children_reader = getattr(engine.deps.github, "children", None)
+                if children_reader is not None:
+                    children = await children_reader(ticket)
+                    if children:
+                        return await run_parent(
+                            engine.deps,
+                            ticket,
+                            children,
+                            until_green=to_green,
+                            parent_locked=not authorise_merge,
+                            authorise_merge=authorise_merge,
+                            by=by,
+                        )
+                if authorise_merge:
+                    raise ValueError("--authorise-merge requires a parent ticket with children")
                 # The tier depends on the ticket Size, so the table waits for the ticket.
                 # A bare Engine has no get_ticket; read through its GitHub port instead. An
                 # engine with neither shows the policy table, which needs no Size.
@@ -486,7 +555,16 @@ def _run_single(
         raise _fail(_explain(error, wait), _STATE_EXIT_CODES[RunState.FAILED]) from error
     finally:
         engine.close()
-    _print(render.render_outcome(outcome))
+    if isinstance(outcome, ParentOutcome):
+        for number, result in outcome.outcomes:
+            _print(f"ticket #{number}\n{render.render_outcome(result)}")
+        _print(f"parent run {outcome.parent_run_id}: {outcome.state}")
+        for problem in outcome.problems:
+            _print(f"problem: {problem}")
+        if outcome.next_step is not None:
+            _print(f"next: {outcome.next_step}")
+    else:
+        _print(render.render_outcome(outcome))
     return typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 0))
 
 
@@ -585,6 +663,13 @@ def run(
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
     to_green: Annotated[bool, typer.Option("--to-green", help="Wait for green CI.")] = False,
+    authorise_merge: Annotated[
+        bool,
+        typer.Option("--authorise-merge", help="Authorise this run's exact stack heads and merge."),
+    ] = False,
+    by: Annotated[
+        str | None, typer.Option("--by", help="Authorising identity (default: OS user).")
+    ] = None,
     tier: Annotated[
         list[str] | None,
         typer.Option(
@@ -602,6 +687,12 @@ def run(
         raise _fail("Duplicate ticket numbers")
     if any(number <= 0 for number in tickets):
         raise _fail("Ticket numbers must be positive")
+    if authorise_merge and len(tickets) != 1:
+        raise _fail("--authorise-merge requires one parent ticket")
+    if by is not None and not authorise_merge:
+        raise _fail("--by requires --authorise-merge")
+    if authorise_merge and by is not None and not by.strip():
+        raise _fail("Approval requires --by to be non-empty")
     all_tier, role_tiers, role_models = _parse_overrides(tier or [], model or [])
     try:
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
@@ -617,7 +708,15 @@ def run(
     except wiring.WiringError as error:
         raise _fail(str(error)) from error
     if len(tickets) == 1:
-        raise _run_single(loaded, engine, tickets[0], to_green, progress)
+        raise _run_single(
+            loaded,
+            engine,
+            tickets[0],
+            to_green,
+            progress,
+            authorise_merge=authorise_merge,
+            by=by,
+        )
     raise _run_batch(loaded, root_path, engine, tickets, to_green)
 
 
@@ -723,14 +822,14 @@ def _execute(
         raise typer.Exit(_STATE_EXIT_CODES.get(result.state, 0))
 
 
-@review_app.command("start")
+@_superseded(review_app, "start", "review start")
 def review(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Run a review of the pull request head."""
     _execute(lambda engine: asyncio.run(engine.run_review(run_id)), config, repo_root)
 
 
 @_deprecated_command("decide", "review decide")
-@review_app.command("decide")
+@_superseded(review_app, "decide", "review decide")
 def decide(
     run_id: int,
     accept: Annotated[list[int] | None, typer.Option("--accept")] = None,
@@ -765,22 +864,38 @@ def decide(
 
 
 @_deprecated_command("request-approval", "approval request")
-@approval_app.command("request")
+@_superseded(approval_app, "request", "approval request")
 def request_approval(
-    run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None
+    run_id: int,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    parent: Annotated[
+        bool, typer.Option("--parent", help="Approve every layer of a parent run.")
+    ] = False,
 ) -> None:
     """Check the gate and request approval for the exact head SHA."""
-    _execute(lambda engine: asyncio.run(engine.request_approval(run_id)), config, repo_root)
+    _execute(
+        lambda engine: asyncio.run(
+            engine.request_approval(run_id, parent=True)
+            if parent
+            else engine.request_approval(run_id)
+        ),
+        config,
+        repo_root,
+    )
 
 
 @_deprecated_command("approve", "approval record")
-@approval_app.command("record")
+@_superseded(approval_app, "record", "approval record")
 def approve(
     run_id: int,
     reason: Annotated[str, typer.Option("--reason", help="Reason for approval.")],
     by: Annotated[
         str | None, typer.Option("--by", help="Decision maker (default: OS user).")
     ] = None,
+    parent: Annotated[
+        bool, typer.Option("--parent", help="Approve every layer of a parent run.")
+    ] = False,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -788,13 +903,36 @@ def approve(
     decided_by = getpass.getuser() if by is None else by
     if not decided_by.strip() or not reason.strip():
         raise _fail("Approval requires --by and --reason to be non-empty")
-    _execute(lambda engine: engine.approve(run_id, decided_by, reason), config, repo_root)
+    _execute(
+        lambda engine: (
+            engine.approve(run_id, decided_by, reason, parent=True)
+            if parent
+            else engine.approve(run_id, decided_by, reason)
+        ),
+        config,
+        repo_root,
+    )
 
 
 @app.command()
-def merge(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
+def merge(
+    run_id: int,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    parent: Annotated[
+        bool, typer.Option("--parent", help="Merge every layer of a parent run.")
+    ] = False,
+) -> None:
     """Merge the approved head and close the ticket."""
-    _execute(lambda engine: asyncio.run(engine.merge_and_close(run_id)), config, repo_root)
+    _execute(
+        lambda engine: asyncio.run(
+            engine.merge_and_close(run_id, parent=True)
+            if parent
+            else engine.merge_and_close(run_id)
+        ),
+        config,
+        repo_root,
+    )
 
 
 @app.command()
