@@ -479,11 +479,18 @@ def _run_single(
     ticket: int,
     to_green: bool,
     progress: terminal.Progress | None = None,
+    *,
+    authorise_merge: bool = False,
+    by: str | None = None,
 ) -> typer.Exit:
     wait = loaded.limits.database_wait_seconds
     try:
-        with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket) as lock:
-            if lock.recovered is not None:
+        with (
+            nullcontext()
+            if authorise_merge
+            else TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket)
+        ) as lock:
+            if lock is not None and lock.recovered is not None:
                 _print(
                     f"note: recovered stale lock left by process {lock.recovered.pid} "
                     f"({format_elapsed(lock.recovered.age_seconds)} ago); resuming"
@@ -495,8 +502,16 @@ def _run_single(
                     children = await children_reader(ticket)
                     if children:
                         return await run_parent(
-                            engine.deps, ticket, children, until_green=to_green, parent_locked=True
+                            engine.deps,
+                            ticket,
+                            children,
+                            until_green=to_green,
+                            parent_locked=not authorise_merge,
+                            authorise_merge=authorise_merge,
+                            by=by,
                         )
+                if authorise_merge:
+                    raise ValueError("--authorise-merge requires a parent ticket with children")
                 # The tier depends on the ticket Size, so the table waits for the ticket.
                 # A bare Engine has no get_ticket; read through its GitHub port instead. An
                 # engine with neither shows the policy table, which needs no Size.
@@ -628,6 +643,13 @@ def run(
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
     to_green: Annotated[bool, typer.Option("--to-green", help="Wait for green CI.")] = False,
+    authorise_merge: Annotated[
+        bool,
+        typer.Option("--authorise-merge", help="Authorise this run's exact stack heads and merge."),
+    ] = False,
+    by: Annotated[
+        str | None, typer.Option("--by", help="Authorising identity (default: OS user).")
+    ] = None,
     tier: Annotated[
         list[str] | None,
         typer.Option(
@@ -645,6 +667,12 @@ def run(
         raise _fail("Duplicate ticket numbers")
     if any(number <= 0 for number in tickets):
         raise _fail("Ticket numbers must be positive")
+    if authorise_merge and len(tickets) != 1:
+        raise _fail("--authorise-merge requires one parent ticket")
+    if by is not None and not authorise_merge:
+        raise _fail("--by requires --authorise-merge")
+    if authorise_merge and by is not None and not by.strip():
+        raise _fail("Approval requires --by to be non-empty")
     all_tier, role_tiers, role_models = _parse_overrides(tier or [], model or [])
     try:
         root_path = wiring.resolve_repo_root(repo_root, Path.cwd())
@@ -660,7 +688,15 @@ def run(
     except wiring.WiringError as error:
         raise _fail(str(error)) from error
     if len(tickets) == 1:
-        raise _run_single(loaded, engine, tickets[0], to_green, progress)
+        raise _run_single(
+            loaded,
+            engine,
+            tickets[0],
+            to_green,
+            progress,
+            authorise_merge=authorise_merge,
+            by=by,
+        )
     raise _run_batch(loaded, root_path, engine, tickets, to_green)
 
 

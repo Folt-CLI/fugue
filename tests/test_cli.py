@@ -749,8 +749,9 @@ def test_top_level_help_lists_exactly_ten_commands(width: int) -> None:
         assert old not in result.stdout.split()
 
 
+@pytest.mark.parametrize("authorise,identity", [(False, None), (True, None), (True, "developer")])
 def test_run_selects_parent_driver_and_holds_parent_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authorise: bool, identity: str | None
 ) -> None:
     from fugue.engine.parent import ParentOutcome
 
@@ -776,19 +777,34 @@ def test_run_selects_parent_driver_and_holds_parent_lock(
         *,
         until_green: bool,
         parent_locked: bool,
+        authorise_merge: bool,
+        by: str | None,
     ) -> ParentOutcome:
         assert number == 36
         assert [ticket.number for ticket in children] == [5, 6]
-        assert until_green and parent_locked
-        from fugue.engine.locks import TicketLocked
+        assert until_green
+        assert authorise_merge == authorise
+        assert by == identity
+        assert parent_locked == (not authorise)
+        if authorise:
+            # Stack actions acquire their own locks after preparing the children.
+            with TicketLock(engines[0].deps.state_dir, "o/r", 36):
+                pass
+        else:
+            from fugue.engine.locks import TicketLocked
 
-        with pytest.raises(TicketLocked), TicketLock(engines[0].deps.state_dir, "o/r", 36):
-            pass
+            with pytest.raises(TicketLocked), TicketLock(engines[0].deps.state_dir, "o/r", 36):
+                pass
         return ParentOutcome(1, RunState.WAITING_FOR_DECISION, next_step="fugue question 5")
 
     monkeypatch.setattr(cli_app, "engine_factory", factory)
     monkeypatch.setattr(cli_app, "run_parent", parent)
-    result = run_command(tmp_path, "--to-green")
+    options = ["--to-green"]
+    if authorise:
+        options.append("--authorise-merge")
+    if identity is not None:
+        options.extend(["--by", identity])
+    result = run_command(tmp_path, *options)
     assert result.exit_code == 7, result.output
     assert "next: fugue question 5" in result.output
     assert engines[0].tickets == []
@@ -816,4 +832,33 @@ def test_run_without_children_uses_single_ticket_engine(
     result = run_command(tmp_path)
     assert result.exit_code == 0, result.output
     assert engines[0].tickets == [36]
+    assert engines[0].closed
+
+
+@pytest.mark.parametrize(
+    "options,message",
+    [
+        (["--by", "person"], "--by requires --authorise-merge"),
+        (["--authorise-merge", "--by", " "], "Approval requires --by to be non-empty"),
+        (["37", "--authorise-merge"], "--authorise-merge requires one parent ticket"),
+    ],
+)
+def test_run_rejects_invalid_authorisation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: list[str], message: str
+) -> None:
+    engines = install_engine(monkeypatch, RunOutcome(1, RunState.COMPLETED))
+    result = run_command(tmp_path, *options)
+    assert result.exit_code != 0
+    assert message in result.output
+    assert engines == []
+
+
+def test_run_authorisation_requires_a_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engines = install_engine(monkeypatch, RunOutcome(1, RunState.COMPLETED))
+    result = run_command(tmp_path, "--authorise-merge")
+    assert result.exit_code != 0
+    assert "--authorise-merge requires a parent ticket with children" in result.output
+    assert engines[0].tickets == []
     assert engines[0].closed

@@ -1,6 +1,7 @@
 """Run the ordered children of a parent as sequential stack layers."""
 
 import asyncio
+import getpass
 import json
 import sys
 from collections.abc import Sequence
@@ -11,7 +12,15 @@ from heapq import heapify, heappop, heappush
 
 from fugue.engine.facts import selected_solution
 from fugue.engine.locks import RepoLock, TicketLock
-from fugue.engine.pipeline import Engine, EngineDeps, Identity, RunOutcome, _ticket_base
+from fugue.engine.pipeline import (
+    Engine,
+    EngineDeps,
+    Identity,
+    RunOutcome,
+    _operation_by_key,
+    _Stop,
+    _ticket_base,
+)
 from fugue.engine.review import Decision
 from fugue.github import GitHubError
 from fugue.github.stack import lower_branch
@@ -246,6 +255,85 @@ async def run_parent(
     *,
     until_green: bool = False,
     parent_locked: bool = False,
+    authorise_merge: bool = False,
+    by: str | None = None,
+) -> ParentOutcome:
+    """Prepare every layer, optionally recording approval for this run's heads."""
+    decided_by = (getpass.getuser() if by is None else by) if authorise_merge else ""
+    if authorise_merge and not decided_by.strip():
+        raise ValueError("Approval requires a non-empty authorising identity")
+    if authorise_merge and parent_locked:
+        raise ValueError("Stack authorisation must acquire its own parent lock")
+    outcome = await _run_parent(
+        deps, parent_number, children, until_green=until_green, parent_locked=parent_locked
+    )
+    if not authorise_merge or outcome.state != RunState.WAITING_FOR_MERGE_APPROVAL:
+        return outcome
+
+    try:
+        return await _authorise_stack(deps, outcome, decided_by)
+    except (_Stop, ValueError) as error:
+        deps.store.set_parent_state(outcome.parent_run_id, RunState.BLOCKED)
+        return ParentOutcome(
+            outcome.parent_run_id, RunState.BLOCKED, outcome.outcomes, (str(error),)
+        )
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        deps.store.set_parent_state(outcome.parent_run_id, RunState.INTERRUPTED)
+        raise
+    except Exception:
+        deps.store.set_parent_state(outcome.parent_run_id, RunState.BLOCKED)
+        raise
+
+
+async def _authorise_stack(
+    deps: EngineDeps, outcome: ParentOutcome, decided_by: str
+) -> ParentOutcome:
+    """Reconcile one exact-head authorisation and the existing stack merge."""
+    engine = Engine(deps)
+    store = deps.store
+    parent_id = outcome.parent_run_id
+    # Save the first authorised heads before recording a decision. Re-entry may
+    # finish that decision or merge, but must never authorise replacement heads.
+    run_id = next(item.run_id for item in store.list_work(parent_id) if item.run_id is not None)
+    prior = _operation_by_key(store, run_id, "parent_authorisation", "run")
+    if prior is None:
+        requested = await engine.request_approval(parent_id, parent=True)
+        if requested.state != RunState.WAITING_FOR_MERGE_APPROVAL:
+            return ParentOutcome(parent_id, requested.state, outcome.outcomes, requested.problems)
+        layers = await engine._stack_layers(parent_id)
+        operation = store.begin_operation(
+            run_id,
+            "parent_authorisation",
+            "run",
+            {"heads": engine._stack_heads(layers), "by": decided_by},
+        )
+    else:
+        operation = store.begin_operation(run_id, "parent_authorisation", "run", {})
+    intent = json.loads(operation.intent_json)
+    current_heads = engine._stack_heads(await engine._stack_layers(parent_id))
+    approval = store.stack_approval(parent_id, current_heads)
+    if current_heads != intent["heads"]:
+        store.set_parent_state(parent_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+        return ParentOutcome(
+            parent_id,
+            RunState.WAITING_FOR_MERGE_APPROVAL,
+            outcome.outcomes,
+            ("Stack heads changed; authorisation for this run has lapsed",),
+        )
+    if approval is None:
+        await engine._stack_action(parent_id, "record", intent["by"], "authorised for this run")
+    store.complete_operation(operation.id, {})
+    merged = await engine.merge_and_close(parent_id, parent=True)
+    return ParentOutcome(parent_id, merged.state, outcome.outcomes, merged.problems)
+
+
+async def _run_parent(
+    deps: EngineDeps,
+    parent_number: int,
+    children: Sequence[Ticket],
+    *,
+    until_green: bool = False,
+    parent_locked: bool = False,
 ) -> ParentOutcome:
     """Hold the parent lock while executing one child at a time.
 
@@ -418,7 +506,7 @@ async def run_parent(
                     )
                 )
             return stop(
-                RunState.COMPLETED,
+                RunState.WAITING_FOR_MERGE_APPROVAL if layers else RunState.COMPLETED,
                 next_step=render_parent_summary(layers) if layers else None,
             )
         except (asyncio.CancelledError, KeyboardInterrupt):

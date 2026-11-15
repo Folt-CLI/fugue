@@ -2,12 +2,16 @@
 
 import asyncio
 import fcntl
+import sqlite3
 import sys
 from collections.abc import Iterator
 from itertools import permutations
 from pathlib import Path
 
 import pytest
+from test_engine_merge import StackMergeFixture
+from test_engine_merge import ready as _merge_ready
+from test_engine_merge import stack_ready as _stack_ready
 from test_engine_review import BLOCKING, FIXED, LINES, review, write
 from test_engine_review import Harness as ReviewHarness
 from test_engine_review import harness as _review_harness
@@ -30,6 +34,8 @@ from fugue.models import IssueType, Priority, Size, Status, Ticket
 from fugue.workflow import RunState
 
 review_harness = _review_harness
+ready = _merge_ready
+stack_ready = _stack_ready
 
 
 def child(
@@ -176,7 +182,7 @@ def test_parent_runs_children_as_one_stack(
     if not dependent:
         catalog[34] = catalog[34].model_copy(update={"blocked_by": []})
     outcome = asyncio.run(run_parent(h.deps, 100, list(reversed(list(catalog.values())))))
-    assert outcome.state == RunState.COMPLETED
+    assert outcome.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert [number for number, _ in outcome.outcomes] == [33, 34]
     assert all(
         result.state == RunState.WAITING_FOR_MERGE_APPROVAL for _, result in outcome.outcomes
@@ -236,7 +242,7 @@ def test_three_layer_summary_is_bottom_up_and_survives_reentry(
     )
     h.deps.registry.register("codex", lambda config: adapter)
     outcome = asyncio.run(run_parent(h.deps, 100, list(reversed(list(catalog.values())))))
-    assert outcome.state == RunState.COMPLETED
+    assert outcome.state == RunState.WAITING_FOR_MERGE_APPROVAL
     summary = outcome.next_step
     assert summary is not None
     blocks = summary.split("\n\n")
@@ -374,7 +380,7 @@ def test_parent_skips_done_children(
     h, _, catalog = parent_stack
     catalog[34] = catalog[34].model_copy(update={"status": Status.DONE})
     outcome = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert outcome.state == RunState.COMPLETED
+    assert outcome.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert [item.ticket_number for item in h.deps.store.list_work(outcome.parent_run_id)] == [33]
 
 
@@ -396,7 +402,7 @@ def test_parent_cancellation_records_interruption_and_releases_locks(
     first = h.deps.store.list_work(parent.id)[0]
     assert first.run_id is not None
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert h.deps.store.list_work(parent.id)[0].run_id == first.run_id
 
 
@@ -414,10 +420,10 @@ def test_parent_green_work_is_recorded_and_never_repeated(
 
     monkeypatch.setattr("fugue.engine.parent._WorkEngine.run_to_green", green)
     first = asyncio.run(run_parent(h.deps, 100, [catalog[33]], until_green=True))
-    assert first.state == RunState.COMPLETED
+    assert first.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert first.outcomes[0][1].ci_green
     second = asyncio.run(run_parent(h.deps, 100, [catalog[33]], until_green=True))
-    assert second.state == RunState.COMPLETED
+    assert second.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert second.outcomes == ()
     assert calls == [33]
 
@@ -447,7 +453,7 @@ def test_review_failure_keeps_lower_and_retries_only_upper(
     assert calls == [33, 34]
     failing = False
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert calls == [33, 34, 34]
     assert len(h.github.created) == 1
     assert stack.submits == 1
@@ -457,7 +463,7 @@ def test_parent_clean_review_reaches_merge_approval(review_harness: ReviewHarnes
     h = review_harness
     h.script(write(LINES), review("No findings."))
     outcome = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
-    assert outcome.state == RunState.COMPLETED
+    assert outcome.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert outcome.outcomes[0][1].state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert len(h.reviewer_requests()) == 1
     assert len(h.github.posted) == 1
@@ -488,7 +494,7 @@ def test_parent_without_terminal_waits_and_resumes_decision(
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("fugue.cli.choices.LineChooser.choose", lambda *args, **kwargs: 0)
     repaired = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
-    assert repaired.state == RunState.COMPLETED
+    assert repaired.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert repaired.outcomes[0][1].state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert (h.worktree / "allowed.txt").read_text() == FIXED
     assert len(h.reviewer_requests()) == 2
@@ -516,7 +522,7 @@ def test_parent_resumes_interrupted_accepted_repair(
     # Saved acceptance resumes even when there is no terminal after interruption.
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     resumed = asyncio.run(run_parent(h.deps, 100, [h.github.ticket]))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert len(h.reviewer_requests()) == 2
     assert (h.worktree / "allowed.txt").read_text() == FIXED
 
@@ -617,7 +623,7 @@ def reentry_stack(
     monkeypatch.setattr(stack, "rebase", rebase)
     monkeypatch.setattr(stack, "push", push)
     first = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert first.state == RunState.COMPLETED
+    assert first.state == RunState.WAITING_FOR_MERGE_APPROVAL
     return h, stack, catalog, calls
 
 
@@ -667,7 +673,7 @@ def test_reentry_rebases_advanced_base_and_checks_every_layer(
     monkeypatch.setattr(Engine, "_gate", gate)
     monkeypatch.setattr(Engine, "_wait_for_green", green)
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert gates == checks == [33, 34]
     assert reviews == ([33] if lower_advanced else [])
     assert calls == ["rebase", "push"]
@@ -682,7 +688,7 @@ def test_reentry_without_movement_does_not_rebase(
 ) -> None:
     h, _, catalog, calls = reentry_stack
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert resumed.outcomes == ()
     assert calls == []
 
@@ -742,7 +748,7 @@ def test_reentry_gate_failure_does_not_push_and_resumes_without_rebase(
     assert calls == ["rebase"]
     fail = False
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert gates == [33, 34, 34]
     assert calls == ["rebase", "push"]
 
@@ -773,7 +779,7 @@ def test_interrupted_ci_resumes_refresh_without_rebase_gate_or_push(
 
     monkeypatch.setattr(Engine, "_gate", no_gate)
     resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
-    assert resumed.state == RunState.COMPLETED
+    assert resumed.state == RunState.WAITING_FOR_MERGE_APPROVAL
     assert checks == [33, 34, 34]
     assert calls == ["rebase", "push"]
 
@@ -858,3 +864,124 @@ def test_reentry_initializes_bottom_tracking_before_second_child_delivery(
     assert repeated.state == RunState.WAITING_FOR_DECISION
     assert mutations == ["init", "rebase", "push"]
     assert gates == [33]
+
+
+@pytest.fixture
+def authorisation_stack(stack_ready: StackMergeFixture) -> StackMergeFixture:
+    s = stack_ready
+    for run_id in s.runs:
+        s.h.deps.store.set_run_state(run_id, RunState.WAITING_FOR_MERGE_APPROVAL)
+        for key in ("delivered", "reviewed"):
+            operation = s.h.deps.store.begin_operation(run_id, "parent_work", key, {})
+            s.h.deps.store.complete_operation(operation.id, {})
+    return s
+
+
+@pytest.mark.parametrize("identity", [None, "authorising-person"])
+def test_parent_explicit_authorisation_approves_and_merges(
+    authorisation_stack: StackMergeFixture, monkeypatch: pytest.MonkeyPatch, identity: str | None
+) -> None:
+    s = authorisation_stack
+    monkeypatch.setattr("fugue.engine.parent.getpass.getuser", lambda: "os-person")
+    outcome = asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True, by=identity))
+    assert outcome.state == RunState.COMPLETED, outcome.problems
+    assert s.merges == 1
+    assert s.closed == [ticket.number for ticket in s.tickets]
+    approvals = stack_approvals(s)
+    approval = next(item for item in approvals if item["kind"] == "stack_merge")
+    assert approval["decided_by"] == (identity or "os-person")
+    assert approval["reason"] == "authorised for this run"
+
+
+def test_parent_never_authorises_implicitly(authorisation_stack: StackMergeFixture) -> None:
+    s = authorisation_stack
+    outcome = asyncio.run(run_parent(s.h.deps, 170, s.tickets))
+    assert outcome.state == RunState.WAITING_FOR_MERGE_APPROVAL
+    assert s.merges == 0
+    assert not any(item["kind"] == "stack_merge" for item in stack_approvals(s))
+
+
+@pytest.mark.parametrize("changed_head", [False, True])
+def test_parent_authorisation_resumes_without_reapproving(
+    authorisation_stack: StackMergeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_head: bool,
+) -> None:
+    s = authorisation_stack
+    merge = Engine.merge_and_close
+
+    async def interrupt(self: Engine, run_id: int, *, parent: bool = False) -> RunOutcome:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Engine, "merge_and_close", interrupt)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True, by="person"))
+    assert s.h.deps.store.get_parent_run(s.parent_id).state == RunState.INTERRUPTED
+    approvals = stack_approvals(s)
+    assert len([item for item in approvals if item["kind"] == "stack_merge"]) == 1
+    if changed_head:
+        s.heads[1] = "replacement-head"
+    monkeypatch.setattr(Engine, "merge_and_close", merge)
+    outcome = asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True, by="other"))
+    if changed_head:
+        assert outcome.state == RunState.WAITING_FOR_MERGE_APPROVAL
+        assert "lapsed" in outcome.problems[0]
+        assert s.merges == 0
+        assert stack_approvals(s)[-1]["invalidated_at"] is not None
+    else:
+        assert outcome.state == RunState.COMPLETED, outcome.problems
+        assert s.merges == 1
+    assert len(stack_approvals(s)) == len(approvals)
+
+
+def test_parent_authorisation_stops_when_a_layer_is_not_clean(
+    authorisation_stack: StackMergeFixture,
+) -> None:
+    s = authorisation_stack
+    (s.paths[1] / "untracked.txt").write_text("unfinished change")
+    outcome = asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True))
+    assert outcome.state == RunState.BLOCKED
+    assert s.merges == 0
+    assert not any(item["kind"] == "stack_merge" for item in stack_approvals(s))
+
+
+def stack_approvals(s: StackMergeFixture) -> list[sqlite3.Row]:
+    return list(
+        s.h.deps.store._connection.execute(
+            "SELECT * FROM approvals WHERE run_id = ? AND kind = 'stack_merge' ORDER BY id",
+            (s.runs[0],),
+        )
+    )
+
+
+def test_parent_authorisation_reconciles_a_lost_merge_response(
+    authorisation_stack: StackMergeFixture,
+) -> None:
+    s = authorisation_stack
+    s.lost_response = True
+    with pytest.raises(ConnectionError, match="stack response lost"):
+        asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True, by="person"))
+    assert s.merges == 1
+    assert s.closed == []
+    resumed = asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True))
+    assert resumed.state == RunState.COMPLETED, resumed.problems
+    assert s.merges == 1
+    assert s.closed == [ticket.number for ticket in s.tickets]
+    assert len(stack_approvals(s)) == 1
+
+
+def test_parent_head_change_after_recording_stops_the_merge(
+    authorisation_stack: StackMergeFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = authorisation_stack
+    merge = Engine.merge_and_close
+
+    async def changed(self: Engine, run_id: int, *, parent: bool = False) -> RunOutcome:
+        s.heads[1] = "replacement-head"
+        return await merge(self, run_id, parent=parent)
+
+    monkeypatch.setattr(Engine, "merge_and_close", changed)
+    outcome = asyncio.run(run_parent(s.h.deps, 170, s.tickets, authorise_merge=True))
+    assert outcome.state == RunState.BLOCKED
+    assert s.merges == 0
+    assert stack_approvals(s)[0]["invalidated_at"] is not None
