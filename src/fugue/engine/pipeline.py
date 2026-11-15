@@ -119,6 +119,11 @@ class EngineDeps:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     repo_lock: RepoLock | None = None
     stack_factory: Callable[[Path], StackClient] = StackClient
+    code_root: Path | None = None
+
+    @property
+    def effective_code_root(self) -> Path:
+        return self.code_root if self.code_root is not None else self.repo_root
 
 
 @dataclass(frozen=True)

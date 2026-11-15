@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from rich.console import Console
+from test_analysis import make_deps
 
 from fugue.agents import (
     AccessMode,
@@ -23,11 +24,12 @@ from fugue.agents import (
 )
 from fugue.cli.choices import ChoiceItem, LineChooser
 from fugue.config.schema import Limits
+from fugue.interview.flow import interview_then_analyse
 from fugue.interview.record import InterviewRecord
 from fugue.interview.render import render_conversation, render_header
 from fugue.interview.session import InterviewSession
 from fugue.interview.store import InterviewStore
-from fugue.models import AuthenticationMode, Role
+from fugue.models import AuthenticationMode, IssueType, Role, Size
 from fugue.workflow import RunState
 
 
@@ -57,6 +59,61 @@ def read(commands: Iterator[str]) -> Callable[[str], str]:
             raise EOFError from error
 
     return reader
+
+
+@pytest.mark.parametrize("separate_code_root", [False, True])
+@pytest.mark.parametrize("has_glossary", [False, True])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_interview_uses_code_root(
+    tmp_path: Path, separate_code_root: bool, has_glossary: bool, automatic: bool
+) -> None:
+    deps, github, _ = make_deps(tmp_path, size=Size.L)
+    deps.config.roles[Role.STAND_IN] = deps.config.roles[Role.ANALYST].model_copy()
+    github.ticket = github.ticket.model_copy(update={"issue_type": IssueType.QUESTION})
+    code_root = tmp_path / "code" if separate_code_root else tmp_path
+    if separate_code_root:
+        code_root.mkdir()
+        deps.code_root = code_root
+        (tmp_path / "GLOSSARY.md").write_text("Repository glossary sentinel", encoding="utf-8")
+    if has_glossary:
+        (code_root / "GLOSSARY.md").write_text("Code glossary sentinel", encoding="utf-8")
+    adapter = ScriptedAdapter(
+        [
+            ScriptStep(result=result()),
+            ScriptStep(
+                result=result(
+                    structured_output={
+                        "reply": "Need a person",
+                        "proceed": False,
+                        "needs_human": True,
+                        "reason": "Need a decision",
+                    }
+                )
+            ),
+        ]
+    )
+    deps.registry.register("claude", lambda config: adapter)
+    try:
+        outcome = asyncio.run(
+            interview_then_analyse(
+                deps,
+                github.ticket,
+                automatic=automatic,
+                reader=read(iter(["/quit"])),
+                print_fn=lambda message: None,
+            )
+        )
+        assert outcome.state == (RunState.BLOCKED if automatic else RunState.INTERRUPTED)
+        assert [request.role for request in adapter.requests] == (
+            [Role.ANALYST, Role.STAND_IN] if automatic else [Role.ANALYST]
+        )
+        for request in adapter.requests:
+            assert request.cwd == code_root
+            assert request.access == AccessMode.READ_ONLY
+            assert ("Code glossary sentinel" in request.prompt) is has_glossary
+            assert "Repository glossary sentinel" not in request.prompt
+    finally:
+        deps.store.close()
 
 
 def session(
