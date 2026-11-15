@@ -72,6 +72,21 @@ class Git:
         options = ("--force",) if force else ()
         await self._run("worktree", "remove", *options, "--", str(path))
 
+    async def delete_local_branch(self, branch: str) -> tuple[bool, str | None]:
+        """Safely delete a local branch, or return the reason it was kept or absent."""
+        await self._validate_branch(branch)
+        try:
+            await self._run("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+        except GitError as error:
+            if error.returncode == 1:
+                return False, "Branch is already absent"
+            raise
+        try:
+            await self._run("branch", "-d", "--", branch)
+        except GitError as error:
+            return False, error.stderr.strip() or str(error)
+        return True, None
+
     async def resolve_ref(self, name: str) -> str:
         """Resolve commit IDs, pseudo-refs, full refs, or local branch names."""
         if re.fullmatch(r"[0-9a-f]{4,64}", name):

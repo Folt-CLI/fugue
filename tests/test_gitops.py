@@ -64,6 +64,65 @@ def test_worktree_create_remove(repo: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_delete_local_branch_after_merge_and_when_already_absent(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        path = repo.parent / "branch-worktree"
+        branch = "feature/merged"
+        await git.create_worktree(path, branch, "develop")
+        (path / "new.txt").write_text("new content\n")
+        await Git(path).stage(["new.txt"])
+        head = await Git(path).commit(message())
+        git_command(repo, "merge", "--ff-only", head)
+        await git.remove_worktree(path)
+        assert await git.delete_local_branch(branch) == (True, None)
+        assert git_command(repo, "branch", "--list", branch) == ""
+        assert await git.delete_local_branch(branch) == (False, "Branch is already absent")
+
+    asyncio.run(scenario())
+
+
+def test_delete_local_branch_refuses_unmerged_commits(repo: Path) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        path = repo.parent / "branch-worktree"
+        branch = "feature/unmerged"
+        await git.create_worktree(path, branch, "develop")
+        (path / "new.txt").write_text("unmerged content\n")
+        await Git(path).stage(["new.txt"])
+        head = await Git(path).commit(message())
+        await git.remove_worktree(path)
+        deleted, reason = await git.delete_local_branch(branch)
+        assert not deleted and reason is not None and "not fully merged" in reason
+        assert await git.head_sha(branch) == head
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_delete_local_branch_refuses_checked_out_branch(repo: Path, linked: bool) -> None:
+    async def scenario() -> None:
+        git = Git(repo)
+        branch = "develop"
+        if linked:
+            branch = "feature/checked-out"
+            await git.create_worktree(repo.parent / "linked", branch, "develop")
+        head = await git.head_sha(branch)
+        deleted, reason = await git.delete_local_branch(branch)
+        assert not deleted and reason
+        assert await git.head_sha(branch) == head
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("branch", ["", "-d", "--force", "+branch", "bad..name", "a b", "@{-1}"])
+def test_delete_local_branch_validates_name(repo: Path, branch: str) -> None:
+    before = git_command(repo, "show-ref")
+    with pytest.raises((ValueError, GitError)):
+        asyncio.run(Git(repo).delete_local_branch(branch))
+    assert git_command(repo, "show-ref") == before
+
+
 def test_fetch_fast_forward_and_divergence(repo: Path) -> None:
     peer = repo.parent / "peer"
     git_command(repo.parent, "clone", str(repo.parent / "origin"), str(peer))

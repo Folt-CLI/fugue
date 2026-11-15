@@ -1,8 +1,11 @@
 """Exact-head approvals, merge guards and restartable closure."""
 
 import asyncio
+import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 import pytest
 from test_engine_review import (
@@ -18,8 +21,9 @@ from test_engine_review import (
 )
 from test_github import PR, REPO, Fake, fake, response
 
+from fugue.engine.facts import branch_name
 from fugue.engine.pipeline import Engine
-from fugue.github import CheckResult, PullRequest
+from fugue.github import CheckResult, GitHubError, PullRequest
 from fugue.github.client import PrState
 from fugue.gitops import Git
 from fugue.models import Disposition, Size, Status, Ticket
@@ -31,9 +35,10 @@ assert fake
 
 
 class MergeGitHub(FakeReviewGitHub):
-    def __init__(self, ticket: Ticket, worktree: Path) -> None:
+    def __init__(self, ticket: Ticket, worktree: Path, repo_root: Path) -> None:
         super().__init__(ticket)
         self.worktree = worktree
+        self.repo_root = repo_root
         self.live_head = ""
         self.state = "OPEN"
         self.merge_sha: str | None = None
@@ -43,6 +48,15 @@ class MergeGitHub(FakeReviewGitHub):
         self.cleanup_error = False
         self.green = True
         self.child_tickets: list[Ticket] = []
+        self.dependent_prs: list[dict[str, Any]] = []
+        self.base_queries: list[str] = []
+        self.merge_locally = True
+
+    async def _paginated(self, endpoint: str, *args: str) -> list[dict[str, Any]]:
+        branch = quote(branch_name(self.ticket), safe="")
+        assert endpoint == f"repos/{self.repo}/pulls?state=open&base={branch}&per_page=100"
+        self.base_queries.append(endpoint)
+        return self.dependent_prs
 
     async def pr_head_sha(self, pr: PullRequest) -> str:
         return self.live_head or await Git(self.worktree).head_sha()
@@ -59,6 +73,8 @@ class MergeGitHub(FakeReviewGitHub):
         assert expected_head_sha == await self.pr_head_sha(pr)
         if self.merge_error:
             raise RuntimeError("merge failed")
+        if self.merge_locally:
+            await git_command(self.repo_root, "merge", "--ff-only", expected_head_sha)
         self.live_head = expected_head_sha
         self.state = "MERGED"
         self.merge_sha = "merge-sha"
@@ -95,7 +111,7 @@ class MergeGitHub(FakeReviewGitHub):
 @pytest.fixture
 def ready(review_harness: Harness) -> Iterator[tuple[Harness, MergeGitHub, int]]:
     h = review_harness
-    github = MergeGitHub(h.github.ticket, h.worktree)
+    github = MergeGitHub(h.github.ticket, h.worktree, h.deps.repo_root)
     h.github = github
     h.deps.github = github
     h.script(write(LINES), review("No findings."))
@@ -129,6 +145,10 @@ def test_happy_merge_closes_and_cleans_after_confirmation(
         "delete",
     ]
     assert not h.worktree.exists()
+    branches = asyncio.run(git_command(h.deps.repo_root, "branch", "--list"))
+    assert branch_name(github.ticket) not in branches
+    assert result.notes == ()
+    assert len(github.base_queries) == 1
     assert f"Approval #{approval.id}" in github.comment_bodies[0]
     assert "merge-sha" in github.comment_bodies[0] and approval.head_sha in github.comment_bodies[0]
     assert len(github.comment_bodies) == 1
@@ -136,6 +156,102 @@ def test_happy_merge_closes_and_cleans_after_confirmation(
     assert github.ticket.status == Status.DONE
     asyncio.run(Engine(h.deps).merge_and_close(run_id))
     assert len(github.comment_bodies) == 1 and github.events.count("delete") == 1
+    assert len(github.base_queries) == 1
+
+
+def local_branch_result(h: Harness, run_id: int) -> dict[str, Any]:
+    row = h.deps.store._connection.execute(
+        "SELECT status, result_json FROM operations "
+        "WHERE run_id = ? AND kind = 'closure' AND key = 'local_branch'",
+        (run_id,),
+    ).fetchone()
+    assert row is not None and row[0] == "done"
+    result: dict[str, Any] = json.loads(row[1])
+    return result
+
+
+def test_unmerged_local_branch_warns_without_changing_merge_result(
+    ready: tuple[Harness, MergeGitHub, int],
+) -> None:
+    h, github, run_id = ready
+    github.merge_locally = False
+    reports: list[str] = []
+    h.deps.progress = reports.append
+    request(h, run_id)
+    approval = Engine(h.deps).approve(run_id, "developer", "ready")
+    result = asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert result.state == RunState.COMPLETED and result.ci_green
+    assert result.head_sha == approval.head_sha and github.state == "MERGED"
+    assert github.merge_sha == "merge-sha" and github.ticket.status == Status.DONE
+    assert not h.worktree.exists()
+    assert (
+        asyncio.run(Git(h.deps.repo_root).head_sha(branch_name(github.ticket))) == approval.head_sha
+    )
+    assert len(result.notes) == 1 and result.notes[0].startswith("Warning:")
+    assert "not fully merged" in result.notes[0]
+    assert result.notes[0] in reports
+    assert local_branch_result(h, run_id)["deleted"] is False
+    assert asyncio.run(Engine(h.deps).merge_and_close(run_id)).notes == result.notes
+
+
+def test_local_branch_used_as_open_pr_base_is_kept(
+    ready: tuple[Harness, MergeGitHub, int],
+) -> None:
+    h, github, run_id = ready
+    github.dependent_prs = [{"number": 99}]
+    request(h, run_id)
+    approval = Engine(h.deps).approve(run_id, "developer", "ready")
+    result = asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert result.state == RunState.COMPLETED
+    assert (
+        asyncio.run(Git(h.deps.repo_root).head_sha(branch_name(github.ticket))) == approval.head_sha
+    )
+    assert "base of another open pull request" in result.notes[0]
+    assert local_branch_result(h, run_id)["deleted"] is False
+
+
+def test_failed_open_pr_check_keeps_local_branch_and_warns(
+    ready: tuple[Harness, MergeGitHub, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, github, run_id = ready
+    request(h, run_id)
+    approval = Engine(h.deps).approve(run_id, "developer", "ready")
+
+    async def unavailable(endpoint: str, *args: str) -> list[dict[str, Any]]:
+        raise GitHubError(("api", endpoint), "Cannot read pull requests")
+
+    monkeypatch.setattr(github, "_paginated", unavailable)
+    result = asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert result.state == RunState.COMPLETED
+    assert (
+        asyncio.run(Git(h.deps.repo_root).head_sha(branch_name(github.ticket))) == approval.head_sha
+    )
+    assert "Cannot read pull requests" in result.notes[0]
+    assert local_branch_result(h, run_id)["deleted"] is False
+
+
+def test_restart_after_local_branch_deletion_response_is_lost(
+    ready: tuple[Harness, MergeGitHub, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, github, run_id = ready
+    request(h, run_id)
+    Engine(h.deps).approve(run_id, "developer", "ready")
+    original = Git.delete_local_branch
+
+    async def lost_response(git: Git, branch: str) -> tuple[bool, str | None]:
+        assert await original(git, branch) == (True, None)
+        raise RuntimeError("local deletion response lost")
+
+    monkeypatch.setattr(Git, "delete_local_branch", lost_response)
+    with pytest.raises(RuntimeError, match="local deletion response lost"):
+        asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    monkeypatch.setattr(Git, "delete_local_branch", original)
+    result = asyncio.run(Engine(h.deps).merge_and_close(run_id))
+    assert result.state == RunState.COMPLETED and result.notes == ()
+    assert local_branch_result(h, run_id)["reason"] == "Branch is already absent"
+    assert github.events.count("merge") == 1
 
 
 def test_new_commit_rejects_old_approval(ready: tuple[Harness, MergeGitHub, int]) -> None:
