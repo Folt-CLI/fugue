@@ -116,6 +116,14 @@ def error(message: str, next_step: str | None = None) -> None:
         print_text(f"next: {next_step}", console=err)
 
 
+def deprecated_name(old: str, new: str, removed_in: str) -> None:
+    """Print one warning on stderr naming the replacement and removal release."""
+    print_text(
+        f"warning: {old} is deprecated; use {new} instead. It will be removed in {removed_in}.",
+        console=console_for(stderr=True),
+    )
+
+
 def table_text(
     header: Sequence[str],
     rows: Sequence[Sequence[str]],

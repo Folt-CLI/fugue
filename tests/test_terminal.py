@@ -169,6 +169,35 @@ def test_error_goes_to_stderr_with_next_step(capsys: pytest.CaptureFixture[str])
     assert captured.err == "error: Unknown run id 9\nnext: fugue status\n"
 
 
+@pytest.mark.parametrize("width", [20, 200])
+def test_deprecated_name_is_one_plain_stderr_line(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, width: int
+) -> None:
+    monkeypatch.delenv("NO_COLOR")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLUMNS", str(width))
+    terminal.deprecated_name("fugue old [literal]", "fugue new", "0.4.0")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "warning: fugue old [literal] is deprecated; use fugue new instead. "
+        "It will be removed in 0.4.0.\n"
+    )
+    assert ESCAPE not in captured.err
+
+
+def test_deprecated_name_uses_warning_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    console, sink = terminal_console({"TERM": "xterm-256color"})
+
+    def stderr_console(*, stderr: bool = False) -> Console:
+        assert stderr
+        return console
+
+    monkeypatch.setattr(terminal, "console_for", stderr_console)
+    terminal.deprecated_name("old", "new", "0.4.0")
+    assert sink.getvalue().startswith("\x1b[33mwarning:\x1b[0m")
+
+
 def test_unknown_run_id_prints_next_step_and_keeps_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
