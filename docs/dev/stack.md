@@ -2,6 +2,9 @@
 
 ## Confirmed choices
 
+- Fugue keeps shared guidance in prompts and ships no skills, as selected in
+  Option 1 of [Question #140](https://github.com/Folt-CLI/fugue/issues/140).
+
 - Python >=3.12 with uv, ruff, mypy strict, pytest and hatchling
   ([#2](https://github.com/Folt-CLI/fugue/issues/2),
   [#5](https://github.com/Folt-CLI/fugue/issues/5)).

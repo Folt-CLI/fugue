@@ -72,3 +72,5 @@ fugue report timing 1 --repo-root /path/to/repository
 Use the same configuration and state directory for later commands. Read the
 [workflow guide](workflow.md) for review, decisions, approval, merge and recovery,
 and [limitations](limitations.md) for exit codes and failure handling.
+
+See [shared skills and guidance](shared-guidance.md) for provider guidance and context costs.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [#224] : Document shared skills and guidance, provider configuration boundaries and context costs.
+
 ## 0.2.0
 
 ### Overview
