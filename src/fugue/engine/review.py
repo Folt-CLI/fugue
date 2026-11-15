@@ -179,8 +179,8 @@ def _unparseable(text: str) -> list[Finding]:
 
 
 def parse_findings(text: str) -> list[Finding] | Clean:
-    """Parse reviewer output; an exact `No findings.` is clean, unparseable text is one finding."""
-    if text.strip() == CLEAN_TEXT:
+    """Parse reviewer output; whole no-findings replies are clean, unparsed text is one finding."""
+    if text.strip().casefold().removesuffix(".") in _NOTHING:
         return CLEAN
     lines = text.splitlines()
     first = next((i for i, line in enumerate(lines) if line.strip()), None)

@@ -11,7 +11,8 @@ from functools import partial
 from itertools import count
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict, runtime_checkable
+from urllib.parse import quote
 
 from fugue.agents import (
     AccessMode,
@@ -92,6 +93,13 @@ class GateRunner(Protocol):
     def __call__(
         self, commands: Sequence[Sequence[str]], cwd: Path, *, log_dir: Path
     ) -> Awaitable[GateResult]: ...
+
+
+@runtime_checkable
+class _BranchCleanupGitHubPort(Protocol):
+    """Paginated reads needed to protect branches used by open pull requests."""
+
+    async def _paginated(self, endpoint: str, *args: str) -> list[dict[str, Any]]: ...
 
 
 @dataclass
@@ -624,6 +632,8 @@ class Engine:
             if problems:
                 raise _Stop(RunState.BLOCKED, problems)
 
+            notes: list[str] = []
+
             async def close() -> None:
                 await close_step(
                     store,
@@ -647,6 +657,40 @@ class Engine:
                         await Git(self.deps.repo_root).remove_worktree(identity.path)
 
                 await close_step(store, run_id, "worktree", remove)
+                operation = store.begin_operation(
+                    run_id,
+                    "closure",
+                    "local_branch",
+                    {"branch": identity.branch, "merged_head": head},
+                )
+                warning: str | None = None
+                if operation.status != "done":
+                    deleted = False
+                    reason: str | None = None
+                    try:
+                        if not isinstance(port, _BranchCleanupGitHubPort):
+                            reason = "Cannot check open pull requests targeting the branch"
+                        elif await port._paginated(
+                            f"repos/{port.repo}/pulls?state=open"
+                            f"&base={quote(identity.branch, safe='')}&per_page=100"
+                        ):
+                            reason = "Branch is the base of another open pull request"
+                        else:
+                            deleted, reason = await Git(self.deps.repo_root).delete_local_branch(
+                                identity.branch, merged_head=head
+                            )
+                    except (GitError, GitHubError, OSError) as error:
+                        reason = str(error)
+                    if not deleted and reason != "Branch is already absent":
+                        warning = f"Warning: local branch {identity.branch!r} kept: {reason}"
+                    store.complete_operation(
+                        operation.id, {"deleted": deleted, "reason": reason, "warning": warning}
+                    )
+                elif operation.result_json is not None:
+                    warning = json.loads(operation.result_json).get("warning")
+                if warning:
+                    notes.append(warning)
+                    self._report(warning)
                 await close_step(
                     store,
                     run_id,
@@ -656,7 +700,9 @@ class Engine:
 
             await self._stage(run_id, Stage.CLOSE, close)
             store.set_run_state(run_id, RunState.COMPLETED)
-            return RunOutcome(run_id, RunState.COMPLETED, pr.number, head, ci_green=True)
+            return RunOutcome(
+                run_id, RunState.COMPLETED, pr.number, head, ci_green=True, notes=tuple(notes)
+            )
 
         return await self._guarded(run_id, work)
 
