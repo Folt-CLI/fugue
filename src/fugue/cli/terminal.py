@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.status import Status
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme
 
 # Columns whose cells are identifiers; they must never be cut short.
 ID_COLUMNS = frozenset({"id", "run", "ticket", "index"})
@@ -26,6 +27,14 @@ ID_COLUMNS = frozenset({"id", "run", "ticket", "index"})
 MIN_RICH_WIDTH = 60
 
 _PREFIX_STYLES = {"error:": "bold red", "warning:": "yellow", "next:": "cyan", "note:": "dim"}
+
+THEME = {
+    "badge": "bold cyan",
+    "panel": "cyan",
+    "summary.title": "bold",
+    "summary.recommended": "bold green",
+    "progress": "cyan",
+}
 
 # The console of the command in progress, so a live display and every print share one.
 _active: Console | None = None
@@ -60,6 +69,7 @@ def console_for(
         highlight=False,
         emoji=False,
         legacy_windows=False,
+        theme=Theme(THEME),
         _environ=dict(settings),
     )
 
@@ -196,10 +206,60 @@ def _env_for(console: Console) -> Mapping[str, str]:
 def print_panel(title: str, body: str, *, console: Console | None = None) -> None:
     target = console or _current()
     if supports_rich(target):
-        target.print(Panel(Text(body), title=title))
+        target.print(Panel(Text(body), title=Text(title), border_style=THEME["panel"]))
         return
-    print_text(title, console=target)
-    print_text(body, console=target)
+    target.print(Text(title), soft_wrap=True)
+    target.print(Text(body), soft_wrap=True)
+
+
+def print_badge(label: str, *, console: Console | None = None) -> None:
+    """Print a literal bracketed label, styled only when Rich is enabled."""
+    target = console or _current()
+    style = THEME["badge"] if supports_rich(target) else ""
+    target.print(Text(f"[{label}]", style=style), soft_wrap=True)
+
+
+def print_summary(
+    title: str,
+    overview: str,
+    options: Sequence[str],
+    *,
+    recommended_index: int | None = None,
+    console: Console | None = None,
+) -> None:
+    """Print the first three overview lines and numbered option names.
+
+    The optional recommended index is zero-based. Invalid indices raise before
+    any output is printed; an empty option list is allowed without a recommendation.
+    """
+    if recommended_index is not None and not 0 <= recommended_index < len(options):
+        raise ValueError("recommended_index must identify an option")
+    target = console or _current()
+    rich = supports_rich(target)
+    body = Text()
+    lines = overview.splitlines()
+    body.append("\n".join(lines[:3]))
+    if len(lines) > 3:
+        body.append("\n...")
+    for index, name in enumerate(options):
+        if body:
+            body.append("\n")
+        recommended = index == recommended_index
+        suffix = " (recommended)" if recommended else ""
+        style = THEME["summary.recommended"] if rich and recommended else ""
+        body.append(f"{index + 1}. {name}{suffix}", style=style)
+    if rich:
+        target.print(
+            Panel(
+                body,
+                title=Text(title, style=THEME["summary.title"]),
+                border_style=THEME["panel"],
+            )
+        )
+    else:
+        target.print(Text(title), soft_wrap=True)
+        if body:
+            target.print(body, soft_wrap=True)
 
 
 def print_markdown(text: str, *, console: Console | None = None) -> None:
@@ -217,9 +277,15 @@ class Progress:
     stay whole and prefixed by their caller.
     """
 
-    def __init__(self, *, batch: bool = False, env: Mapping[str, str] | None = None) -> None:
-        self._console = console_for(env)
-        self._live = not batch and is_interactive(self._console)
+    def __init__(
+        self,
+        *,
+        batch: bool = False,
+        env: Mapping[str, str] | None = None,
+        console: Console | None = None,
+    ) -> None:
+        self._console = console or _active or console_for(env)
+        self._live = not batch and supports_rich(self._console)
         self._status: Status | None = None
         self._previous: Console | None = None
 
@@ -231,14 +297,16 @@ class Progress:
         if self._status is not None:
             self._status.update(Text(line))
         else:
-            print_text(line)
+            self._console.print(Text(line), soft_wrap=True)
 
     def __enter__(self) -> Self:
         global _active
         if self._live:
             self._previous = _active
             _active = self._console
-            self._status = self._console.status("starting", spinner="dots")
+            self._status = self._console.status(
+                "starting", spinner="dots", spinner_style=THEME["progress"]
+            )
             self._status.start()
         return self
 
@@ -255,5 +323,5 @@ class Progress:
             _active = self._previous
 
 
-def progress_callback(*, batch: bool = False) -> Progress:
-    return Progress(batch=batch)
+def progress_callback(*, batch: bool = False, console: Console | None = None) -> Progress:
+    return Progress(batch=batch, console=console)
