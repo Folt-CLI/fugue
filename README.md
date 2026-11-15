@@ -18,7 +18,7 @@ Inspect the installed CLI and effective configuration:
 
 ```sh
 fugue --help
-fugue config show
+fugue setup config
 ```
 
 After configuring the target repository and signing in to the required CLIs,
@@ -26,7 +26,7 @@ start a ticket and inspect the returned run id:
 
 ```sh
 fugue run 47 --repo-root /path/to/repository
-fugue status 1 --repo-root /path/to/repository
+fugue report runs 1 --repo-root /path/to/repository
 ```
 
 Replace ticket 47, run id 1 and the path with your own values. A run can invoke

@@ -46,7 +46,7 @@ GitHub Projects or repository process metadata. See
   `github.reviewer_identity_separate = true`; see
   [reviewer identity setup](reviewer-identity.md). Replies and thread resolution
   retain their existing credentials.
-- `fugue protection` reads the recommended branch protection rules: at least one
+- `fugue setup protection` reads the recommended branch protection rules: at least one
   approving review, dismissal of stale reviews and conversation resolution. It
   does not apply or change protection. Required approving reviews need the
   configured reviewer app or another reviewer identity; single-account COMMENT
@@ -76,8 +76,8 @@ GitHub Projects or repository process metadata. See
   cool-down is not shared across processes or kept across restarts, and there is
   no throttle or backoff. A run whose providers are all unavailable ends
   provider-limited (exit code 5) while others go on.
-- `resume`, `review`, `decide`, `approve` and `merge` do not take the ticket
-  lock.
+- `resume`, `review start`, `review decide`, `approval record` and `merge` do not
+  take the ticket lock.
 
 ## Exit codes
 
@@ -96,14 +96,14 @@ For several tickets the highest-precedence code applies: interrupted (6), then
 failed or error (4), provider-limited (5), then blocked, skipped or
 lock-conflicted (3), otherwise 0.
 
-For `protection`, 0 means every checked rule is satisfied, 3 means a missing rule
+For `setup protection`, 0 means every checked rule is satisfied, 3 means a missing rule
 or an explicitly unprotected branch, and 4 means protection could not be read or
 another execution error occurred. Read errors take precedence over missing
 rules. A permission refusal or ambiguous 404 is a read error, not evidence of an
 unprotected branch.
 
 An exit code of zero alone does not mean the ticket was merged or even that the
-run completed. Check the printed state and `status`. CLI argument parsing can
+run completed. Check the printed state and `report runs`. CLI argument parsing can
 also return code 2 before a run is created.
 
 ## Recovery
@@ -111,7 +111,7 @@ also return code 2 before a run is created.
 For an existing example run id of 1:
 
 ```sh
-uv run fugue status 1
+uv run fugue report runs 1
 uv run fugue resume 1
 ```
 
@@ -120,7 +120,7 @@ Use the same repository, configuration and state directory. Resume can reconcile
 operations recorded before interruption; deleting local state removes the
 information needed for that recovery. It does not create missing human decisions.
 
-For configuration errors, inspect the file with `config show`; correct unknown
+For configuration errors, inspect the file with `setup config`; correct unknown
 keys, malformed TOML, non-positive limits or missing GitHub Project settings.
 For provider-limited outcomes, address the provider's sign-in or quota condition
 before retrying. For interruption, preserve the worktree and local state.

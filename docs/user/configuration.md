@@ -13,11 +13,11 @@ Fugue reads `fugue.toml` there if present. `--config` chooses a file instead;
 there is no layered merge of multiple files. Omitted fields retain their defaults.
 
 ```sh
-uv run fugue config show
-uv run fugue config show --config /path/to/fugue.toml --repo-root /path/to/repository
+uv run fugue setup config
+uv run fugue setup config --config /path/to/fugue.toml --repo-root /path/to/repository
 ```
 
-`config show` prints the effective configuration as TOML, omitting unset optional
+`setup config` prints the effective configuration as TOML, omitting unset optional
 values. It can inspect defaults outside a Git repository. It does not verify
 provider sign-in, GitHub access or Project setup.
 
@@ -87,7 +87,7 @@ After a provider is unavailable it is skipped for `limits.provider_cooldown_seco
 call. When every provider is in cool-down they are tried in order anyway. The
 cool-down is kept in memory for the current process only.
 
-`fugue overview` reads at most `limits.overview_max_tickets` open tickets
+`fugue report overview` reads at most `limits.overview_max_tickets` open tickets
 (default 100, must be positive) and reuses a cached analyst summary for
 `limits.overview_cache_seconds` (default 300, must be positive) while the
 gathered facts are unchanged.
@@ -102,7 +102,7 @@ gathered facts are unchanged.
 | `reviewer_identity_separate` | `false`; single-account reviews use COMMENT because GitHub forbids author self-approval |
 | `resolve_token_env` | Unset; optional name of the environment variable holding a token for resolving review threads; otherwise use the normal environment |
 
-Use `fugue reviewer-app setup` to register a private reviewer app; see
+Use `fugue setup reviewer-app` to register a private reviewer app; see
 [reviewer identity setup](reviewer-identity.md) for permissions, key storage and
 `reviewer_identity_separate`. Fugue does not yet post reviews as the reviewer app.
 
@@ -137,8 +137,8 @@ All integer fields under `[limits]` must be greater than zero.
 | `max_output_bytes` | `65536` | Output capture limit |
 | `ci_poll_interval_seconds` | `20` | CI polling interval |
 | `ci_timeout_seconds` | `3600` | CI waiting timeout |
-| `overview_max_tickets` | `100` | Most open tickets `fugue overview` reads |
-| `overview_cache_seconds` | `300` | Seconds a cached `fugue overview` summary stays valid |
+| `overview_max_tickets` | `100` | Most open tickets `fugue report overview` reads |
+| `overview_cache_seconds` | `300` | Seconds a cached `fugue report overview` summary stays valid |
 | `infrastructure_markers` | See below | Strings used to recognize infrastructure failures |
 
 Default infrastructure markers are `runner lost`,
@@ -209,4 +209,4 @@ Configure it with `[roles.stand_in]` (`provider`, `model`, `tier`,
 | `interview_automatic_max_seconds` | 1800 | Positive wall clock bound for the whole automatic interview; expiry requires human continuation. |
 
 Every interview call records usage under `analyst` or `stand_in`; inspect it with
-`fugue usage --by role`. A stand-in never selects an Analysis option.
+`fugue report usage --by role`. A stand-in never selects an Analysis option.

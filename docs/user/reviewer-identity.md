@@ -14,7 +14,7 @@ change the reviewer identity.
 Run this on your local machine, with a browser signed into GitHub:
 
 ```sh
-fugue reviewer-app setup
+fugue setup reviewer-app
 ```
 
 The repository comes from `github.repo` in `fugue.toml`, or the GitHub `origin`
@@ -98,7 +98,7 @@ and mints an installation token, passed to the review submission through
 key text are never placed in command arguments or error messages.
 
 Missing or invalid app records or keys report an error naming
-`fugue reviewer-app setup`. Authentication failures also report that setup
+`fugue setup reviewer-app`. Authentication failures also report that setup
 command; check the app installation and local key before retrying. The setup
 command prints the configuration line but does not edit `fugue.toml`.
 
@@ -124,8 +124,8 @@ and arrange an approving review from another identity if protection requires it.
 Inspect the rules without changing them:
 
 ```sh
-fugue protection
-fugue protection --branch release/next --branch stable
+fugue setup protection
+fugue setup protection --branch release/next --branch stable
 ```
 
 The default branches are `develop` and `main`; repeated `--branch` options replace
