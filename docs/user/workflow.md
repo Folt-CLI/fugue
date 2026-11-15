@@ -172,6 +172,9 @@ tables wrap without cutting run ids or ticket numbers. A batch never uses the
 spinner, and its lines keep their `[#N]` prefix.
 
 The follow-up question in `fugue question` streams the answer as it arrives.
+The terminal layer shows analyst replies as rendered Markdown with colour on
+a terminal, or as plain text when output is piped, `NO_COLOR` is set,
+`TERM=dumb` is set or the terminal is narrower than 60 columns.
 The chat component also understands `/help` (list commands), `/save PATH`
 (write the transcript to a new UTF-8 file; an existing file is never
 overwritten) and `/quit`. End a line with a backslash to continue it on the
@@ -181,8 +184,18 @@ next line. End of input also ends a chat.
 
 A Question with pending Analysis starts an interview with the analyst. Discuss
 intent, users, boundaries, failure cases, constraints and code touched; the
-analyst offers rough directions before writing Analysis options. `/proceed`
-finishes the interview and publishes Analysis, then opens the selection walkthrough.
+analyst offers rough directions before writing Analysis options. When the
+analyst has enough information, it can signal this with a marker on its own
+final line. The marker is removed before the reply is shown or stored. After
+the reply, an interactive terminal shows the confirmation prompt
+`Start the analysis?`, defaulting to No. Yes finishes the interview, publishes
+Analysis and opens the selection walkthrough; the interview record states
+that `person and analyst` ended it. No continues the interview; the confirmation
+prompt appears again only after another analyst signal.
+
+`/proceed` remains an alias for ending the interview directly and publishing
+Analysis. Without an interactive terminal, no confirmation prompt is shown;
+use this alias to end the interview.
 `/save PATH` saves the rendered conversation to a new file; `/quit`, end of input
 or interrupt leaves the interview open without publishing or changing Status.
 Run `fugue question N` again to continue with the earlier turns. At the turn
@@ -205,11 +218,34 @@ links the verified attachment, marking automatic interviews. The whole interview
 record and its usage are never uploaded. `fugue resume` directs unfinished
 interviews back to `fugue question N`.
 
-Browse a Question with existing Analysis options interactively, or explicitly
-select an option with a reason:
+Browse a Question with existing Analysis options using the selection walkthrough:
 
 ```sh
 uv run fugue question 47
+```
+
+On an interactive terminal without `--select`, a choice prompt lists each
+option, marking the recommended option `(recommended)` when the Recommendation
+names `Option N`. The menu also offers Compare options, Ask a follow-up,
+Select an option and Quit. Up and Down move between entries, Enter selects,
+Esc cancels the prompt and Ctrl-C leaves the walkthrough. On terminals that
+report the mouse, you can also select an entry with the mouse; keys always work.
+
+Select an option opens a list of options, then a confirmation prompt naming
+the chosen option, defaulting to No. After confirming, `Reason (optional):`
+asks for a reason; Enter keeps the default reason. The decision is recorded
+once. Declining or quitting records nothing. After a recorded selection, the
+output ends with `next: fugue children N`; nothing is created.
+
+When input or output is not a terminal, `TERM=dumb` is set or the prompt
+library cannot start, the walkthrough falls back to typed commands: a number
+opens an option, `c` compares, `a` asks a follow-up, `s N` selects and `q` quits.
+End of input ends without changes.
+
+Alternatively, `--select K --reason R --by B` records the decision without
+any prompt:
+
+```sh
 uv run fugue question 47 --select 1 --reason 'This scope meets the requirements' --by developer
 ```
 
