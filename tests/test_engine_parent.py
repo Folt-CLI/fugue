@@ -706,3 +706,85 @@ def test_interrupted_ci_resumes_refresh_without_rebase_gate_or_push(
     assert resumed.state == RunState.COMPLETED
     assert checks == [33, 34, 34]
     assert calls == ["rebase", "push"]
+
+
+def test_reentry_initializes_bottom_tracking_before_second_child_delivery(
+    parent_stack: tuple[Harness, FakeStack, dict[int, Ticket]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h, stack, catalog = parent_stack
+    reviews: list[int] = []
+    gates: list[int] = []
+    mutations: list[str] = []
+    bottom = branch_name(catalog[33])
+    path = worktree_path(h.deps.worktrees_root, catalog[33])
+    finding = Finding(1, "High", "Needs a decision", "allowed.txt", 1, 1, None, True)
+    original_init = stack.init
+    original_gate = Engine._gate
+
+    def check_lock() -> None:
+        lock = RepoLock(h.deps.state_dir, h.deps.repo_root)
+        with lock.path.open("a+") as handle, pytest.raises(BlockingIOError):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    async def pending(self: Engine, run_id: int) -> RunOutcome:
+        reviews.append(h.deps.store.get_run(run_id).ticket_number)
+        h.deps.store.set_run_state(run_id, RunState.WAITING_FOR_DECISION)
+        return RunOutcome(run_id, RunState.WAITING_FOR_DECISION, findings=(finding,))
+
+    async def initialize(base: str, branches: list[str]) -> str:
+        check_lock()
+        mutations.append("init")
+        assert base == "develop"
+        assert branches == [bottom]
+        return await original_init(base, branches)
+
+    async def rebase() -> str:
+        check_lock()
+        if await stack.find_stack(bottom) is None:
+            raise GitHubError(("gh", "stack", "rebase"), "Branch is not tracked")
+        mutations.append("rebase")
+        await Git(path)._run("rebase", "develop")
+        return ""
+
+    async def push() -> str:
+        check_lock()
+        mutations.append("push")
+        await Git(path)._run("push", "--force-with-lease", "origin", f"refs/heads/{bottom}")
+        return ""
+
+    async def gate(self: Engine, run_id: int, path: Path) -> GateResult:
+        gates.append(h.deps.store.get_run(run_id).ticket_number)
+        return await original_gate(self, run_id, path)
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("fugue.engine.parent._WorkEngine.continue_review", pending)
+    monkeypatch.setattr(stack, "init", initialize)
+    monkeypatch.setattr(stack, "rebase", rebase)
+    monkeypatch.setattr(stack, "push", push)
+    first = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert first.state == RunState.WAITING_FOR_DECISION
+    assert asyncio.run(stack.find_stack(bottom)) is None
+    assert h.deps.store.list_work(first.parent_run_id)[1].run_id is None
+    old_head = asyncio.run(Git(path).head_sha())
+    advance_base(h)
+    monkeypatch.setattr(Engine, "_gate", gate)
+
+    resumed = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert resumed.state == RunState.WAITING_FOR_DECISION
+    assert resumed.problems == ()
+    assert resumed.parent_run_id == first.parent_run_id
+    assert mutations == ["init", "rebase", "push"]
+    assert stack.branches == [bottom]
+    assert stack.initializations == 1
+    assert asyncio.run(Git(path).head_sha()) != old_head
+    assert gates == [33]
+    assert reviews == [33, 33]
+    assert len(h.github.created) == 1
+    assert h.deps.store.list_work(first.parent_run_id)[1].run_id is None
+    assert not worktree_path(h.deps.worktrees_root, catalog[34]).exists()
+
+    repeated = asyncio.run(run_parent(h.deps, 100, list(catalog.values())))
+    assert repeated.state == RunState.WAITING_FOR_DECISION
+    assert mutations == ["init", "rebase", "push"]
+    assert gates == [33]

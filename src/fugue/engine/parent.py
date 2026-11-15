@@ -194,6 +194,9 @@ async def _refresh_stack(
                     )
             stack = deps.stack_factory(layers[0][1].path)
             if moved:
+                bottom_run, bottom_identity = layers[0]
+                if await stack.find_stack(bottom_identity.branch) is None:
+                    await stack.init(_ticket_base(deps, bottom_run.id), [bottom_identity.branch])
                 # The native rebase uses the local bottom base. Fast-forward it
                 # only after every worktree has passed the cleanliness check.
                 await git.fast_forward(deps.base_branch)
