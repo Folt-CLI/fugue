@@ -123,6 +123,7 @@ def test_report_lists_every_section_without_a_summary(
     assert "fugue question 4" in text
     assert "fugue review decide 2 --accept INDEX --reject 'INDEX:reason text'" in text
     assert "fugue resume 3" in text
+    assert "next: fugue resume" not in text
     assert "open pull requests" in text and "aaaaaaa" in text and "aaaaaaaa" not in text
     assert "recently merged pull requests" in text and "merged thirty" in text
     assert "recently closed tickets" in text and "closed thirty-one" in text

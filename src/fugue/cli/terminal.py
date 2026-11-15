@@ -26,7 +26,13 @@ ID_COLUMNS = frozenset({"id", "run", "ticket", "index"})
 
 MIN_RICH_WIDTH = 60
 
-_PREFIX_STYLES = {"error:": "bold red", "warning:": "yellow", "next:": "cyan", "note:": "dim"}
+_PREFIX_STYLES = {
+    "error:": "bold red",
+    "warning:": "yellow",
+    "problem:": "yellow",
+    "next:": "cyan",
+    "note:": "dim",
+}
 
 THEME = {
     "badge": "bold cyan",
@@ -118,12 +124,19 @@ def status_line(text: str, *, console: Console | None = None) -> None:
     print_text(text, console=console)
 
 
+def format_error(message: str, next_step: str | None = None) -> list[str]:
+    """The `error:` line, then a `next:` line when a next step is known."""
+    lines = [f"error: {message}"]
+    if next_step:
+        lines.append(f"next: {next_step}")
+    return lines
+
+
 def error(message: str, next_step: str | None = None) -> None:
     """`error: message` on stderr, then `next: ...` when a next step is known."""
     err = console_for(stderr=True)
-    print_text(f"error: {message}", console=err)
-    if next_step:
-        print_text(f"next: {next_step}", console=err)
+    for line in format_error(message, next_step):
+        print_text(line, console=err)
 
 
 def deprecated_name(old: str, new: str, removed_in: str) -> None:
