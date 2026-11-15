@@ -17,6 +17,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [capability](#capability)
 - [chat component](#chat-component)
 - [child](#child)
+- [child proposal](#child-proposal)
 - [choice prompt](#choice-prompt)
 - [Component](#component)
 - [conversation attachment](#conversation-attachment)
@@ -253,6 +254,12 @@ Status: decided.
 the reusable conversation loop with streaming output, an input line, slash commands (`/help`, `/save PATH`, `/quit`) and a saved transcript; `/proceed` is an interview alias that confirms the end and starts analysis. The interview and the Question walkthrough's follow-up use it.
 
 Status: decided.
+
+### child proposal
+
+The derived children shown for edit and confirmation before creation.
+
+Status: unresolved.
 
 ### choice prompt
 
