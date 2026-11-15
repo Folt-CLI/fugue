@@ -772,6 +772,7 @@ def question(
                             chooser=make_chooser(),
                             reader=walkthrough.prompt,
                             print_fn=walkthrough.print,
+                            console=walkthrough._console,
                         )
                         if outcome.state != RunState.WAITING_FOR_SELECTION:
                             raise typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 4))

@@ -189,7 +189,7 @@ def test_save_to_an_unwritable_path_reports_and_continues(tmp_path: Path) -> Non
     assert "Could not save transcript" in harness.shown.getvalue()
 
 
-def test_live_markdown_on_a_terminal() -> None:
+def test_live_markdown_on_a_terminal(tmp_path: Path) -> None:
     shown = StringIO()
     console = Console(file=shown, width=60, force_terminal=True, color_system=None)
     step = ScriptStep(result=result(), events=text_events("# Title\n\n", "body"))
@@ -197,7 +197,11 @@ def test_live_markdown_on_a_terminal() -> None:
     session = ChatSession(adapter, request, reader=lambda _: "", console=console, live=True)
     assert asyncio.run(session.ask("q"))
     assert "Title" in shown.getvalue() and "body" in shown.getvalue()
+    assert "# Title" not in shown.getvalue()
     assert session.turns == [("q", "# Title\n\nbody")]
+    target = tmp_path / "chat.txt"
+    session.save(str(target))
+    assert target.read_text(encoding="utf-8") == "you: q\n\n# Title\n\nbody\n\n"
 
 
 def test_extra_commands_help_and_turn_limit() -> None:
