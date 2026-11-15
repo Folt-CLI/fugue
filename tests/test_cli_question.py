@@ -1,7 +1,8 @@
 """Scripted walkthroughs without GitHub or provider calls."""
 
 import asyncio
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from io import StringIO
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from typer.testing import CliRunner
 from fugue.agents import AccessMode, ScriptedAdapter, ScriptStep
 from fugue.cli import app as cli_app
 from fugue.cli import question as question_module
+from fugue.cli import terminal
 from fugue.cli.question import QuestionWalkthrough
 from fugue.engine.facts import scope_url
 from fugue.github.parse import parse_body_sections
@@ -426,3 +428,186 @@ def test_cli_pending_interview_paths(
     if ending == "locked":
         assert "already being run" in outcome.output
         assert analyst.requests == []
+
+
+class FakeChooser:
+    def __init__(self, actions: Sequence[int | BaseException | None], *, yes: bool = True) -> None:
+        self.actions = iter(actions)
+        self.yes = yes
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.confirmations: list[str] = []
+
+    def choose(self, message: str, choices: Sequence[str], default: int = 0) -> int | None:
+        self.calls.append((message, tuple(choices)))
+        action = next(self.actions)
+        if isinstance(action, BaseException):
+            raise action
+        return action
+
+    def confirm(self, message: str, default: bool = False) -> bool:
+        self.confirmations.append(message)
+        return self.yes
+
+
+def menu_walkthrough(
+    monkeypatch: pytest.MonkeyPatch,
+    client: FakeClient,
+    chooser: FakeChooser,
+    commands: Sequence[str] = (),
+    adapter: ScriptedAdapter | None = None,
+) -> tuple[QuestionWalkthrough, StringIO]:
+    async def fake_prompt_call(function: Callable[..., object], *args: object) -> object:
+        # The fake chooser has no terminal event loop to isolate in a worker.
+        return function(*args)
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_prompt_call)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(terminal, "is_interactive", lambda console: True)
+    session, output = walkthrough(client, commands, adapter)
+    session._chooser = chooser
+    return session, output
+
+
+def test_menu_browse_compare_follow_up_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    adapter = ScriptedAdapter([ScriptStep()])
+    chooser = FakeChooser([0, 1, 2, 3, 5])
+    session, output = menu_walkthrough(monkeypatch, client, chooser, ["Why?"], adapter)
+    asyncio.run(session.run(2))
+    assert chooser.calls[0][1][0] == "Option 1: Keep the process (recommended)"
+    assert chooser.calls[0][1][1] == "Option 2: Extend the process"
+    assert "Existing workflow." in output.getvalue()
+    assert "More code." in output.getvalue()
+    assert "Compare options" in output.getvalue()
+    assert len(adapter.requests) == 1
+    assert adapter.requests[0].access == AccessMode.READ_ONLY
+    assert "Why?" in adapter.requests[0].prompt
+    assert client.calls == []
+    assert client.body == BODY
+    assert "next:" not in output.getvalue()
+
+
+@pytest.mark.parametrize("reason", ["", "Fits our needs"])
+def test_menu_confirms_and_records_once(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    client = FakeClient()
+    chooser = FakeChooser([4, 1])
+    session, output = menu_walkthrough(monkeypatch, client, chooser, [reason])
+    prompts: list[str] = []
+    reader = session.prompt
+
+    def prompt(text: str) -> str:
+        prompts.append(text)
+        return reader(text)
+
+    session.prompt = prompt
+    asyncio.run(session.run(2, by="developer"))
+    assert chooser.confirmations == ["Select option 2: Extend the process?"]
+    assert prompts == ["Reason (optional): "]
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
+    assert f"**Why this one:** {reason or 'selected by developer'}" in client.body
+    assert output.getvalue().splitlines()[-1] == "next: fugue children 2"
+    assert output.getvalue().count("next:") == 1
+
+
+def test_menu_declined_confirmation_does_not_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    chooser = FakeChooser([4, 1, 5], yes=False)
+    session, _ = menu_walkthrough(monkeypatch, client, chooser)
+
+    def forbidden(text: str) -> str:
+        raise AssertionError("Declined selection must not prompt for a reason")
+
+    session.prompt = forbidden
+    asyncio.run(session.run(2))
+    assert client.calls == []
+    assert client.body == BODY
+
+
+@pytest.mark.parametrize("stage", ["menu", "option", "confirm", "reason"])
+@pytest.mark.parametrize("ending", [EOFError, KeyboardInterrupt])
+def test_menu_interruption_leaves_ticket_unchanged(
+    monkeypatch: pytest.MonkeyPatch, stage: str, ending: type[BaseException]
+) -> None:
+    client = FakeClient()
+    actions_by_stage: dict[str, list[int | BaseException | None]] = {
+        "menu": [ending()],
+        "option": [4, ending()],
+        "confirm": [4, 1],
+        "reason": [4, 1],
+    }
+    chooser = FakeChooser(actions_by_stage[stage])
+    session, _ = menu_walkthrough(monkeypatch, client, chooser)
+
+    def interrupted_prompt(text: str) -> str:
+        raise ending()
+
+    def interrupted_confirm(message: str, default: bool = False) -> bool:
+        raise ending()
+
+    if stage == "confirm":
+        monkeypatch.setattr(chooser, "confirm", interrupted_confirm)
+    session.prompt = interrupted_prompt
+    asyncio.run(session.run(2))
+    assert client.calls == []
+    assert client.body == BODY
+
+
+@pytest.mark.parametrize("actions", [[None], [4, None]])
+def test_menu_cancel_leaves_ticket_unchanged(
+    monkeypatch: pytest.MonkeyPatch, actions: list[int | None]
+) -> None:
+    client = FakeClient()
+    session, _ = menu_walkthrough(monkeypatch, client, FakeChooser(actions))
+    asyncio.run(session.run(2))
+    assert client.calls == []
+
+
+def test_cli_direct_selection_never_prompts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = FakeClient()
+    chooser = FakeChooser([])
+    session, output = menu_walkthrough(monkeypatch, client, chooser)
+
+    def forbidden(text: str) -> str:
+        raise AssertionError("Direct selection must not prompt")
+
+    session.prompt = forbidden
+    monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
+    result = runner.invoke(
+        cli_app.app,
+        [
+            "question",
+            "2",
+            "--repo-root",
+            str(tmp_path),
+            "--select",
+            "2",
+            "--reason",
+            "Fits our needs",
+            "--by",
+            "developer",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert chooser.calls == []
+    assert chooser.confirmations == []
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
+    assert "**Why this one:** Fits our needs" in client.body
+    assert output.getvalue().splitlines()[-1] == "next: fugue children 2"
+
+
+def test_non_terminal_keeps_typed_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    adapter = ScriptedAdapter([ScriptStep()])
+    chooser = FakeChooser([])
+    session, output = walkthrough(client, ["1", "c", "a", "Why?", "s 2"], adapter)
+    session._chooser = chooser
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    asyncio.run(session.run(2))
+    assert chooser.calls == []
+    assert "Existing workflow." in output.getvalue()
+    assert "Compare options" in output.getvalue()
+    assert len(adapter.requests) == 1
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
+    assert output.getvalue().splitlines()[-1] == "next: fugue children 2"
