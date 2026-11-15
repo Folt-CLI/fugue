@@ -117,6 +117,26 @@ def _deprecated_report(
     return decorate
 
 
+_SupersededParams = ParamSpec("_SupersededParams")
+
+
+def _superseded(
+    target: typer.Typer, name: str, old: str
+) -> Callable[[Callable[_SupersededParams, None]], Callable[_SupersededParams, None]]:
+    """Hide a command that `fugue run` now covers; it still runs, with a warning."""
+
+    def decorate(body: Callable[_SupersededParams, None]) -> Callable[_SupersededParams, None]:
+        @wraps(body)
+        def alias(*args: _SupersededParams.args, **kwargs: _SupersededParams.kwargs) -> None:
+            terminal.deprecated_name(f"fugue {old}", "fugue run", "0.4.0")
+            body(*args, **kwargs)
+
+        target.command(name, hidden=True)(alias)
+        return body
+
+    return decorate
+
+
 ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to fugue.toml.")]
 RepoRootOption = Annotated[
     Path | None, typer.Option("--repo-root", help="Repository root (default: Git top level).")
@@ -802,14 +822,14 @@ def _execute(
         raise typer.Exit(_STATE_EXIT_CODES.get(result.state, 0))
 
 
-@review_app.command("start")
+@_superseded(review_app, "start", "review start")
 def review(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Run a review of the pull request head."""
     _execute(lambda engine: asyncio.run(engine.run_review(run_id)), config, repo_root)
 
 
 @_deprecated_command("decide", "review decide")
-@review_app.command("decide")
+@_superseded(review_app, "decide", "review decide")
 def decide(
     run_id: int,
     accept: Annotated[list[int] | None, typer.Option("--accept")] = None,
@@ -844,7 +864,7 @@ def decide(
 
 
 @_deprecated_command("request-approval", "approval request")
-@approval_app.command("request")
+@_superseded(approval_app, "request", "approval request")
 def request_approval(
     run_id: int,
     config: ConfigOption = None,
@@ -866,7 +886,7 @@ def request_approval(
 
 
 @_deprecated_command("approve", "approval record")
-@approval_app.command("record")
+@_superseded(approval_app, "record", "approval record")
 def approve(
     run_id: int,
     reason: Annotated[str, typer.Option("--reason", help="Reason for approval.")],
