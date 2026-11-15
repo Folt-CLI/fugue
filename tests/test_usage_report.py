@@ -157,7 +157,8 @@ def test_usage_command(state_dir: Path, tmp_path: Path) -> None:
     with Store(state_dir / "fugue.db") as store:
         seed(store)
     result = runner.invoke(
-        cli_app.app, ["usage", "--by", "ticket", "--ticket", "6", "--repo-root", str(tmp_path)]
+        cli_app.app,
+        ["report", "usage", "--by", "ticket", "--ticket", "6", "--repo-root", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     assert "ticket" in result.output
@@ -166,7 +167,9 @@ def test_usage_command(state_dir: Path, tmp_path: Path) -> None:
 
 
 def test_usage_command_rejects_bad_grouping(state_dir: Path, tmp_path: Path) -> None:
-    result = runner.invoke(cli_app.app, ["usage", "--by", "stage", "--repo-root", str(tmp_path)])
+    result = runner.invoke(
+        cli_app.app, ["report", "usage", "--by", "stage", "--repo-root", str(tmp_path)]
+    )
     assert result.exit_code == 2
 
 
@@ -174,11 +177,12 @@ def test_timing_command(state_dir: Path, tmp_path: Path) -> None:
     with Store(state_dir / "fugue.db") as store:
         run = store.create_run(5, "o/r")
         store.finish_attempt(store.begin_attempt(run.id, "load").id, "completed")
-    ok = runner.invoke(cli_app.app, ["timing", "1", "--repo-root", str(tmp_path)])
+    ok = runner.invoke(cli_app.app, ["report", "timing", "1", "--repo-root", str(tmp_path)])
     assert ok.exit_code == 0, ok.output
     assert "load" in ok.output
-    missing = runner.invoke(cli_app.app, ["timing", "9", "--repo-root", str(tmp_path)])
+    missing = runner.invoke(cli_app.app, ["report", "timing", "9", "--repo-root", str(tmp_path)])
     assert missing.exit_code == 2
+    assert missing.stderr == "error: Unknown run id 9\nnext: fugue report runs\n"
 
 
 def seed_two_repos(store: Store) -> None:
@@ -231,13 +235,15 @@ def test_reports_repo_option(state_dir: Path, tmp_path: Path) -> None:
     with Store(state_dir / "fugue.db") as store:
         seed_two_repos(store)
     base = ["--repo-root", str(tmp_path)]
-    both = runner.invoke(cli_app.app, ["usage", "--by", "ticket", *base])
+    both = runner.invoke(cli_app.app, ["report", "usage", "--by", "ticket", *base])
     assert "o/one" in both.output and "o/two" in both.output
-    one = runner.invoke(cli_app.app, ["usage", "--by", "ticket", "--repo", "o/one", *base])
+    one = runner.invoke(
+        cli_app.app, ["report", "usage", "--by", "ticket", "--repo", "o/one", *base]
+    )
     assert "o/one" in one.output and "o/two" not in one.output
-    none = runner.invoke(cli_app.app, ["usage", "--repo", "o/none", *base])
+    none = runner.invoke(cli_app.app, ["report", "usage", "--repo", "o/none", *base])
     assert none.output.strip() == "No usage records."
-    timing = runner.invoke(cli_app.app, ["timing", "--repo", "o/two", *base])
+    timing = runner.invoke(cli_app.app, ["report", "timing", "--repo", "o/two", *base])
     assert "o/two" in timing.output and "o/one" not in timing.output
-    empty = runner.invoke(cli_app.app, ["timing", "--repo", "o/none", *base])
+    empty = runner.invoke(cli_app.app, ["report", "timing", "--repo", "o/none", *base])
     assert empty.output.strip() == "No stage attempts."

@@ -61,10 +61,10 @@ def test_no_colour_keeps_meaning_in_text(env: dict[str, str]) -> None:
     console, sink = terminal_console(env)
     terminal.print_text("error: failed", console=console)
     terminal.print_text("warning: metered", console=console)
-    terminal.print_text("next: fugue status", console=console)
+    terminal.print_text("next: fugue report runs", console=console)
     out = sink.getvalue()
     stripped = re.sub(r"\x1b\[[0-9;]*m", "", out)
-    assert stripped == "error: failed\nwarning: metered\nnext: fugue status\n"
+    assert stripped == "error: failed\nwarning: metered\nnext: fugue report runs\n"
     if env.get("TERM") == "dumb":
         assert ESCAPE not in out
     else:
@@ -163,10 +163,10 @@ def test_table_cells_with_brackets_are_literal() -> None:
 
 
 def test_error_goes_to_stderr_with_next_step(capsys: pytest.CaptureFixture[str]) -> None:
-    terminal.error("Unknown run id 9", "fugue status")
+    terminal.error("Unknown run id 9", "fugue report runs")
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "error: Unknown run id 9\nnext: fugue status\n"
+    assert captured.err == "error: Unknown run id 9\nnext: fugue report runs\n"
 
 
 @pytest.mark.parametrize("width", [20, 200])
@@ -202,9 +202,10 @@ def test_unknown_run_id_prints_next_step_and_keeps_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    result = runner.invoke(cli_app.app, ["status", "9", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "9", "--repo-root", str(tmp_path)])
     assert result.exit_code == cli_app.EXIT_USAGE
-    assert "error: Unknown run id 9\nnext: fugue status\n" in result.output
+    assert result.stdout == ""
+    assert result.stderr == "error: Unknown run id 9\nnext: fugue report runs\n"
 
 
 class FakeStatus:

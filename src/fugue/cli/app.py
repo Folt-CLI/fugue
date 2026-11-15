@@ -7,8 +7,9 @@ import os
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
+from functools import wraps
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, ParamSpec, Protocol
 
 import typer
 
@@ -42,6 +43,27 @@ reviewer_app = typer.Typer(no_args_is_help=True)
 app.add_typer(reviewer_app, name="reviewer-app", help="Set up a reviewer identity.")
 config_app = typer.Typer(no_args_is_help=True)
 app.add_typer(config_app, name="config", help="Inspect configuration.")
+
+report_app = typer.Typer(no_args_is_help=True)
+app.add_typer(report_app, name="report", help="Inspect runs and repository reports.")
+
+_ReportParams = ParamSpec("_ReportParams")
+
+
+def _deprecated_report(
+    old: str, new: str
+) -> Callable[[Callable[_ReportParams, None]], Callable[_ReportParams, None]]:
+    def decorate(body: Callable[_ReportParams, None]) -> Callable[_ReportParams, None]:
+        @wraps(body)
+        def alias(*args: _ReportParams.args, **kwargs: _ReportParams.kwargs) -> None:
+            terminal.deprecated_name(f"fugue {old}", f"fugue report {new}", "0.4.0")
+            body(*args, **kwargs)
+
+        app.command(old, hidden=True)(alias)
+        return body
+
+    return decorate
+
 
 ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to fugue.toml.")]
 RepoRootOption = Annotated[
@@ -550,7 +572,8 @@ def run(
     raise _run_batch(loaded, root_path, engine, tickets, to_green)
 
 
-@app.command()
+@_deprecated_report("status", "runs")
+@report_app.command("runs")
 def status(
     run_id: Annotated[int | None, typer.Argument()] = None,
     ticket: Annotated[
@@ -570,7 +593,7 @@ def status(
         try:
             detail = wiring.load_run_detail(store, run_id)
         except StoreError as error:
-            raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
+            raise _fail(f"Unknown run id {run_id}", next_step="fugue report runs") from error
         if ticket is not None and detail.run.ticket_number != ticket:
             raise _fail(f"Run {run_id} is not for ticket #{ticket}")
         _print(render.render_run_detail(detail))
@@ -578,7 +601,8 @@ def status(
         store.close()
 
 
-@app.command()
+@_deprecated_report("usage", "usage")
+@report_app.command("usage")
 def usage(
     by: Annotated[
         Literal["role", "provider", "run", "ticket"],
@@ -600,7 +624,8 @@ def usage(
         store.close()
 
 
-@app.command()
+@_deprecated_report("timing", "timing")
+@report_app.command("timing")
 def timing(
     run_id: Annotated[int | None, typer.Argument()] = None,
     repo: RepoFilterOption = None,
@@ -615,7 +640,7 @@ def timing(
             try:
                 store.get_run(run_id)
             except StoreError as error:
-                raise _fail(f"Unknown run id {run_id}", next_step="fugue status") from error
+                raise _fail(f"Unknown run id {run_id}", next_step="fugue report runs") from error
         _print(render.render_timing(store.stage_durations(run_id, repo)))
     finally:
         store.close()
@@ -795,7 +820,8 @@ def question(
         raise _fail(str(error), 4) from error
 
 
-@app.command()
+@_deprecated_report("overview", "overview")
+@report_app.command("overview")
 def overview(
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,

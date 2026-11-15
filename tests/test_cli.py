@@ -513,7 +513,7 @@ def test_render_skip_lists_blockers() -> None:
 
 def test_status_lists_recent_runs(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "#5" in result.output
     assert "#6" in result.output
@@ -523,7 +523,9 @@ def test_status_lists_recent_runs(isolated_state: Path, tmp_path: Path) -> None:
 
 def test_status_ticket_filter(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "--ticket", "5", "--repo-root", str(tmp_path)])
+    result = runner.invoke(
+        cli_app.app, ["report", "runs", "--ticket", "5", "--repo-root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "#5" in result.output
     assert "#6" not in result.output
@@ -534,18 +536,18 @@ def test_status_lists_repository_and_filters_by_repo(isolated_state: Path, tmp_p
     with Store(isolated_state / "fugue.db") as store:
         store.create_run(5, "other/repo")
     base = ["--repo-root", str(tmp_path)]
-    everything = runner.invoke(cli_app.app, ["status", *base])
+    everything = runner.invoke(cli_app.app, ["report", "runs", *base])
     assert everything.output.splitlines()[0].split()[:3] == ["id", "repo", "ticket"]
     assert "owner/repo" in everything.output and "other/repo" in everything.output
-    only = runner.invoke(cli_app.app, ["status", "--repo", "other/repo", *base])
+    only = runner.invoke(cli_app.app, ["report", "runs", "--repo", "other/repo", *base])
     assert "other/repo" in only.output and "owner/repo" not in only.output
-    unknown = runner.invoke(cli_app.app, ["status", "--repo", "no/such", *base])
+    unknown = runner.invoke(cli_app.app, ["report", "runs", "--repo", "no/such", *base])
     assert unknown.exit_code == 0
     assert unknown.output.strip() == "No runs."
 
 
 def test_status_without_store_is_empty(tmp_path: Path, isolated_state: Path) -> None:
-    result = runner.invoke(cli_app.app, ["status", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     assert "No runs." in result.output
     assert not isolated_state.exists()
@@ -553,7 +555,7 @@ def test_status_without_store_is_empty(tmp_path: Path, isolated_state: Path) -> 
 
 def test_status_run_detail(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "2", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "2", "--repo-root", str(tmp_path)])
     assert result.exit_code == 0
     output = result.output
     assert "stage attempts:" in output
@@ -568,15 +570,16 @@ def test_status_run_detail(isolated_state: Path, tmp_path: Path) -> None:
 
 def test_status_unknown_run_exits_two(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
-    result = runner.invoke(cli_app.app, ["status", "99", "--repo-root", str(tmp_path)])
+    result = runner.invoke(cli_app.app, ["report", "runs", "99", "--repo-root", str(tmp_path)])
     assert result.exit_code == 2
-    assert "Unknown run id 99" in result.output
+    assert result.stdout == ""
+    assert result.stderr == "error: Unknown run id 99\nnext: fugue report runs\n"
 
 
 def test_status_run_with_mismatched_ticket_exits_two(isolated_state: Path, tmp_path: Path) -> None:
     seed_store(isolated_state)
     result = runner.invoke(
-        cli_app.app, ["status", "2", "--ticket", "5", "--repo-root", str(tmp_path)]
+        cli_app.app, ["report", "runs", "2", "--ticket", "5", "--repo-root", str(tmp_path)]
     )
     assert result.exit_code == 2
 
@@ -664,3 +667,18 @@ def test_render_roles_without_api_key_has_no_warning() -> None:
 def test_render_config_has_no_secret_fields() -> None:
     text = render.render_config(FugueConfig())
     assert "token" not in text.replace("tokens", "").lower()
+
+
+def test_report_help_lists_new_names_and_hides_legacy_names() -> None:
+    root_help = runner.invoke(cli_app.app, ["--help"])
+    assert root_help.exit_code == 0
+    assert "report" in root_help.stdout
+    for old in ("status", "usage", "timing", "overview"):
+        assert old not in root_help.stdout.split()
+    report_help = runner.invoke(cli_app.app, ["report", "--help"])
+    assert report_help.exit_code == 0
+    for name in ("runs", "usage", "timing", "overview"):
+        assert name in report_help.stdout.split()
+    no_command = runner.invoke(cli_app.app, ["report"])
+    assert no_command.exit_code == 2
+    assert "Usage:" in no_command.output

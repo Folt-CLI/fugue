@@ -63,7 +63,7 @@ def install(
 
 def invoke(root: Path, *args: str, columns: str = "200") -> Any:
     runner = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": columns})
-    return runner.invoke(cli_app.app, ["overview", "--repo-root", str(root), *args])
+    return runner.invoke(cli_app.app, ["report", "overview", "--repo-root", str(root), *args])
 
 
 def full_port() -> FakePort:
@@ -296,7 +296,9 @@ def test_outside_a_git_repository_fails_before_any_call(
 ) -> None:
     calls = install(monkeypatch, full_port(), adapter(result("#1 x.")))
     monkeypatch.chdir(tmp_path)
-    outcome = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb"}).invoke(cli_app.app, ["overview"])
+    outcome = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb"}).invoke(
+        cli_app.app, ["report", "overview"]
+    )
     assert outcome.exit_code == 2
     assert "error:" in outcome.output
     assert calls == {"github": 0, "adapter": 0}
