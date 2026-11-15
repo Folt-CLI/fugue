@@ -384,4 +384,26 @@ before retrying. Resume does not grant solution selection or merge approval.
 Usage records contain reported tokens, elapsed time and, where available, cost
 estimates. `n/a` means the provider did not report the value. Estimates are never
 a bill. `report timing` reports stage attempt durations in seconds; an unfinished attempt
-shows `n/a`. See [limitations](limitations.md) for exit codes and recovery advice.
+shows `n/a`. See [limitations](limitations.md) for recovery advice.
+
+## Exit codes
+
+The CLI maps run outcomes to these codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Command completed normally, including a completed run or a run waiting for CI |
+| `2` | Usage, configuration or input error, including an unknown run id |
+| `3` | Run blocked; inspect reported problems and supply the missing prerequisite or decision |
+| `4` | Run failed or an execution error occurred |
+| `5` | Run provider-limited |
+| `6` | Run interrupted |
+| `7` | Run waiting for an answer (`waiting_for_selection`), a decision (`waiting_for_decision`) or merge approval (`waiting_for_merge_approval`) |
+
+For several tickets the highest-precedence code applies: interrupted (6), then
+failed or error (4), provider-limited (5), blocked, skipped or lock-conflicted (3),
+then waiting for an answer, a decision or merge approval (7), otherwise 0.
+Code 7 also applies when continuing a run with `resume`.
+
+An exit code of zero alone does not mean the ticket was merged or that the run
+completed. Check the printed state and `report runs`.

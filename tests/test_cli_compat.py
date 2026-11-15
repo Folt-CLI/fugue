@@ -170,7 +170,7 @@ def test_review_approval_old_names_match_new_names(
         f"warning: fugue {old_name} is deprecated; use fugue {new_name} instead. "
         "It will be removed in 0.4.0.\n" + current.stderr
     )
-    assert current.exit_code == 0
+    assert current.exit_code == (0 if action == "approve" else 7)
 
 
 def test_review_approval_help_hides_old_names() -> None:

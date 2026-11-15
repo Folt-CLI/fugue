@@ -41,6 +41,9 @@ _STATE_EXIT_CODES: dict[str, int] = {
     RunState.FAILED: 4,
     RunState.PROVIDER_LIMITED: 5,
     RunState.INTERRUPTED: 6,
+    RunState.WAITING_FOR_SELECTION: 7,
+    RunState.WAITING_FOR_DECISION: 7,
+    RunState.WAITING_FOR_MERGE_APPROVAL: 7,
 }
 
 
@@ -390,7 +393,7 @@ _BATCH_LOCKED = "locked"
 
 
 def _batch_exit_code(states: list[str]) -> int:
-    """Highest precedence first: interrupted, failed, provider limited, then blocked-like."""
+    """Precedence: interrupted, failed, provider limited, blocked-like, then waiting."""
     if RunState.INTERRUPTED in states:
         return _STATE_EXIT_CODES[RunState.INTERRUPTED]
     if _BATCH_FAILED in states:
@@ -399,6 +402,13 @@ def _batch_exit_code(states: list[str]) -> int:
         return _STATE_EXIT_CODES[RunState.PROVIDER_LIMITED]
     if any(state in {RunState.BLOCKED, _BATCH_SKIPPED, _BATCH_LOCKED} for state in states):
         return _STATE_EXIT_CODES[RunState.BLOCKED]
+    for state in (
+        RunState.WAITING_FOR_SELECTION,
+        RunState.WAITING_FOR_DECISION,
+        RunState.WAITING_FOR_MERGE_APPROVAL,
+    ):
+        if state in states:
+            return _STATE_EXIT_CODES[state]
     return 0
 
 

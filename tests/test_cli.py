@@ -205,6 +205,11 @@ def test_run_ready_ticket_prints_roles_progress_and_pr(
         (RunState.FAILED, 4),
         (RunState.PROVIDER_LIMITED, 5),
         (RunState.INTERRUPTED, 6),
+        (RunState.WAITING_FOR_SELECTION, 7),
+        (RunState.WAITING_FOR_DECISION, 7),
+        (RunState.WAITING_FOR_MERGE_APPROVAL, 7),
+        (RunState.COMPLETED, 0),
+        (RunState.WAITING_FOR_CI, 0),
     ],
 )
 def test_run_outcome_exit_codes(
@@ -214,6 +219,34 @@ def test_run_outcome_exit_codes(
     result = run_command(tmp_path)
     assert result.exit_code == code
     assert "problem: something is wrong" in result.output
+
+
+@pytest.mark.parametrize(
+    ("state", "code"),
+    [
+        (RunState.BLOCKED, 3),
+        (RunState.FAILED, 4),
+        (RunState.PROVIDER_LIMITED, 5),
+        (RunState.INTERRUPTED, 6),
+        (RunState.WAITING_FOR_SELECTION, 7),
+        (RunState.WAITING_FOR_DECISION, 7),
+        (RunState.WAITING_FOR_MERGE_APPROVAL, 7),
+        (RunState.COMPLETED, 0),
+        (RunState.WAITING_FOR_CI, 0),
+    ],
+)
+def test_resume_outcome_exit_codes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: RunState, code: int
+) -> None:
+    async def resume(self: FakeEngine, run_id: int) -> RunOutcome:
+        assert run_id == 2
+        return await self._run(36)
+
+    monkeypatch.setattr(FakeEngine, "resume", resume, raising=False)
+    engines = install_engine(monkeypatch, RunOutcome(2, state))
+    result = runner.invoke(cli_app.app, ["resume", "2", "--repo-root", str(tmp_path)])
+    assert result.exit_code == code, result.output
+    assert engines[0].closed
 
 
 def test_run_keyboard_interrupt_exits_six(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,6 +398,14 @@ def test_batch_ticket_fetch_failure_marks_only_that_ticket(
     ("states", "code"),
     [
         ([RunState.WAITING_FOR_CI, RunState.WAITING_FOR_CI], 0),
+        ([RunState.COMPLETED, RunState.COMPLETED], 0),
+        ([RunState.COMPLETED, RunState.WAITING_FOR_SELECTION], 7),
+        ([RunState.WAITING_FOR_DECISION, RunState.WAITING_FOR_CI], 7),
+        ([RunState.COMPLETED, RunState.WAITING_FOR_MERGE_APPROVAL], 7),
+        ([RunState.WAITING_FOR_DECISION, RunState.BLOCKED], 3),
+        ([RunState.WAITING_FOR_SELECTION, RunState.PROVIDER_LIMITED], 5),
+        ([RunState.WAITING_FOR_MERGE_APPROVAL, RunState.FAILED], 4),
+        ([RunState.WAITING_FOR_DECISION, RunState.INTERRUPTED], 6),
         ([RunState.COMPLETED, RunState.BLOCKED], 3),
         ([RunState.BLOCKED, RunState.PROVIDER_LIMITED], 5),
         ([RunState.PROVIDER_LIMITED, RunState.FAILED], 4),
@@ -748,7 +789,7 @@ def test_run_selects_parent_driver_and_holds_parent_lock(
     monkeypatch.setattr(cli_app, "engine_factory", factory)
     monkeypatch.setattr(cli_app, "run_parent", parent)
     result = run_command(tmp_path, "--to-green")
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 7, result.output
     assert "next: fugue question 5" in result.output
     assert engines[0].tickets == []
     assert engines[0].closed

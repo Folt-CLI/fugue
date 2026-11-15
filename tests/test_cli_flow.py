@@ -123,6 +123,9 @@ def invoke(tmp_path: Path, *args: str) -> tuple[int, str]:
         (RunState.FAILED, 4),
         (RunState.PROVIDER_LIMITED, 5),
         (RunState.INTERRUPTED, 6),
+        (RunState.WAITING_FOR_SELECTION, 7),
+        (RunState.WAITING_FOR_DECISION, 7),
+        (RunState.WAITING_FOR_MERGE_APPROVAL, 7),
     ],
 )
 def test_commands_dispatch_and_exit(
@@ -145,7 +148,7 @@ def test_commands_dispatch_and_exit(
 
 def test_run_to_green(tmp_path: Path, engine: FakeEngine) -> None:
     code, _ = invoke(tmp_path, "run", "41", "--to-green")
-    assert code == 0
+    assert code == 7
     assert engine.calls == [("green", 41)]
     assert engine.closed
 
@@ -161,7 +164,7 @@ def test_findings_and_notes(tmp_path: Path, engine: FakeEngine) -> None:
         notes=("Review posted as COMMENT",),
     )
     code, output = invoke(tmp_path, "review", "start", "7")
-    assert code == 0
+    assert code == 7
     for text in [
         "Blocking",
         "Non-blocking",
@@ -189,7 +192,7 @@ def test_decisions(tmp_path: Path, engine: FakeEngine) -> None:
         "--reject",
         "2:reason text: with colon",
     )
-    assert code == 0
+    assert code == 7
     assert engine.calls == [
         (
             "decide",
