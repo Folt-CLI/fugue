@@ -17,6 +17,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [capability](#capability)
 - [chat component](#chat-component)
 - [child](#child)
+- [choice prompt](#choice-prompt)
 - [Component](#component)
 - [conversation attachment](#conversation-attachment)
 - [cool-down](#cool-down)
@@ -28,6 +29,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [interview](#interview)
 - [interview record](#interview-record)
 - [issue type](#issue-type)
+- [line chooser](#line-chooser)
 - [milestone](#milestone)
 - [model override](#model-override)
 - [model tier](#model-tier)
@@ -35,6 +37,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [operation](#operation)
 - [orchestrator](#orchestrator)
 - [parent](#parent)
+- [prompt chooser](#prompt-chooser)
 - [provider adapter](#provider-adapter)
 - [provider fallback](#provider-fallback)
 - [Question](#question)
@@ -251,6 +254,12 @@ the reusable conversation loop with streaming output, an input line, slash comma
 
 Status: decided.
 
+### choice prompt
+
+a decision point that presents labelled choices and returns a zero-based choice index, or no choice on cancellation. Confirmations use the same port with Yes and No choices.
+
+Status: decided.
+
 ### conversation attachment
 
 the `<N>-conversation.md` file uploaded by `fugue new` or `fugue question`: verbatim turns with strings matching known token patterns redacted. The creation form holds the final preview and decision; the Question form holds the mode and decision.
@@ -281,6 +290,12 @@ the local state of one interview at `<state_dir>/interviews/<owner>__<name>__<N>
 
 Status: decided.
 
+### line chooser
+
+the choice prompt implementation that reads numbered answers from a line of input; Enter selects the default and q or end of input cancels.
+
+Status: decided.
+
 ### model override
 
 a per-run tier or explicit model identifier on the command line that outranks configuration.
@@ -296,6 +311,12 @@ Status: decided.
 ### operation
 
 one external mutation (GitHub, Git, filesystem outside the run store) recorded with an intent before and a result after, so a restart can reconcile.
+
+Status: decided.
+
+### prompt chooser
+
+the terminal choice prompt implementation that uses arrow keys and Enter to select, Esc to cancel, and falls back to the line chooser when terminal startup fails.
 
 Status: decided.
 
