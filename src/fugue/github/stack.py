@@ -2,6 +2,7 @@
 
 import json
 import re
+import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,14 +102,17 @@ class StackClient:
         )
         return await self._run("link", *existing, branch)
 
-    async def find_stack(self, branch: str) -> str | list[str] | None:
-        """Find a tracked layer in shared state, including from a new worktree."""
+    async def _tracking_path(self) -> Path:
         result = await self._result(
             "git", "rev-parse", "--path-format=absolute", "--git-common-dir"
         )
         if result.returncode:
             raise GitHubError(result.argv, result.stderr)
-        path = Path(result.stdout.strip()) / "gh-stack"
+        return Path(result.stdout.strip()) / "gh-stack"
+
+    async def find_stack(self, branch: str) -> str | list[str] | None:
+        """Find a tracked layer in shared state, including from a new worktree."""
+        path = await self._tracking_path()
         try:
             state = json.loads(path.read_text())
         except FileNotFoundError:
@@ -130,6 +134,40 @@ class StackClient:
         if len(matches) > 1:
             raise ValueError(f"Branch {branch!r} belongs to multiple tracked stacks")
         return matches[0] if matches else None
+
+    async def track(self, lower: str, branch: str) -> None:
+        """Track a linked layer locally; caller holds the repository lock."""
+        if await self.find_stack(lower) is None:
+            raise ValueError(f"Lower branch {lower!r} has no tracked stack")
+        path = await self._tracking_path()
+        state = json.loads(path.read_text())
+        stack = next(
+            stack
+            for stack in state["stacks"]
+            if any(layer["branch"] == lower for layer in stack["branches"])
+        )
+        branches = [layer["branch"] for layer in stack["branches"]]
+        if branch in branches:
+            if branches.index(branch) != branches.index(lower) + 1:
+                raise ValueError("Linked branch is not directly above the lower branch")
+            return
+        if await self.find_stack(branch) is not None:
+            raise ValueError(f"Branch {branch!r} belongs to another tracked stack")
+        if branches[-1] != lower:
+            raise ValueError("The lower branch is not the top tracked layer")
+        heads: list[str] = []
+        for name in (lower, branch):
+            result = await self._result("git", "rev-parse", "--verify", f"refs/heads/{name}")
+            if result.returncode or not result.stdout.strip():
+                raise GitHubError(
+                    result.argv, result.stderr or "Cannot resolve tracked branch head"
+                )
+            heads.append(result.stdout.strip())
+        stack["branches"].append({"branch": branch, "head": heads[1], "base": heads[0]})
+        with tempfile.TemporaryDirectory(dir=path.parent, prefix=".gh-stack-") as directory:
+            temporary = Path(directory) / "state"
+            temporary.write_text(json.dumps(state, indent=2) + "\n")
+            temporary.replace(path)
 
     async def submit(self) -> str:
         return await self._run("submit")

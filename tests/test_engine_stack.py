@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from typing import Literal
 
 import pytest
 from test_engine_to_pr import Harness, git_command, result
@@ -17,14 +18,19 @@ from fugue.models import Status, Ticket
 from fugue.workflow import RunState
 
 
+@pytest.mark.parametrize("interruption", ["none", "before_tracking", "after_tracking"])
 def test_third_layer_joins_one_stack_and_each_delivered_pr_is_ready(
-    stacked: tuple[Harness, FakeStack, str], monkeypatch: pytest.MonkeyPatch
+    stacked: tuple[Harness, FakeStack, str],
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: Literal["none", "before_tracking", "after_tracking"],
 ) -> None:
     h, fake, bottom = stacked
     assert h.run().state == RunState.WAITING_FOR_CI
     middle_ticket = h.github.ticket
     middle = branch_name(middle_ticket)
     middle_pr = h.github.pr
+    state_path = h.deps.repo_root / ".git" / "gh-stack"
+    original_state = json.loads(state_path.read_text())
     h.github.ticket = middle_ticket.model_copy(
         update={
             "number": 34,
@@ -52,16 +58,38 @@ def test_third_layer_joins_one_stack_and_each_delivered_pr_is_ready(
     h.deps.registry.register("codex", lambda config: adapter)
     monkeypatch.setattr(h.github, "get_ticket", get_ticket)
     monkeypatch.setattr(h.github, "find_pr", find_pr)
+    if interruption != "none":
+        original_track = fake.track
+
+        async def interrupted_track(lower: str, branch: str) -> None:
+            if interruption == "after_tracking":
+                await original_track(lower, branch)
+            raise RuntimeError("interrupted local tracking")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(fake, "track", interrupted_track)
+            with pytest.raises(RuntimeError, match="interrupted local tracking"):
+                asyncio.run(Engine(h.deps).run_to_pr(34))
+        assert fake.submits == 1
+        assert fake.ready == [middle]
+        assert len(fake.metadata) == 1
     outcome = asyncio.run(Engine(h.deps).run_to_pr(34))
     assert outcome.state == RunState.WAITING_FOR_CI, outcome.problems
     upper = branch_name(h.github.ticket)
     assert fake.branches == [bottom, middle, upper]
     assert fake.initializations == 1
-    assert fake.links == [("168", upper)]
+    assert fake.links == [("168", upper)] * (2 if interruption == "before_tracking" else 1)
     assert fake.ready == [middle, upper]
     assert fake.submits == 2
-    state = json.loads((h.deps.repo_root / ".git" / "gh-stack").read_text())
+    state = json.loads(state_path.read_text())
     assert len(state["stacks"]) == 1
+    assert state["stacks"][0]["branches"][:2] == original_state["stacks"][0]["branches"]
+    tracked_upper = state["stacks"][0]["branches"][2]
+    assert tracked_upper == {
+        "branch": upper,
+        "head": outcome.head_sha,
+        "base": asyncio.run(git_command(h.deps.repo_root, "rev-parse", middle)),
+    }
     assert asyncio.run(git_command(h.deps.repo_root, "branch", "--show-current")) == "develop"
     assert asyncio.run(fake.view()) == " ".join([bottom, middle, upper])
 

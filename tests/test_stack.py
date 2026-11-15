@@ -143,7 +143,13 @@ class FakeStack(StackClient):
     async def _result(self, *argv: str) -> CommandResult:
         if argv == ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"):
             return command_result(argv, str(self.cwd / ".git"))
+        if argv[:3] == ("git", "rev-parse", "--verify"):
+            return command_result(argv, await git_command(self.cwd, *argv[1:]))
         if argv == ("gh", "stack", "view"):
+            tracking = self.cwd / ".git" / "gh-stack"
+            if tracking.exists():
+                state = json.loads(tracking.read_text())
+                self.branches = [layer["branch"] for layer in state["stacks"][0]["branches"]]
             code = 0 if self.branches else 2
             self.view_codes.append(code)
             return replace(
@@ -192,12 +198,12 @@ class FakeStack(StackClient):
     async def link(self, stack_number_or_branches: str | Sequence[str], branch: str) -> str:
         self.links.append((stack_number_or_branches, branch))
         assert stack_number_or_branches == "168" or list(stack_number_or_branches) == self.branches
-        if branch not in self.branches:
-            self.branches.append(branch)
-        self.save_stack()
         return ""
 
     async def submit(self) -> str:
+        state = json.loads((self.cwd / ".git" / "gh-stack").read_text())
+        self.branches = [layer["branch"] for layer in state["stacks"][0]["branches"]]
+        assert branch_name(self.harness.github.ticket) in self.branches, "no locally tracked stack"
         if self.interrupt:
             self.interrupt = False
             raise RuntimeError("interrupted before submit")
@@ -739,6 +745,101 @@ def test_find_stack_command_failure_stops(tmp_path: Path) -> None:
 
     with pytest.raises(GitHubError):
         asyncio.run(StackClient(tmp_path, runner=runner).find_stack("lower"))
+
+
+@pytest.mark.parametrize(
+    "lower,branch,failed_ref",
+    [
+        ("missing", "upper", None),
+        ("bottom", "upper", None),
+        ("lower", "bottom", None),
+        ("lower", "other", None),
+        ("lower", "upper", "lower"),
+        ("lower", "upper", "upper"),
+    ],
+)
+def test_track_failure_preserves_existing_tracking(
+    tmp_path: Path, lower: str, branch: str, failed_ref: str | None
+) -> None:
+    path = tmp_path / "gh-stack"
+    original = json.dumps(
+        {
+            "stacks": [
+                {"number": 168, "branches": [{"branch": "bottom"}, {"branch": "lower"}]},
+                {"number": 169, "branches": [{"branch": "other"}]},
+            ]
+        }
+    )
+    path.write_text(original)
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        if argv[-1] == "--git-common-dir":
+            return command_result(argv, str(tmp_path))
+        assert argv[:3] == ("git", "rev-parse", "--verify")
+        return command_result(argv, "a" * 40, int(argv[-1] == f"refs/heads/{failed_ref}"))
+
+    with pytest.raises(GitHubError if failed_ref else ValueError):
+        asyncio.run(StackClient(tmp_path, runner=runner).track(lower, branch))
+    assert path.read_text() == original
+
+
+def test_track_is_idempotent_and_preserves_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "gh-stack"
+    state = {
+        "schemaVersion": 1,
+        "repository": "owner/repo",
+        "stacks": [
+            {
+                "id": "existing",
+                "number": 168,
+                "trunk": {"branch": "develop", "head": "trunk"},
+                "branches": [
+                    {"branch": "lower", "head": "lower-head", "pullRequest": {"number": 70}}
+                ],
+            },
+            {"number": 169, "branches": [{"branch": "other"}]},
+        ],
+    }
+    path.write_text(json.dumps(state))
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        if argv[-1] == "--git-common-dir":
+            return command_result(argv, str(tmp_path))
+        assert argv[:3] == ("git", "rev-parse", "--verify")
+        return command_result(
+            argv, "lower-head" if argv[-1] == "refs/heads/lower" else "upper-head"
+        )
+
+    client = StackClient(tmp_path, runner=runner)
+    asyncio.run(client.track("lower", "upper"))
+    updated = json.loads(path.read_text())
+    assert updated["stacks"][0]["branches"].pop() == {
+        "branch": "upper",
+        "head": "upper-head",
+        "base": "lower-head",
+    }
+    assert updated == state
+    saved = path.read_bytes()
+    asyncio.run(client.track("lower", "upper"))
+    assert path.read_bytes() == saved
+
+
+def test_track_failed_save_preserves_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "gh-stack"
+    original = '{"stacks": [{"branches": [{"branch": "lower"}]}]}'
+    path.write_text(original)
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        return command_result(argv, str(tmp_path) if argv[-1] == "--git-common-dir" else "a" * 40)
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("cannot save tracking")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="cannot save tracking"):
+        asyncio.run(StackClient(tmp_path, runner=runner).track("lower", "upper"))
+    assert path.read_text() == original
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_find_stack_rejects_ambiguous_layer(tmp_path: Path) -> None:

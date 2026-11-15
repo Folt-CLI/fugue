@@ -1072,11 +1072,6 @@ class Engine:
                 remote = await Git(identity.path)._run(
                     "ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}"
                 )
-                if (
-                    remote.split()[:1] == [head]
-                    and await self.deps.github.find_pr(identity.branch) is not None
-                ):
-                    return
 
                 async def initialize() -> None:
                     view = await stack.view()
@@ -1086,8 +1081,14 @@ class Engine:
                             await stack.init(self.deps.base_branch, [lower, identity.branch])
                         else:
                             await stack.link(existing, identity.branch)
+                            await stack.track(lower, identity.branch)
 
                 await self._operation(run_id, "stack_init", {"branch": identity.branch}, initialize)
+                if (
+                    remote.split()[:1] == [head]
+                    and await self.deps.github.find_pr(identity.branch) is not None
+                ):
+                    return
                 await stack.submit()
 
             await self._operation(
