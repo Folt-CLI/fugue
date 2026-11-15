@@ -5,14 +5,33 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from test_engine_ci import Harness
+from test_engine_ci import harness as harness
 
 from fugue.engine.ci import read_checks
 from fugue.github import CheckResult, GitHubClient, GitHubError, PullRequest
 from fugue.github.client import EmptyJSONReply
 from fugue.process import CommandResult
+from fugue.workflow import RunState
 
 PR = PullRequest(27, "https://github.com/example/fugue/pull/27")
 VALID = '[{"name": "unit", "bucket": "pass", "link": "check-link"}]'
+
+
+@pytest.mark.parametrize("empty_count", [1, 2])
+def test_monitor_recovers_from_empty_check_replies(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, empty_count: int
+) -> None:
+    runner = AsyncMock(side_effect=[reply("")] * empty_count + [reply(VALID)])
+    client = GitHubClient("example/fugue", "example", 2, runner=runner)
+    monkeypatch.setattr(harness.github, "checks", client.checks)
+
+    outcome = harness.run()
+
+    assert outcome.ci_green
+    assert outcome.state == RunState.RUNNING
+    assert runner.await_count == empty_count + 1
+    assert harness.clock.sleeps == []
 
 
 def reply(stdout: str, code: int = 0) -> CommandResult:

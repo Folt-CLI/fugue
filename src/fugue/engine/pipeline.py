@@ -29,6 +29,7 @@ from fugue.engine.ci import (
     actions_run_key,
     ci_repair_prompt,
     classify_failure,
+    read_checks,
     summarize_checks,
 )
 from fugue.engine.closure import close_comment, close_step, gate_passed, review_clean
@@ -1172,7 +1173,7 @@ class Engine:
         started = self.deps.clock()
         while True:
             store.set_run_state(run_id, RunState.WAITING_FOR_CI)
-            summary = summarize_checks(await port.checks(pr))
+            summary = summarize_checks(await read_checks(partial(port.checks, pr)))
             if summary.is_green:
                 head = await Git(identity.path).head_sha()
                 store.set_run_state(run_id, RunState.RUNNING)
