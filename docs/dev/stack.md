@@ -15,6 +15,10 @@
   application. This replaces the Rich-only decision
   ([#95](https://github.com/Folt-CLI/fugue/issues/95)) after the developer
   selected Option 2 on [#147](https://github.com/Folt-CLI/fugue/issues/147).
+  `questionary` draws the select, checkbox and confirmation prompts on top of
+  `prompt_toolkit`, which stays the base for choice prompts; Rich keeps the
+  panels, tables and Markdown
+  ([#174](https://github.com/Folt-CLI/fugue/issues/174)).
 - Provider adapters drive the unmodified Claude and Codex command-line tools as
   child processes, with no credential handling and no silent API fallback
   ([#7](https://github.com/Folt-CLI/fugue/issues/7)).

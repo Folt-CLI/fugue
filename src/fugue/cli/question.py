@@ -8,10 +8,12 @@ import sys
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import partial
+from io import StringIO
 from pathlib import Path
 from typing import Any, cast
 
 from rich.console import RenderableType
+from rich.text import Text
 
 from fugue.agents import (
     AccessMode,
@@ -352,10 +354,36 @@ class QuestionWalkthrough:
         label = "Question" if is_question else "Ticket"
         if not analysis.options:
             raise ValueError(f"{label} #{number} has no Analysis options")
-        self._markdown(f"# {label} #{number}: {ticket.title}\n\n{analysis.overview}")
-        for option in analysis.options:
-            self.print(f"{option.number}: {option.name}")
-        self._markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}")
+        menu = (
+            select is None
+            and sys.stdin.isatty()
+            and terminal.is_interactive(self._console or terminal.console_for())
+        )
+        if menu:
+            recommended = re.match(r"Option ([1-9][0-9]*):", analysis.recommendation)
+            recommended_index = next(
+                (
+                    index
+                    for index, option in enumerate(analysis.options)
+                    if recommended and option.number == int(recommended[1])
+                ),
+                None,
+            )
+            output = StringIO()
+            terminal.print_summary(
+                f"{label} #{number}: {ticket.title}",
+                analysis.overview,
+                [option.name for option in analysis.options],
+                recommended_index=recommended_index,
+                console=self._console or terminal.console_for(file=output),
+            )
+            if self._console is None:
+                self.print(Text(output.getvalue().rstrip("\n")))
+        else:
+            self._markdown(f"# {label} #{number}: {ticket.title}\n\n{analysis.overview}")
+            for option in analysis.options:
+                self.print(f"{option.number}: {option.name}")
+            self._markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}")
         if select is not None:
             await record_decision(
                 self.client, number, body, analysis.option(select), reason=reason, by=by
@@ -364,9 +392,6 @@ class QuestionWalkthrough:
             if is_question:
                 self.print(f"next: fugue question {number}")
             return
-        menu = sys.stdin.isatty() and terminal.is_interactive(
-            self._console or terminal.console_for()
-        )
         chooser = (self._chooser or make_chooser()) if menu else None
         recommended = re.match(r"Option ([1-9][0-9]*):", analysis.recommendation)
         labels = [
@@ -380,14 +405,21 @@ class QuestionWalkthrough:
                     action = await asyncio.to_thread(
                         chooser.choose,
                         "Question walkthrough",
-                        [*labels, "Compare options", "Ask a follow-up", "Select an option", "Quit"],
+                        [
+                            *labels,
+                            "Compare options",
+                            "Ask a follow-up",
+                            "Select an option",
+                            "Show full analysis",
+                            "Quit",
+                        ],
                     )
                     if action is None:
                         return
                     if action < len(labels):
                         command = str(analysis.options[action].number)
                     else:
-                        command = ("c", "a", "select", "q")[action - len(labels)]
+                        command = ("c", "a", "select", "full", "q")[action - len(labels)]
                     if command == "select":
                         selection = await asyncio.to_thread(
                             chooser.choose, "Select an option", labels
@@ -414,7 +446,9 @@ class QuestionWalkthrough:
                 return
             if command == "q":
                 return
-            if command == "c":
+            if chooser is not None and command == "full":
+                self._markdown(analysis.text)
+            elif command == "c":
                 rows = [
                     [
                         f"{option.number}: {option.name}",

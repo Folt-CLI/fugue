@@ -312,3 +312,121 @@ def test_use_console_routes_prints(capsys: pytest.CaptureFixture[str]) -> None:
 def test_conftest_isolates_the_host_environment() -> None:
     assert terminal.is_dumb()
     assert not terminal.is_interactive(terminal.console_for())
+
+
+@pytest.mark.parametrize("helper", ["badge", "panel", "summary", "progress"])
+@pytest.mark.parametrize(
+    ("env", "piped", "rich_output"),
+    [
+        ({"COLUMNS": "100"}, False, True),
+        ({"COLUMNS": "60"}, False, True),
+        ({"COLUMNS": "59"}, False, False),
+        ({"NO_COLOR": "1"}, False, False),
+        ({"TERM": "dumb"}, False, False),
+        ({}, True, False),
+    ],
+    ids=["wide", "width-60", "width-59", "no-color", "dumb", "piped"],
+)
+def test_theme_helpers_render_rich_or_control_free_plain_text(
+    helper: str, env: dict[str, str], piped: bool, rich_output: bool
+) -> None:
+    settings = {"TERM": "xterm-256color", "COLUMNS": "100", **env}
+    if piped:
+        sink = StringIO()
+        console = terminal.console_for(settings, file=sink)
+    else:
+        console, sink = terminal_console(settings)
+
+    if helper == "badge":
+        terminal.print_badge("Ready [literal]", console=console)
+        expected = "[Ready [literal]]\n"
+    elif helper == "panel":
+        terminal.print_panel("error: [title]", "warning: [body]", console=console)
+        expected = "error: [title]\nwarning: [body]\n"
+    elif helper == "summary":
+        terminal.print_summary(
+            "error: [title]",
+            "warning: [overview]\nsecond\nthird\nfourth",
+            ["[first]", "[second]"],
+            recommended_index=1,
+            console=console,
+        )
+        expected = (
+            "error: [title]\nwarning: [overview]\nsecond\nthird\n...\n"
+            "1. [first]\n2. [second] (recommended)\n"
+        )
+    else:
+        with terminal.progress_callback(console=console) as progress:
+            assert progress.live is rich_output
+            progress("error: [stage]")
+        expected = "error: [stage]\n"
+
+    output = sink.getvalue()
+    if rich_output:
+        assert COLOUR_CODE.search(output) is not None
+        plain = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", output)
+        if helper in {"panel", "summary"}:
+            assert "╭" in plain
+        if helper == "summary":
+            assert "fourth" not in plain
+            assert "2. [second] (recommended)" in plain
+        elif helper == "badge":
+            assert plain == expected
+    else:
+        assert output == expected
+        assert not any(ord(char) < 32 and char != "\n" for char in output)
+
+
+@pytest.mark.parametrize("overview", ["", "one", "one\ntwo\nthree\n"])
+def test_summary_with_no_options_keeps_short_overview(overview: str) -> None:
+    sink = StringIO()
+    console = terminal.console_for({"TERM": "dumb"}, file=sink)
+    terminal.print_summary("Title", overview, [], console=console)
+    expected = "Title\n"
+    if overview:
+        expected += overview.rstrip("\n") + "\n"
+    assert sink.getvalue() == expected
+
+
+@pytest.mark.parametrize("recommended_index", [None, 0, 1])
+def test_summary_recommendation_is_optional_and_zero_based(recommended_index: int | None) -> None:
+    sink = StringIO()
+    console = terminal.console_for({"TERM": "dumb"}, file=sink)
+    terminal.print_summary(
+        "Title", "", ["First", "Last"], recommended_index=recommended_index, console=console
+    )
+    lines = sink.getvalue().splitlines()
+    assert lines[0] == "Title"
+    for index, name in enumerate(["First", "Last"]):
+        suffix = " (recommended)" if index == recommended_index else ""
+        assert lines[index + 1] == f"{index + 1}. {name}{suffix}"
+
+
+@pytest.mark.parametrize(("options", "index"), [([], 0), (["one"], -1), (["one"], 1)])
+def test_summary_rejects_invalid_recommendation_before_printing(
+    options: list[str], index: int
+) -> None:
+    sink = StringIO()
+    console = terminal.console_for(file=sink)
+    with pytest.raises(ValueError, match="recommended_index"):
+        terminal.print_summary(
+            "Title", "Overview", options, recommended_index=index, console=console
+        )
+    assert sink.getvalue() == ""
+
+
+def test_theme_helpers_share_active_console() -> None:
+    sink = StringIO()
+    console = terminal.console_for({"TERM": "dumb"}, file=sink)
+    with terminal.use_console(console):
+        terminal.print_badge("Ready")
+        terminal.print_summary("Title", "Overview", ["Option"])
+        with terminal.progress_callback() as progress:
+            progress("stage: completed")
+    assert sink.getvalue() == "[Ready]\nTitle\nOverview\n1. Option\nstage: completed\n"
+
+
+def test_theme_styles_are_available_on_command_console() -> None:
+    console, _ = terminal_console({"TERM": "xterm-256color"})
+    for name, style in terminal.THEME.items():
+        assert console.get_style(name) == console.get_style(style)

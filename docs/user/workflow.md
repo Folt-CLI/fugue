@@ -222,6 +222,7 @@ limit only `/proceed`, `/save` and `/quit` accept further input.
 
 `fugue question N --automatic` uses a stand-in to answer from Summary, Scope,
 GLOSSARY.md and the conversation only. Stand-in turns are labelled automatic.
+This mode shows no prompts.
 It proceeds to Analysis on the stand-in's request or the turn limit and stops
 waiting for human selection. It never selects an option. Missing requirements,
 consent, credentials, billing or merge approval require human input (exit 3);
@@ -243,12 +244,20 @@ Browse a Question with existing Analysis options using the selection walkthrough
 uv run fugue question 47
 ```
 
-On an interactive terminal without `--select`, a choice prompt lists each
-option, marking the recommended option `(recommended)` when the Recommendation
-names `Option N`. The menu also offers Compare options, Ask a follow-up,
-Select an option and Quit. Up and Down move between entries, Enter selects,
-Esc cancels the prompt and Ctrl-C leaves the walkthrough. On terminals that
-report the mouse, you can also select an entry with the mouse; keys always work.
+During an interview, the analyst asks through interaction requests shown as
+select prompts for one choice, checkbox prompts for multiple choices,
+confirmation prompts for Yes or No, typed-answer prompts for free text and
+information prompts for messages to acknowledge. In the prompt chooser, Up and
+Down move between entries, Space toggles checkboxes, Enter accepts and Esc
+cancels. Keys always work; mouse behaviour depends on the terminal and the
+prompt library.
+
+On an interactive terminal without `--select`, the selection walkthrough shows
+a compact summary of the Analysis. Choose Show full analysis to read the full
+Analysis. A choice prompt lists each option; when the Recommendation names
+`Option N`, that option has a `(recommended)` badge and is the default. The menu
+also offers Compare options, Ask a follow-up, Select an option and Quit.
+Ctrl-C leaves the walkthrough.
 
 Select an option opens a list of options, then a confirmation prompt naming
 the chosen option, defaulting to No. After confirming, `Reason (optional):`
@@ -279,10 +288,12 @@ proposals display their existing child numbers. Creation prints each key and
 issue number, then `next: fugue run N` for the first ready child. `fugue children`
 with a TOML file remains available as the manual path.
 
-When input or output is not a terminal, `TERM=dumb` is set or the prompt
-library cannot start, the walkthrough falls back to typed commands: a number
-opens an option, `c` compares, `a` asks a follow-up, `s N` selects and `q` quits.
-End of input ends without changes.
+With piped input or output, `NO_COLOR`, `TERM=dumb`, a terminal narrower than
+60 columns or a prompt library that cannot start, prompts fall back to numbered
+lines. Type a number for a single choice or comma-separated numbers for
+checkboxes. The walkthrough accepts typed commands: a number opens an option,
+`c` compares, `a` asks a follow-up, `s N` selects and `q` quits. End of input ends
+without changes.
 
 Alternatively, `--select K --reason R --by B` records the decision without
 any prompt. For a Question it ends with `next: fugue question N`; run that

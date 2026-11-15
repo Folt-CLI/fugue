@@ -15,10 +15,12 @@ from fugue.agents import AccessMode, ScriptedAdapter, ScriptStep
 from fugue.cli import app as cli_app
 from fugue.cli import question as question_module
 from fugue.cli import terminal
+from fugue.cli.choices import ChoiceItem
 from fugue.cli.question import QuestionWalkthrough
 from fugue.engine.facts import scope_url
 from fugue.github.parse import parse_body_sections
 from fugue.models import IssueType, Priority, Role, Size, Status, Ticket
+from fugue.questions.parse import parse_analysis
 
 runner = CliRunner(env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"})
 
@@ -437,12 +439,31 @@ class FakeChooser:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
         self.confirmations: list[str] = []
 
-    def choose(self, message: str, choices: Sequence[str], default: int = 0) -> int | None:
-        self.calls.append((message, tuple(choices)))
+    def choose(
+        self, message: str, choices: Sequence[str | ChoiceItem], default: int = 0
+    ) -> int | None:
+        self.calls.append(
+            (
+                message,
+                tuple(
+                    choice.label if isinstance(choice, ChoiceItem) else choice for choice in choices
+                ),
+            )
+        )
         action = next(self.actions)
         if isinstance(action, BaseException):
             raise action
         return action
+
+    def choose_many(
+        self,
+        message: str,
+        items: Sequence[str | ChoiceItem],
+        defaults: Sequence[int] = (),
+        *,
+        allow_empty: bool = False,
+    ) -> list[int] | None:
+        raise AssertionError("The Question walkthrough must not request multiple choices")
 
     def confirm(self, message: str, default: bool = False) -> bool:
         self.confirmations.append(message)
@@ -471,7 +492,7 @@ def menu_walkthrough(
 def test_menu_browse_compare_follow_up_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     adapter = ScriptedAdapter([ScriptStep()])
-    chooser = FakeChooser([0, 1, 2, 3, 5])
+    chooser = FakeChooser([0, 1, 2, 3, 6])
     session, output = menu_walkthrough(monkeypatch, client, chooser, ["Why?"], adapter)
     asyncio.run(session.run(2))
     assert chooser.calls[0][1][0] == "Option 1: Keep the process (recommended)"
@@ -511,7 +532,7 @@ def test_menu_confirms_and_records_once(monkeypatch: pytest.MonkeyPatch, reason:
 
 def test_menu_declined_confirmation_does_not_record(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
-    chooser = FakeChooser([4, 1, 5], yes=False)
+    chooser = FakeChooser([4, 1, 6], yes=False)
     session, _ = menu_walkthrough(monkeypatch, client, chooser)
 
     def forbidden(text: str) -> str:
@@ -592,6 +613,8 @@ def test_cli_direct_selection_never_prompts(
     assert result.exit_code == 0, result.output
     assert chooser.calls == []
     assert chooser.confirmations == []
+    assert "Show full analysis" not in output.getvalue()
+    assert "### Recommendation" in output.getvalue()
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
     assert "**Why this one:** Fits our needs" in client.body
     assert output.getvalue().splitlines()[-1] == "next: fugue question 2"
@@ -606,11 +629,64 @@ def test_non_terminal_keeps_typed_commands(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     asyncio.run(session.run(2))
     assert chooser.calls == []
+    analysis = parse_analysis(BODY)
+    assert output.getvalue().startswith(
+        f"# Question #2: Select the process\n\n{analysis.overview}\n"
+        "1: Keep the process\n2: Extend the process\n"
+        f"### Recommendation\n\n{analysis.recommendation}\n"
+    )
+    assert "Show full analysis" not in output.getvalue()
+    assert "(recommended)" not in output.getvalue()
     assert "Existing workflow." in output.getvalue()
     assert "Compare options" in output.getvalue()
     assert len(adapter.requests) == 1
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
     assert output.getvalue().splitlines()[-1] == "next: fugue children FILE"
+
+
+@pytest.mark.parametrize("recommendation", ["Option 1: smaller scope.", "", "Option 99: absent."])
+def test_menu_summary_precedes_chooser(
+    monkeypatch: pytest.MonkeyPatch, recommendation: str
+) -> None:
+    client = FakeClient(BODY.replace("Option 1: smaller scope.", recommendation))
+    chooser = FakeChooser([None])
+    session, output = menu_walkthrough(monkeypatch, client, chooser)
+    choose = chooser.choose
+
+    def inspect_summary(
+        message: str, choices: Sequence[str | ChoiceItem], default: int = 0
+    ) -> int | None:
+        text = output.getvalue()
+        assert "Question #2: Select the process" in text
+        assert "\n".join(parse_analysis(client.body).overview.splitlines()[:3]) in text
+        assert "..." in text
+        assert "1. Keep the process" in text
+        assert "2. Extend the process" in text
+        assert ("Keep the process (recommended)" in text) == bool(
+            recommendation.startswith("Option 1:")
+        )
+        assert "Diff size" not in text
+        assert "Recommendation" not in text
+        assert "Show full analysis" in choices
+        return choose(message, choices, default)
+
+    monkeypatch.setattr(chooser, "choose", inspect_summary)
+    asyncio.run(session.run(2))
+    assert client.calls == []
+
+
+def test_menu_full_analysis_prints_complete_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    chooser = FakeChooser([5, 6])
+    session, output = menu_walkthrough(monkeypatch, client, chooser)
+    asyncio.run(session.run(2))
+    text = output.getvalue()
+    assert parse_analysis(BODY).text in text
+    assert "### Recommendation\nOption 1: smaller scope." in text
+    assert "## Solution" not in text
+    assert "## Details" not in text
+    assert len(chooser.calls) == 2
+    assert client.calls == []
 
 
 def test_cli_selected_question_resumes_proposal_directly(

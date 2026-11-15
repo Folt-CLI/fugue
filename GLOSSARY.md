@@ -27,6 +27,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [gate](#gate)
 - [handoff](#handoff)
 - [incident](#incident)
+- [interaction request](#interaction-request)
 - [interview](#interview)
 - [interview record](#interview-record)
 - [issue type](#issue-type)
@@ -34,6 +35,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [milestone](#milestone)
 - [model override](#model-override)
 - [model tier](#model-tier)
+- [multiple-choice prompt](#multiple-choice-prompt)
 - [non-blocking finding](#non-blocking-finding)
 - [operation](#operation)
 - [orchestrator](#orchestrator)
@@ -285,6 +287,12 @@ the schema-validated structured input or output passed between roles at a stage 
 
 Status: decided.
 
+### interaction request
+
+what the analyst asks the person for during an interview, by kind: `single_choice`, `multiple_choice`, `confirmation`, `free_text` or `information`.
+
+Status: decided.
+
 ### interview
 
 the guided conversation between an analyst and a person (or a stand-in) that precedes the analysis of a Question.
@@ -312,6 +320,12 @@ Status: decided.
 ### model tier
 
 one of small, medium or large; configuration maps it per provider to a model identifier.
+
+Status: decided.
+
+### multiple-choice prompt
+
+a choice prompt that accepts several entries.
 
 Status: decided.
 
