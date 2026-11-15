@@ -15,6 +15,7 @@ from fugue.agents import AccessMode, ScriptedAdapter, ScriptStep
 from fugue.cli import app as cli_app
 from fugue.cli import question as question_module
 from fugue.cli import terminal
+from fugue.cli.choices import ChoiceItem
 from fugue.cli.question import QuestionWalkthrough
 from fugue.engine.facts import scope_url
 from fugue.github.parse import parse_body_sections
@@ -437,12 +438,31 @@ class FakeChooser:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
         self.confirmations: list[str] = []
 
-    def choose(self, message: str, choices: Sequence[str], default: int = 0) -> int | None:
-        self.calls.append((message, tuple(choices)))
+    def choose(
+        self, message: str, choices: Sequence[str | ChoiceItem], default: int = 0
+    ) -> int | None:
+        self.calls.append(
+            (
+                message,
+                tuple(
+                    choice.label if isinstance(choice, ChoiceItem) else choice for choice in choices
+                ),
+            )
+        )
         action = next(self.actions)
         if isinstance(action, BaseException):
             raise action
         return action
+
+    def choose_many(
+        self,
+        message: str,
+        items: Sequence[str | ChoiceItem],
+        defaults: Sequence[int] = (),
+        *,
+        allow_empty: bool = False,
+    ) -> list[int] | None:
+        raise AssertionError("The Question walkthrough must not request multiple choices")
 
     def confirm(self, message: str, default: bool = False) -> bool:
         self.confirmations.append(message)
