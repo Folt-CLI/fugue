@@ -97,7 +97,7 @@ solution, use S or XS, not M.
 | Documentation | Describe the documentation change; every PR runs the full required CI check. | `Documentation[#N]: ...` |
 | Test | The whole outcome is test cases; see [Testing](../testing.md#test-tickets). Tests belonging to another change stay in that change's ticket. | `Test[#N]: ...` |
 | Question | Record a decision selected by the developer. Derive children from the answer; write each S/XS child's Solution and required scope at creation, as decided in this Question. The answer does not replace a missing Solution or scope. Close with `Disposition: Answered` only after all children are closed; Done with Answered may precede closure. | `Question[#N]: ...` |
-| Epic | Use only `## Objective` in the body. Follow XL: title `<version> -- Fugue`, group release work, close with `Disposition: Released` after all children close. | `Epic[#N]: ...` |
+| Epic | Use only `## Objective` in the body. Follow XL: title `<version> - Fugue`, group release work, close with `Disposition: Released` after all children close. | `Epic[#N]: ...` |
 | Incident | Follow [Incidents](../incidents.md) for evidence, impact, linked response tickets and resolution; the report is not itself the fix. | `Incident[#N]: ...` |
 
 ## Rules held elsewhere

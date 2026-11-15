@@ -1,6 +1,6 @@
 name: Epic
 description: Describe the objective for a release.
-title: "<version> -- Fugue"
+title: "<version> - Fugue"
 type: Epic
 body:
   - type: textarea
