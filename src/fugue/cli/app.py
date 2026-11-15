@@ -23,6 +23,7 @@ from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.facts import selected_solution
 from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
+from fugue.engine.parent import ParentOutcome, run_parent
 from fugue.engine.review import Decision
 from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
@@ -462,7 +463,14 @@ def _run_single(
                     f"({format_elapsed(lock.recovered.age_seconds)} ago); resuming"
                 )
 
-            async def go() -> RunOutcome:
+            async def go() -> RunOutcome | ParentOutcome:
+                children_reader = getattr(engine.deps.github, "children", None)
+                if children_reader is not None:
+                    children = await children_reader(ticket)
+                    if children:
+                        return await run_parent(
+                            engine.deps, ticket, children, until_green=to_green, parent_locked=True
+                        )
                 # The tier depends on the ticket Size, so the table waits for the ticket.
                 # A bare Engine has no get_ticket; read through its GitHub port instead. An
                 # engine with neither shows the policy table, which needs no Size.
@@ -486,7 +494,16 @@ def _run_single(
         raise _fail(_explain(error, wait), _STATE_EXIT_CODES[RunState.FAILED]) from error
     finally:
         engine.close()
-    _print(render.render_outcome(outcome))
+    if isinstance(outcome, ParentOutcome):
+        for number, result in outcome.outcomes:
+            _print(f"ticket #{number}\n{render.render_outcome(result)}")
+        _print(f"parent run {outcome.parent_run_id}: {outcome.state}")
+        for problem in outcome.problems:
+            _print(f"problem: {problem}")
+        if outcome.next_step is not None:
+            _print(f"next: {outcome.next_step}")
+    else:
+        _print(render.render_outcome(outcome))
     return typer.Exit(_STATE_EXIT_CODES.get(outcome.state, 0))
 
 

@@ -706,3 +706,73 @@ def test_top_level_help_lists_exactly_ten_commands(width: int) -> None:
     }
     for old in ("config", "reviewer-app", "protection"):
         assert old not in result.stdout.split()
+
+
+def test_run_selects_parent_driver_and_holds_parent_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fugue.engine.parent import ParentOutcome
+
+    engines = install_engine(monkeypatch, RunOutcome(1, RunState.WAITING_FOR_CI))
+    original_factory = cli_app.engine_factory
+
+    def factory(
+        config: FugueConfig, root: Path, progress: Callable[[str], None]
+    ) -> cli_app.RunEngine:
+        engine = original_factory(config, root, progress)
+
+        async def children(number: int) -> list[Ticket]:
+            assert number == 36
+            return [make_ticket(5), make_ticket(6)]
+
+        engine.deps.github.children = children  # type: ignore[attr-defined]
+        return engine
+
+    async def parent(
+        deps: object,
+        number: int,
+        children: list[Ticket],
+        *,
+        until_green: bool,
+        parent_locked: bool,
+    ) -> ParentOutcome:
+        assert number == 36
+        assert [ticket.number for ticket in children] == [5, 6]
+        assert until_green and parent_locked
+        from fugue.engine.locks import TicketLocked
+
+        with pytest.raises(TicketLocked), TicketLock(engines[0].deps.state_dir, "o/r", 36):
+            pass
+        return ParentOutcome(1, RunState.WAITING_FOR_DECISION, next_step="fugue question 5")
+
+    monkeypatch.setattr(cli_app, "engine_factory", factory)
+    monkeypatch.setattr(cli_app, "run_parent", parent)
+    result = run_command(tmp_path, "--to-green")
+    assert result.exit_code == 0, result.output
+    assert "next: fugue question 5" in result.output
+    assert engines[0].tickets == []
+    assert engines[0].closed
+
+
+def test_run_without_children_uses_single_ticket_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engines = install_engine(monkeypatch, RunOutcome(1, RunState.WAITING_FOR_CI))
+    original_factory = cli_app.engine_factory
+
+    def factory(
+        config: FugueConfig, root: Path, progress: Callable[[str], None]
+    ) -> cli_app.RunEngine:
+        engine = original_factory(config, root, progress)
+
+        async def children(number: int) -> list[Ticket]:
+            return []
+
+        engine.deps.github.children = children  # type: ignore[attr-defined]
+        return engine
+
+    monkeypatch.setattr(cli_app, "engine_factory", factory)
+    result = run_command(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert engines[0].tickets == [36]
+    assert engines[0].closed
