@@ -121,7 +121,7 @@ def test_report_lists_every_section_without_a_summary(
     assert "blocked by #20, #21" in text
     assert "waiting for a decision" in text and "fugue question 3" in text
     assert "fugue question 4" in text
-    assert "fugue decide 2 --accept INDEX --reject 'INDEX:reason text'" in text
+    assert "fugue review decide 2 --accept INDEX --reject 'INDEX:reason text'" in text
     assert "fugue resume 3" in text
     assert "open pull requests" in text and "aaaaaaa" in text and "aaaaaaaa" not in text
     assert "recently merged pull requests" in text and "merged thirty" in text
@@ -206,7 +206,7 @@ def test_unreachable_github_shows_local_runs_and_exits_zero(
     text = outcome.output
     assert outcome.exit_code == 0
     assert "note: GitHub unreachable (" in text and "); showing local runs only" in text
-    assert "fugue decide 2" in text and "fugue resume 3" in text
+    assert "fugue review decide 2" in text and "fugue resume 3" in text
     assert calls["adapter"] == 0
 
 

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Annotated, Literal, ParamSpec, Protocol
 
 import typer
+from typer import _click
+from typer.core import TyperGroup
 
 from fugue import __version__
 from fugue.analysis.stage import AnalysisGitHubClient, analyse
@@ -38,6 +40,24 @@ _STATE_EXIT_CODES: dict[str, int] = {
     RunState.INTERRUPTED: 6,
 }
 
+
+class _ReviewGroup(TyperGroup):
+    """Route a legacy integer first word to review start."""
+
+    def resolve_command(
+        self, ctx: _click.Context, args: list[str]
+    ) -> tuple[str | None, _click.Command | None, list[str]]:
+        if args:
+            try:
+                int(args[0])
+            except ValueError:
+                pass
+            else:
+                terminal.deprecated_name("fugue review RUN", "fugue review start RUN", "0.4.0")
+                args = ["start", *args]
+        return super().resolve_command(ctx, args)
+
+
 app = typer.Typer(name="fugue", no_args_is_help=True, add_completion=False)
 reviewer_app = typer.Typer(no_args_is_help=True)
 app.add_typer(reviewer_app, name="reviewer-app", help="Set up a reviewer identity.")
@@ -46,6 +66,29 @@ app.add_typer(config_app, name="config", help="Inspect configuration.")
 
 report_app = typer.Typer(no_args_is_help=True)
 app.add_typer(report_app, name="report", help="Inspect runs and repository reports.")
+
+review_app = typer.Typer(no_args_is_help=True, cls=_ReviewGroup)
+app.add_typer(review_app, name="review", help="Start reviews and decide findings.")
+approval_app = typer.Typer(no_args_is_help=True)
+app.add_typer(approval_app, name="approval", help="Request and record approval.")
+
+_CommandParams = ParamSpec("_CommandParams")
+
+
+def _deprecated_command(
+    old: str, new: str
+) -> Callable[[Callable[_CommandParams, None]], Callable[_CommandParams, None]]:
+    def decorate(body: Callable[_CommandParams, None]) -> Callable[_CommandParams, None]:
+        @wraps(body)
+        def alias(*args: _CommandParams.args, **kwargs: _CommandParams.kwargs) -> None:
+            terminal.deprecated_name(f"fugue {old}", f"fugue {new}", "0.4.0")
+            body(*args, **kwargs)
+
+        app.command(old, hidden=True)(alias)
+        return body
+
+    return decorate
+
 
 _ReportParams = ParamSpec("_ReportParams")
 
@@ -674,13 +717,14 @@ def _execute(
         raise typer.Exit(_STATE_EXIT_CODES.get(result.state, 0))
 
 
-@app.command()
+@review_app.command("start")
 def review(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
     """Run a review of the pull request head."""
     _execute(lambda engine: asyncio.run(engine.run_review(run_id)), config, repo_root)
 
 
-@app.command()
+@_deprecated_command("decide", "review decide")
+@review_app.command("decide")
 def decide(
     run_id: int,
     accept: Annotated[list[int] | None, typer.Option("--accept")] = None,
@@ -714,7 +758,8 @@ def decide(
     _execute(lambda engine: asyncio.run(engine.decide(run_id, decisions)), config, repo_root)
 
 
-@app.command("request-approval")
+@_deprecated_command("request-approval", "approval request")
+@approval_app.command("request")
 def request_approval(
     run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None
 ) -> None:
@@ -722,7 +767,8 @@ def request_approval(
     _execute(lambda engine: asyncio.run(engine.request_approval(run_id)), config, repo_root)
 
 
-@app.command()
+@_deprecated_command("approve", "approval record")
+@approval_app.command("record")
 def approve(
     run_id: int,
     reason: Annotated[str, typer.Option("--reason", help="Reason for approval.")],

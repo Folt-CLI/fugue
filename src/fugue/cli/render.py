@@ -157,12 +157,13 @@ def next_step_for(state: str, run_id: int, ticket_number: int) -> str | None:
     """Return the exact command that continues a run in this state, if any."""
     resume = f"fugue resume {run_id}"
     hints: dict[str, str] = {
-        RunState.WAITING_FOR_CI: f"fugue review {run_id}",
+        RunState.WAITING_FOR_CI: f"fugue review start {run_id}",
         RunState.WAITING_FOR_DECISION: (
-            f"fugue decide {run_id} --accept INDEX --reject 'INDEX:reason text'"
+            f"fugue review decide {run_id} --accept INDEX --reject 'INDEX:reason text'"
         ),
         RunState.WAITING_FOR_MERGE_APPROVAL: (
-            f"fugue request-approval {run_id}; then fugue approve {run_id} --reason 'reason text'"
+            f"fugue approval request {run_id}; "
+            f"then fugue approval record {run_id} --reason 'reason text'"
         ),
         RunState.WAITING_FOR_SELECTION: f"fugue question {ticket_number}",
         RunState.INTERRUPTED: resume,

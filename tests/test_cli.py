@@ -280,7 +280,7 @@ def test_batch_labels_progress_and_prints_summary(
         ["#3", "waiting_for_ci", "30", "pull"],
     ]
     assert "pull request #101" in summary
-    assert "#1 next: fugue review 10" in summary
+    assert "#1 next: fugue review start 10" in summary
     assert all(engine.closed for engine in engines)
     assert sorted(t for engine in engines for t in engine.tickets) == [1, 2, 3]
 

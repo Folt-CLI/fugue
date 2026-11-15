@@ -1,5 +1,6 @@
 """Reusable old-name compatibility assertions and isolated harness self-tests."""
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
@@ -133,3 +134,52 @@ def test_report_old_names_match_new_names(
     )
     assert legacy.stderr == notice + current.stderr
     assert not current.stderr.startswith("warning:")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "args", "action"),
+    [
+        (["review"], ["review", "start"], [], "review"),
+        (["decide"], ["review", "decide"], ["--accept", "1"], "decide"),
+        (["request-approval"], ["approval", "request"], [], "request-approval"),
+        (["approve"], ["approval", "record"], ["--reason", "ready", "--by", "user"], "approve"),
+    ],
+)
+def test_review_approval_old_names_match_new_names(
+    old: list[str],
+    new: list[str],
+    args: list[str],
+    action: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_cli_flow import FakeEngine
+
+    fake = FakeEngine()
+    monkeypatch.setattr(cli_app, "engine_factory", lambda *args: fake)
+    options = ["3", *args, "--repo-root", str(tmp_path)]
+    assert_same_behaviour([*old, *options], [*new, *options])
+    assert [name for name, _ in fake.calls] == [action, action]
+    if action == "review":
+        assert fake.calls[0] == ("review", 3)
+    legacy = runner.invoke(cli_app.app, [*old, *options])
+    current = runner.invoke(cli_app.app, [*new, *options])
+    old_name = " ".join(old) + (" RUN" if action == "review" else "")
+    new_name = " ".join(new) + (" RUN" if action == "review" else "")
+    assert legacy.stderr == (
+        f"warning: fugue {old_name} is deprecated; use fugue {new_name} instead. "
+        "It will be removed in 0.4.0.\n" + current.stderr
+    )
+    assert current.exit_code == 0
+
+
+def test_review_approval_help_hides_old_names() -> None:
+    result = runner.invoke(cli_app.app, ["--help"])
+    assert result.exit_code == 0
+    for old in ["decide", "request-approval", "approve"]:
+        assert re.search(rf"^\s*│?\s*{old}\s", result.stdout, re.MULTILINE) is None
+    for group, commands in [("review", ["start", "decide"]), ("approval", ["request", "record"])]:
+        help_result = runner.invoke(cli_app.app, [group, "--help"])
+        assert help_result.exit_code == 0
+        for command in commands:
+            assert command in help_result.stdout

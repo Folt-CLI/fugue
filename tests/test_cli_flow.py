@@ -102,7 +102,19 @@ def invoke(tmp_path: Path, *args: str) -> tuple[int, str]:
     return result.exit_code, result.output
 
 
-@pytest.mark.parametrize("command", ["review", "request-approval", "merge", "resume"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "review start",
+        "review decide",
+        "approval request",
+        "review",
+        "decide",
+        "request-approval",
+        "merge",
+        "resume",
+    ],
+)
 @pytest.mark.parametrize(
     "state,code",
     [
@@ -117,9 +129,16 @@ def test_commands_dispatch_and_exit(
     tmp_path: Path, engine: FakeEngine, command: str, state: RunState, code: int
 ) -> None:
     engine.outcome = RunOutcome(7, state, problems=("detail",))
-    actual, output = invoke(tmp_path, command, "7")
+    args = ["--accept", "1"] if command in {"decide", "review decide"} else []
+    actual, output = invoke(tmp_path, *command.split(), "7", *args)
     assert actual == code
-    assert engine.calls == [(command, 7)]
+    action = {
+        "review start": "review",
+        "review decide": "decide",
+        "approval request": "request-approval",
+    }.get(command, command)
+    value: object = (7, {1: Decision(True)}) if action == "decide" else 7
+    assert engine.calls == [(action, value)]
     assert "detail" in output
     assert engine.closed
 
@@ -141,7 +160,7 @@ def test_findings_and_notes(tmp_path: Path, engine: FakeEngine) -> None:
         ),
         notes=("Review posted as COMMENT",),
     )
-    code, output = invoke(tmp_path, "review", "7")
+    code, output = invoke(tmp_path, "review", "start", "7")
     assert code == 0
     for text in [
         "Blocking",
@@ -152,7 +171,7 @@ def test_findings_and_notes(tmp_path: Path, engine: FakeEngine) -> None:
         "Suggestion",
         "n/a",
         "Review posted as COMMENT",
-        "next: fugue decide 7",
+        "next: fugue review decide 7",
     ]:
         assert text in output
 
@@ -160,6 +179,7 @@ def test_findings_and_notes(tmp_path: Path, engine: FakeEngine) -> None:
 def test_decisions(tmp_path: Path, engine: FakeEngine) -> None:
     code, _ = invoke(
         tmp_path,
+        "review",
         "decide",
         "7",
         "--accept",
@@ -202,15 +222,16 @@ def test_decisions(tmp_path: Path, engine: FakeEngine) -> None:
     ],
 )
 def test_invalid_decisions(tmp_path: Path, engine: FakeEngine, args: list[str]) -> None:
-    code, _ = invoke(tmp_path, "decide", "7", *args)
+    code, _ = invoke(tmp_path, "review", "decide", "7", *args)
     assert code == 2
     assert engine.calls == []
 
 
+@pytest.mark.parametrize("command", [["approval", "record"], ["approve"]])
 @pytest.mark.parametrize("by", [None, "claude-campaign"])
-def test_approve(tmp_path: Path, engine: FakeEngine, by: str | None) -> None:
+def test_approve(tmp_path: Path, engine: FakeEngine, by: str | None, command: list[str]) -> None:
     args = [] if by is None else ["--by", by]
-    code, output = invoke(tmp_path, "approve", "7", "--reason", "Ready to merge", *args)
+    code, output = invoke(tmp_path, *command, "7", "--reason", "Ready to merge", *args)
     assert code == 0
     assert engine.calls == [("approve", (7, by or "os-user", "Ready to merge"))]
     for text in ["abc123", "Ready to merge", by or "os-user", "exact head SHA", "fugue merge 7"]:
@@ -218,14 +239,38 @@ def test_approve(tmp_path: Path, engine: FakeEngine, by: str | None) -> None:
     assert engine.closed
 
 
-@pytest.mark.parametrize("args", [[], ["--reason", " "], ["--reason", "ok", "--by", " "]])
-def test_invalid_approval(tmp_path: Path, engine: FakeEngine, args: list[str]) -> None:
-    assert invoke(tmp_path, "approve", "7", *args)[0] == 2
+@pytest.mark.parametrize("command", [["approval", "record"], ["approve"]])
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["--reason", ""],
+        ["--reason", " "],
+        ["--reason", "ok", "--by", ""],
+        ["--reason", "ok", "--by", " "],
+    ],
+)
+def test_invalid_approval(
+    tmp_path: Path, engine: FakeEngine, args: list[str], command: list[str]
+) -> None:
+    assert invoke(tmp_path, *command, "7", *args)[0] == 2
     assert engine.calls == []
 
 
 @pytest.mark.parametrize(
-    "command", ["review", "decide", "request-approval", "approve", "merge", "resume"]
+    "command",
+    [
+        "review start",
+        "review decide",
+        "approval request",
+        "approval record",
+        "review",
+        "decide",
+        "request-approval",
+        "approve",
+        "merge",
+        "resume",
+    ],
 )
 @pytest.mark.parametrize(
     "error,code",
@@ -240,10 +285,10 @@ def test_failures_close_engine(
     tmp_path: Path, engine: FakeEngine, command: str, error: BaseException, code: int
 ) -> None:
     engine.error = error
-    args = ["--accept", "1"] if command == "decide" else []
-    if command == "approve":
+    args = ["--accept", "1"] if command in {"decide", "review decide"} else []
+    if command in {"approve", "approval record"}:
         args = ["--reason", "ready"]
-    actual, output = invoke(tmp_path, command, "7", *args)
+    actual, output = invoke(tmp_path, *command.split(), "7", *args)
     assert actual == code
     assert "error:" in output
     assert engine.closed
@@ -426,3 +471,21 @@ def test_resume_keeps_requested_run_when_ticket_has_newer_run(tmp_path: Path) ->
         assert engine._find_or_create_run(41).id == requested.id
         with pytest.raises(ValueError, match="does not match"):
             engine._find_or_create_run(42)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (RunState.WAITING_FOR_CI, "fugue review start 7"),
+        (
+            RunState.WAITING_FOR_DECISION,
+            "fugue review decide 7 --accept INDEX --reject 'INDEX:reason text'",
+        ),
+        (
+            RunState.WAITING_FOR_MERGE_APPROVAL,
+            "fugue approval request 7; then fugue approval record 7 --reason 'reason text'",
+        ),
+    ],
+)
+def test_review_approval_hints_use_grouped_names(state: RunState, expected: str) -> None:
+    assert render.next_step_for(state, 7, 41) == expected
