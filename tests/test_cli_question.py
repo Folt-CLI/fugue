@@ -526,7 +526,7 @@ def test_menu_confirms_and_records_once(monkeypatch: pytest.MonkeyPatch, reason:
     assert prompts == ["Reason (optional): "]
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
     assert f"**Why this one:** {reason or 'selected by developer'}" in client.body
-    assert output.getvalue().splitlines()[-1] == "next: fugue children 2"
+    assert output.getvalue().splitlines()[-1] == "next: fugue children FILE"
     assert output.getvalue().count("next:") == 1
 
 
@@ -617,7 +617,7 @@ def test_cli_direct_selection_never_prompts(
     assert "### Recommendation" in output.getvalue()
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
     assert "**Why this one:** Fits our needs" in client.body
-    assert output.getvalue().splitlines()[-1] == "next: fugue children 2"
+    assert output.getvalue().splitlines()[-1] == "next: fugue question 2"
 
 
 def test_non_terminal_keeps_typed_commands(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -641,7 +641,7 @@ def test_non_terminal_keeps_typed_commands(monkeypatch: pytest.MonkeyPatch) -> N
     assert "Compare options" in output.getvalue()
     assert len(adapter.requests) == 1
     assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
-    assert output.getvalue().splitlines()[-1] == "next: fugue children 2"
+    assert output.getvalue().splitlines()[-1] == "next: fugue children FILE"
 
 
 @pytest.mark.parametrize("recommendation", ["Option 1: smaller scope.", "", "Option 99: absent."])
@@ -687,3 +687,35 @@ def test_menu_full_analysis_prints_complete_analysis(monkeypatch: pytest.MonkeyP
     assert "## Details" not in text
     assert len(chooser.calls) == 2
     assert client.calls == []
+
+
+
+def test_cli_selected_question_resumes_proposal_directly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from fugue.questions.decision import mark_selected
+    from fugue.questions.parse import parse_analysis
+
+    client = FakeClient(mark_selected(BODY, parse_analysis(BODY).option(1)))
+    session, _ = walkthrough(client, [])
+    calls: list[int] = []
+
+    async def propose(number: int) -> None:
+        calls.append(number)
+
+    monkeypatch.setattr(session, "_propose_children", propose)
+    monkeypatch.setattr(question_module, "build_question", lambda config, root: session)
+    outcome = runner.invoke(cli_app.app, ["question", "2", "--repo-root", str(tmp_path)])
+    assert outcome.exit_code == 0, outcome.output
+    assert calls == [2]
+    assert client.calls == []
+
+
+def test_interactive_non_question_does_not_propose_children() -> None:
+    client = FakeClient()
+    client.ticket.issue_type = IssueType.FEATURE
+    session, output = walkthrough(client, ["s 1"])
+    asyncio.run(session.run(2))
+    assert [call[0] for call in client.calls] == ["edit", "comment", "status"]
+    assert "child proposal" not in output.getvalue()
+    assert "next:" not in output.getvalue()
