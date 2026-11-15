@@ -21,13 +21,15 @@ from fugue.cli import render, terminal, wiring
 from fugue.cli.protection import check_protection
 from fugue.config import ConfigError, FugueConfig, load_config
 from fugue.engine import Engine, EngineDeps, RunOutcome
+from fugue.engine.facts import selected_solution
 from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
 from fugue.engine.review import Decision
 from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
+from fugue.github.parse import parse_body_sections
 from fugue.github.stack import StackClient, lower_branch
 from fugue.gitops import Git
-from fugue.models import ModelTier, Role, Size, Status, Ticket
+from fugue.models import IssueType, ModelTier, Role, Size, Status, Ticket
 from fugue.store import Run, Store, StoreError
 from fugue.store.records import Approval
 from fugue.workflow import RunState
@@ -855,7 +857,17 @@ def question(
                             return
                 finally:
                     engine.close()
-            await walkthrough.run(ticket, select, reason=reason, by=by)
+            if (
+                select is None
+                and not pending
+                and current.issue_type == IssueType.QUESTION
+                and selected_solution(
+                    current.model_copy(update={"body_sections": parse_body_sections(body)})
+                )
+            ):
+                await walkthrough._propose_children(ticket)
+            else:
+                await walkthrough.run(ticket, select, reason=reason, by=by)
 
         asyncio.run(conduct())
     except typer.Exit:

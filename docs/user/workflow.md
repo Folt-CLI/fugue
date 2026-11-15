@@ -253,8 +253,31 @@ report the mouse, you can also select an entry with the mouse; keys always work.
 Select an option opens a list of options, then a confirmation prompt naming
 the chosen option, defaulting to No. After confirming, `Reason (optional):`
 asks for a reason; Enter keeps the default reason. The decision is recorded
-once. Declining or quitting records nothing. After a recorded selection, the
-output ends with `next: fugue children N`; nothing is created.
+once. Declining or quitting records nothing. After a recorded selection,
+a child proposal is derived read-only from the selected scope, Analysis and
+interview turns. Review its table of keys, titles, issue types, Sizes, priorities,
+Components and blocked-by keys. The Question is the parent; its milestone and
+first assignee are required. Missing fields or an unavailable analyst leave the
+decision recorded and point to `fugue children FILE`, the manual TOML path.
+
+The review menu offers Edit a child, Remove a child, Add a child, Confirm and
+create, and Save and quit. Typed input accepts `e KEY FIELD TEXT`, `r KEY`, `a`,
+`yes`, and `q`. List fields accept JSON arrays or items separated by `|`. Add
+asks for a JSON object with `key`, `title`, `issue_type`, `size`, `priority`,
+`components`, `summary`, `scope`, `decision`, `agreed`, `you_get`, `changes`,
+`not_changed`, `watch_out`, `scope_text` and `blocked_by`. Use `e KEY scope_text` to view
+a child's scope, or `e KEY scope_text @PATH` to replace it from a file (pasted
+text is also accepted). Removing a child reports dropped blocked-by references.
+Validation problems must be resolved before creation is offered.
+
+Creation requires the literal `yes` in typed input or a confirmation defaulting
+to No in the menu. Quitting, declining, Esc, Ctrl-C and end of input save the
+proposal without creating children. Resume with `fugue question N`. Once
+creation begins, the saved proposal is locked against edits; confirming it on
+resume completes interrupted operations without duplicate children. Completed
+proposals display their existing child numbers. Creation prints each key and
+issue number, then `next: fugue run N` for the first ready child. `fugue children`
+with a TOML file remains available as the manual path.
 
 When input or output is not a terminal, `TERM=dumb` is set or the prompt
 library cannot start, the walkthrough falls back to typed commands: a number
@@ -262,7 +285,8 @@ opens an option, `c` compares, `a` asks a follow-up, `s N` selects and `q` quits
 End of input ends without changes.
 
 Alternatively, `--select K --reason R --by B` records the decision without
-any prompt:
+any prompt. For a Question it ends with `next: fugue question N`; run that
+command to review the child proposal:
 
 ```sh
 uv run fugue question 47 --select 1 --reason 'This scope meets the requirements' --by developer
