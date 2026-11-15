@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -162,6 +163,65 @@ class Store:
             (repo, parent_number),
         ).fetchone()
         return None if row is None else _record(ParentRun, row)
+
+    def get_parent_run(self, id: int) -> ParentRun:
+        return self._one(ParentRun, "SELECT * FROM parent_runs WHERE id = ?", (id,))
+
+    def request_stack_approval(self, parent_run_id: int, heads_json: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO stack_approval_requests (parent_run_id, heads_json) VALUES (?, ?) "
+                "ON CONFLICT(parent_run_id) DO UPDATE SET heads_json = excluded.heads_json",
+                (parent_run_id, heads_json),
+            )
+
+    def stack_approval(self, parent_run_id: int, heads_json: str) -> Approval | None:
+        """Lapse the entire approval if any saved layer differs, including membership."""
+        with self._connection:
+            self._connection.execute(
+                "UPDATE approvals SET invalidated_at = ? WHERE invalidated_at IS NULL "
+                "AND id IN (SELECT approval_id FROM stack_approvals "
+                "WHERE parent_run_id = ? AND heads_json != ?)",
+                (self._now(), parent_run_id, heads_json),
+            )
+            row = self._connection.execute(
+                "SELECT a.* FROM approvals a JOIN stack_approvals s ON s.approval_id = a.id "
+                "WHERE s.parent_run_id = ? AND s.heads_json = ? "
+                "AND a.invalidated_at IS NULL AND a.decision = 'approved' "
+                "ORDER BY a.id DESC LIMIT 1",
+                (parent_run_id, heads_json),
+            ).fetchone()
+        return _record(Approval, row) if row is not None else None
+
+    def record_stack_approval(
+        self, parent_run_id: int, run_id: int, heads_json: str, decided_by: str, reason: str
+    ) -> Approval:
+        with self._connection:
+            requested = self._connection.execute(
+                "SELECT heads_json FROM stack_approval_requests WHERE parent_run_id = ?",
+                (parent_run_id,),
+            ).fetchone()
+            if requested is None or requested[0] != heads_json:
+                raise ValueError("Request approval for the current stack heads first")
+            cursor = self._connection.execute(
+                "INSERT INTO approvals "
+                "(run_id, kind, subject, head_sha, decision, decided_by, reason, created_at) "
+                "VALUES (?, 'stack_merge', ?, ?, 'approved', ?, ?, ?)",
+                (
+                    run_id,
+                    str(parent_run_id),
+                    hashlib.sha256(heads_json.encode()).hexdigest(),
+                    decided_by,
+                    reason,
+                    self._now(),
+                ),
+            )
+            self._connection.execute(
+                "INSERT INTO stack_approvals (approval_id, parent_run_id, heads_json) "
+                "VALUES (?, ?, ?)",
+                (cursor.lastrowid, parent_run_id, heads_json),
+            )
+            return self._one(Approval, "SELECT * FROM approvals WHERE id = ?", (cursor.lastrowid,))
 
     def add_work(self, parent_run_id: int, ticket_number: int, position: int) -> ParentRunWork:
         with self._connection:

@@ -62,6 +62,17 @@ MIGRATIONS: list[str] = [
         run_id INTEGER REFERENCES runs(id), UNIQUE(parent_run_id, ticket_number)
     );
     """,
+    """
+    CREATE TABLE stack_approval_requests (
+        parent_run_id INTEGER PRIMARY KEY REFERENCES parent_runs(id),
+        heads_json TEXT NOT NULL
+    );
+    CREATE TABLE stack_approvals (
+        approval_id INTEGER PRIMARY KEY REFERENCES approvals(id),
+        parent_run_id INTEGER NOT NULL REFERENCES parent_runs(id),
+        heads_json TEXT NOT NULL
+    );
+    """,
 ]
 
 

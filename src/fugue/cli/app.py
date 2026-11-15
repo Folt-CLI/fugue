@@ -140,11 +140,13 @@ class RunEngine(Protocol):
 
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome: ...
 
-    async def request_approval(self, run_id: int) -> RunOutcome: ...
+    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome: ...
 
-    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval: ...
+    def approve(
+        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
+    ) -> Approval: ...
 
-    async def merge_and_close(self, run_id: int) -> RunOutcome: ...
+    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome: ...
 
     async def resume(self, run_id: int) -> RunOutcome: ...
 
@@ -201,14 +203,28 @@ class _StoreClosingEngine:
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome:
         return await self._engine.decide(run_id, decisions)
 
-    async def request_approval(self, run_id: int) -> RunOutcome:
-        return await self._engine.request_approval(run_id)
+    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome:
+        return (
+            await self._engine.request_approval(run_id, parent=True)
+            if parent
+            else await self._engine.request_approval(run_id)
+        )
 
-    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval:
-        return self._engine.approve(run_id, decided_by, reason)
+    def approve(
+        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
+    ) -> Approval:
+        return (
+            self._engine.approve(run_id, decided_by, reason, parent=True)
+            if parent
+            else self._engine.approve(run_id, decided_by, reason)
+        )
 
-    async def merge_and_close(self, run_id: int) -> RunOutcome:
-        return await self._engine.merge_and_close(run_id)
+    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome:
+        return (
+            await self._engine.merge_and_close(run_id, parent=True)
+            if parent
+            else await self._engine.merge_and_close(run_id)
+        )
 
     async def resume(self, run_id: int) -> RunOutcome:
         """Continue durable progress without supplying a decision or approval."""
@@ -794,10 +810,23 @@ def decide(
 @_deprecated_command("request-approval", "approval request")
 @approval_app.command("request")
 def request_approval(
-    run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None
+    run_id: int,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    parent: Annotated[
+        bool, typer.Option("--parent", help="Approve every layer of a parent run.")
+    ] = False,
 ) -> None:
     """Check the gate and request approval for the exact head SHA."""
-    _execute(lambda engine: asyncio.run(engine.request_approval(run_id)), config, repo_root)
+    _execute(
+        lambda engine: asyncio.run(
+            engine.request_approval(run_id, parent=True)
+            if parent
+            else engine.request_approval(run_id)
+        ),
+        config,
+        repo_root,
+    )
 
 
 @_deprecated_command("approve", "approval record")
@@ -808,6 +837,9 @@ def approve(
     by: Annotated[
         str | None, typer.Option("--by", help="Decision maker (default: OS user).")
     ] = None,
+    parent: Annotated[
+        bool, typer.Option("--parent", help="Approve every layer of a parent run.")
+    ] = False,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -815,13 +847,36 @@ def approve(
     decided_by = getpass.getuser() if by is None else by
     if not decided_by.strip() or not reason.strip():
         raise _fail("Approval requires --by and --reason to be non-empty")
-    _execute(lambda engine: engine.approve(run_id, decided_by, reason), config, repo_root)
+    _execute(
+        lambda engine: (
+            engine.approve(run_id, decided_by, reason, parent=True)
+            if parent
+            else engine.approve(run_id, decided_by, reason)
+        ),
+        config,
+        repo_root,
+    )
 
 
 @app.command()
-def merge(run_id: int, config: ConfigOption = None, repo_root: RepoRootOption = None) -> None:
+def merge(
+    run_id: int,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+    parent: Annotated[
+        bool, typer.Option("--parent", help="Merge every layer of a parent run.")
+    ] = False,
+) -> None:
     """Merge the approved head and close the ticket."""
-    _execute(lambda engine: asyncio.run(engine.merge_and_close(run_id)), config, repo_root)
+    _execute(
+        lambda engine: asyncio.run(
+            engine.merge_and_close(run_id, parent=True)
+            if parent
+            else engine.merge_and_close(run_id)
+        ),
+        config,
+        repo_root,
+    )
 
 
 @app.command()

@@ -899,3 +899,28 @@ def test_ready_pr_checks_draft_state_and_propagates_failures(
     else:
         asyncio.run(client.ready_pr("owner/repo", "upper"))
     assert len(calls) == (2 if draft == "true" and not view_code else 1)
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_whole_stack_merge_uses_merge_commits(tmp_path: Path, code: int) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        calls.append(tuple(argv))
+        return command_result(argv, "merged" if code == 0 else "", code)
+
+    client = StackClient(tmp_path, runner=runner)
+    if code:
+        with pytest.raises(GitHubError):
+            asyncio.run(client.merge(190))
+    else:
+        assert asyncio.run(client.merge(190)) == "merged"
+    assert calls == [("gh", "stack", "merge", "190", "--merge", "--yes")]
+
+
+def test_stack_merge_rejects_invalid_number(tmp_path: Path) -> None:
+    async def runner(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        pytest.fail("Invalid pull request must not execute a command")
+
+    with pytest.raises(ValueError, match="positive"):
+        asyncio.run(StackClient(tmp_path, runner=runner).merge(0))

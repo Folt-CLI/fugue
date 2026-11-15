@@ -22,7 +22,7 @@ from test_engine_review import (
 from test_github import PR, REPO, Fake, fake, response
 
 from fugue.engine.facts import branch_name
-from fugue.engine.pipeline import Engine
+from fugue.engine.pipeline import Engine, RunOutcome
 from fugue.github import CheckResult, GitHubError, PullRequest
 from fugue.github.client import PrState
 from fugue.gitops import Git
@@ -544,3 +544,379 @@ def test_client_deletes_only_explicit_remote_ref(
     asyncio.run(client.delete_remote_branch("feature/example", tmp_path))
     assert commands[-1] == ("push", "--delete", "--", "origin", "refs/heads/feature/example")
     assert calls() == []
+
+
+class StackMergeFixture:
+    def __init__(
+        self,
+        h: Harness,
+        parent_id: int,
+        runs: list[int],
+        tickets: list[Ticket],
+        paths: list[Path],
+        heads: list[str],
+    ) -> None:
+        self.h = h
+        self.parent_id = parent_id
+        self.runs = runs
+        self.tickets = tickets
+        self.paths = paths
+        self.heads = heads
+        self.states = ["OPEN", "OPEN"]
+        self.prs = [
+            PullRequest(201, "https://example.test/201"),
+            PullRequest(202, "https://example.test/202"),
+        ]
+        self.branches = [branch_name(ticket) for ticket in tickets]
+        self.merges = 0
+        self.lost_response = False
+        self.fail_merge = False
+        self.closed: list[int] = []
+        self.comment_bodies: dict[int, list[str]] = {ticket.number: [] for ticket in tickets}
+
+    async def tracked_branches(self, branch: str) -> list[str]:
+        return self.branches
+
+    async def merge(self, number: int) -> str:
+        assert number == self.prs[0].number
+        self.merges += 1
+        if self.fail_merge:
+            raise GitHubError(("stack", "merge"), "draft or conflict")
+        self.states = ["MERGED", "MERGED"]
+        if self.lost_response:
+            raise ConnectionError("stack response lost")
+        return "merged"
+
+    def request(self) -> None:
+        result = asyncio.run(Engine(self.h.deps).request_approval(self.parent_id, parent=True))
+        assert result.state == RunState.WAITING_FOR_MERGE_APPROVAL, result.problems
+
+    def approve(self) -> None:
+        Engine(self.h.deps).approve(self.parent_id, "developer", "Whole stack ready", parent=True)
+
+    def finish(self) -> RunOutcome:
+        return asyncio.run(Engine(self.h.deps).merge_and_close(self.parent_id, parent=True))
+
+
+@pytest.fixture
+def stack_ready(
+    ready: tuple[Harness, MergeGitHub, int], monkeypatch: pytest.MonkeyPatch
+) -> StackMergeFixture:
+    from typing import cast
+
+    from fugue.github.stack import StackClient
+
+    h, github, run_id = ready
+    store = h.deps.store
+    lower = github.ticket.model_copy(update={"size": Size.XS})
+    upper = lower.model_copy(update={"number": lower.number + 1, "title": "Upper layer"})
+    path = h.worktree.parent / "upper-layer"
+    asyncio.run(
+        git_command(
+            h.deps.repo_root,
+            "worktree",
+            "add",
+            "-b",
+            branch_name(upper),
+            str(path),
+            branch_name(lower),
+        )
+    )
+    upper_run = store.create_run(upper.number, github.repo)
+    identity = store.begin_operation(upper_run.id, "identity", "identity", {})
+    store.complete_operation(identity.id, {"branch": branch_name(upper), "path": str(path)})
+    parent = store.create_parent_run(170, github.repo)
+    runs = [run_id, upper_run.id]
+    for position, (ticket, child_run) in enumerate(zip([lower, upper], runs, strict=True)):
+        store.add_work(parent.id, ticket.number, position)
+        store.set_work_run(parent.id, ticket.number, child_run)
+    heads = [asyncio.run(Git(p).head_sha()) for p in [h.worktree, path]]
+    fixture = StackMergeFixture(h, parent.id, runs, [lower, upper], [h.worktree, path], heads)
+
+    async def get_ticket(number: int) -> Ticket:
+        return next(ticket for ticket in fixture.tickets if ticket.number == number)
+
+    async def find_pr(branch: str) -> PullRequest:
+        return fixture.prs[fixture.branches.index(branch)]
+
+    async def head(pr: PullRequest) -> str:
+        return fixture.heads[fixture.prs.index(pr)]
+
+    async def state(pr: PullRequest) -> PrState:
+        index = fixture.prs.index(pr)
+        return PrState(
+            fixture.states[index],
+            fixture.heads[index],
+            f"merge-{index}" if fixture.states[index] == "MERGED" else None,
+        )
+
+    async def disposition(number: int, value: Disposition) -> None:
+        assert all(state == "MERGED" for state in fixture.states)
+        fixture.closed.append(number)
+
+    async def status(number: int, value: Status) -> None:
+        pass
+
+    async def comment(number: int, body: str) -> None:
+        fixture.comment_bodies[number].append(body)
+
+    async def comments(number: int) -> list[str]:
+        return fixture.comment_bodies[number]
+
+    async def remote(branch: str, repo_root: Path) -> None:
+        pass
+
+    async def paginated(endpoint: str, *args: str) -> list[dict[str, Any]]:
+        return []
+
+    for name, method in {
+        "get_ticket": get_ticket,
+        "find_pr": find_pr,
+        "pr_head_sha": head,
+        "pr_state": state,
+        "set_disposition": disposition,
+        "set_status": status,
+        "comment": comment,
+        "comments": comments,
+        "delete_remote_branch": remote,
+        "_paginated": paginated,
+    }.items():
+        monkeypatch.setattr(github, name, method)
+    h.deps.stack_factory = lambda _: cast(StackClient, fixture)
+    return fixture
+
+
+def test_stack_approval_merges_once_and_closes_every_work(stack_ready: StackMergeFixture) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    assert s.finish().state == RunState.COMPLETED
+    assert s.merges == 1
+    assert s.closed == [ticket.number for ticket in s.tickets]
+    assert all(not path.exists() for path in s.paths)
+    assert all(s.h.deps.store.get_run(run).state == RunState.COMPLETED for run in s.runs)
+    assert s.finish().state == RunState.COMPLETED
+    assert s.merges == 1 and len(s.closed) == 2
+    assert all(len(bodies) == 1 for bodies in s.comment_bodies.values())
+
+
+@pytest.mark.parametrize("layer", [0, 1])
+def test_changed_stack_layer_lapses_entire_approval(
+    stack_ready: StackMergeFixture, layer: int
+) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    old = s.heads[layer]
+    s.heads[layer] = "new-head"
+    assert s.finish().state == RunState.BLOCKED
+    assert s.merges == 0 and s.closed == []
+    s.heads[layer] = old
+    assert s.finish().state == RunState.BLOCKED
+    assert s.merges == 0
+
+
+def test_stack_reconciles_lost_merge_response(stack_ready: StackMergeFixture) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    s.lost_response = True
+    with pytest.raises(ConnectionError, match="stack response lost"):
+        s.finish()
+    assert s.finish().state == RunState.COMPLETED
+    assert s.merges == 1 and len(s.closed) == 2
+
+
+def test_stack_reconciles_interrupted_closure(
+    stack_ready: StackMergeFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    github = s.h.deps.github
+    original = github.comment
+
+    async def lost_response(number: int, body: str) -> None:
+        await original(number, body)
+        if number == s.tickets[1].number:
+            raise ConnectionError("closure response lost")
+
+    monkeypatch.setattr(github, "comment", lost_response)
+    with pytest.raises(ConnectionError, match="closure response lost"):
+        s.finish()
+    assert not s.paths[0].exists() and s.paths[1].exists()
+    monkeypatch.setattr(github, "comment", original)
+    assert s.finish().state == RunState.COMPLETED
+    assert s.merges == 1 and len(s.closed) == 2
+    assert all(len(bodies) == 1 for bodies in s.comment_bodies.values())
+
+
+def test_stack_merge_failure_closes_nothing(stack_ready: StackMergeFixture) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    s.fail_merge = True
+    with pytest.raises(GitHubError, match="draft or conflict"):
+        s.finish()
+    assert s.closed == [] and all(path.exists() for path in s.paths)
+
+
+def test_stack_record_requires_current_request(stack_ready: StackMergeFixture) -> None:
+    s = stack_ready
+    with pytest.raises(ValueError):
+        s.approve()
+    assert s.finish().state == RunState.BLOCKED and s.merges == 0
+
+
+@pytest.mark.parametrize("guard", ["ci", "threads", "gate", "review"])
+def test_each_layer_must_pass_guards(
+    stack_ready: StackMergeFixture, monkeypatch: pytest.MonkeyPatch, guard: str
+) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    github = s.h.deps.github
+    if guard == "ci":
+
+        async def checks(pr: PullRequest) -> list[CheckResult]:
+            return [CheckResult("CI", "fail" if pr == s.prs[1] else "pass", "")]
+
+        monkeypatch.setattr(github, "checks", checks)
+    elif guard == "threads":
+
+        async def unresolved(pr: PullRequest) -> int:
+            return int(pr == s.prs[1])
+
+        monkeypatch.setattr(github, "unresolved_thread_count", unresolved)
+    elif guard == "gate":
+        s.h.deps.store._connection.execute(
+            "DELETE FROM operations WHERE run_id = ? AND kind = 'merge_gate'", (s.runs[1],)
+        )
+    else:
+        s.tickets[1] = s.tickets[1].model_copy(update={"size": Size.S})
+    assert s.finish().state == RunState.BLOCKED
+    assert s.merges == 0 and s.closed == []
+
+
+def test_unapproved_extra_layer_blocks_atomic_merge(
+    stack_ready: StackMergeFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+
+    async def branches(branch: str) -> list[str]:
+        return [*s.branches, "unapproved-layer"]
+
+    monkeypatch.setattr(s, "tracked_branches", branches)
+    assert s.finish().state == RunState.BLOCKED
+    assert s.merges == 0
+
+
+def test_head_change_during_final_guards_blocks_merge(
+    stack_ready: StackMergeFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+
+    async def checks(pr: PullRequest) -> list[CheckResult]:
+        if pr == s.prs[1]:
+            s.heads[0] = "changed-during-guards"
+        return [CheckResult("CI", "pass", "")]
+
+    monkeypatch.setattr(s.h.deps.github, "checks", checks)
+    assert s.finish().state == RunState.BLOCKED
+    assert s.merges == 0
+
+
+def test_unconfirmed_layer_prevents_every_closure(stack_ready: StackMergeFixture) -> None:
+    s = stack_ready
+    s.request()
+    s.approve()
+    s.states = ["MERGED", "CLOSED"]
+    assert s.finish().state == RunState.BLOCKED
+    assert s.merges == 0 and s.closed == []
+
+
+def test_stack_holds_every_ticket_lock_and_releases_after_failure(
+    stack_ready: StackMergeFixture,
+) -> None:
+    from fugue.engine.locks import TicketLock, TicketLocked
+
+    s = stack_ready
+    s.request()
+    s.approve()
+    deps = s.h.deps
+    with (
+        TicketLock(deps.state_dir, deps.github.repo, s.tickets[1].number),
+        pytest.raises(TicketLocked),
+    ):
+        s.finish()
+    assert s.merges == 0
+    assert s.finish().state == RunState.COMPLETED
+
+
+def test_stack_request_and_approval_survive_store_reopen(tmp_path: Path) -> None:
+    from fugue.store import Store
+
+    path = tmp_path / "stack.db"
+    heads = '[{"run": 1, "pr": 201, "head": "first"}, {"run": 2, "pr": 202, "head": "second"}]'
+    with Store(path) as store:
+        parent = store.create_parent_run(170, "owner/repo")
+        run = store.create_run(1, "owner/repo")
+        store.request_stack_approval(parent.id, heads)
+    with Store(path) as store:
+        approval = store.record_stack_approval(parent.id, run.id, heads, "developer", "ready")
+    with Store(path) as store:
+        assert store.stack_approval(parent.id, heads) == approval
+        assert store.stack_approval(parent.id, heads.replace("second", "changed")) is None
+    with Store(path) as store:
+        assert store.stack_approval(parent.id, heads) is None
+
+
+def test_parent_approval_cli_round_trip(
+    stack_ready: StackMergeFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from typer.testing import CliRunner
+
+    from fugue.cli import app as cli
+    from fugue.cli import wiring
+
+    s = stack_ready
+    engine = Engine(s.h.deps)
+    monkeypatch.setattr(wiring, "resolve_repo_root", lambda *_: s.h.deps.repo_root)
+    monkeypatch.setattr(cli, "_load", lambda *_: s.h.deps.config)
+    monkeypatch.setattr(
+        cli,
+        "engine_factory",
+        lambda *_: SimpleNamespace(
+            request_approval=engine.request_approval,
+            approve=engine.approve,
+            merge_and_close=engine.merge_and_close,
+            close=lambda: None,
+        ),
+    )
+    runner = CliRunner()
+    run_id = str(s.parent_id)
+    result = runner.invoke(cli.app, ["approval", "request", run_id, "--parent"])
+    assert result.exit_code == 7, result.output
+    result = runner.invoke(
+        cli.app,
+        [
+            "approval",
+            "record",
+            run_id,
+            "--parent",
+            "--by",
+            "developer",
+            "--reason",
+            "Whole stack ready",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(cli.app, ["merge", run_id, "--parent"])
+    assert result.exit_code == 0, result.output
+    assert s.merges == 1 and len(s.closed) == 2

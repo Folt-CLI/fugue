@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import ExitStack
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -54,7 +55,7 @@ from fugue.engine.facts import (
     selected_solution,
     worktree_path,
 )
-from fugue.engine.locks import RepoLock
+from fugue.engine.locks import RepoLock, TicketLock
 from fugue.engine.ports import CiGitHubPort, GitHubPort, MergeGitHubPort, ReviewGitHubPort
 from fugue.engine.prompts import (
     commit_message,
@@ -80,7 +81,7 @@ from fugue.engine.review import (
 )
 from fugue.gate import GateResult, format_failure, run_gate
 from fugue.github import CheckResult, GitHubError, PullRequest
-from fugue.github.client import ResolvePermissionError
+from fugue.github.client import PrState, ResolvePermissionError
 from fugue.github.stack import StackClient, lower_branch
 from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
 from fugue.models import Disposition, IssueType, Role, Size, Status, Ticket
@@ -144,6 +145,15 @@ class Identity:
 
     branch: str
     path: Path
+
+
+@dataclass(frozen=True)
+class _StackLayer:
+    run_id: int
+    ticket: Ticket
+    identity: Identity
+    pr: PullRequest
+    state: PrState
 
 
 class _Stop(Exception):
@@ -332,6 +342,7 @@ def _base_ref(deps: EngineDeps, run_id: int) -> str:
 class Engine:
     def __init__(self, deps: EngineDeps) -> None:
         self.deps = deps
+        self._recorded_stack_approval: Approval | None = None
         self._attempt_id: ContextVar[int | None] = ContextVar("engine_attempt_id", default=None)
 
     def _artifact(self, run_id: int, kind: str, text: str, suffix: str = ".txt") -> ArtifactRef:
@@ -545,8 +556,11 @@ class Engine:
             raise _Stop(RunState.BLOCKED, problems)
         return head, approval
 
-    async def request_approval(self, run_id: int) -> RunOutcome:
+    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome:
         """Check delivery guards and wait for an explicit exact-head approval."""
+
+        if parent:
+            return await self._stack_action(run_id, "request")
 
         async def work() -> RunOutcome:
             ticket, identity, pr = await self._merge_context(run_id)
@@ -576,12 +590,20 @@ class Engine:
 
         return await self._guarded(run_id, work)
 
-    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval:
+    def approve(
+        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
+    ) -> Approval:
         """Record a live-guarded approval; call this synchronous API outside an event loop."""
         if not decided_by.strip() or not reason.strip():
             raise ValueError("Approval requires decided_by and reason")
 
         async def check() -> Approval:
+            if parent:
+                await self._stack_action(run_id, "record", decided_by, reason)
+                approval = self._recorded_stack_approval
+                if approval is None:
+                    raise ValueError("Stack approval was blocked")
+                return approval
             ticket, identity, pr = await self._merge_context(run_id)
             head, _ = await self._merge_guards(run_id, ticket, identity, pr, require_approval=False)
             requests = _operations(self.deps.store, run_id, "merge_request")
@@ -596,7 +618,14 @@ class Engine:
         except _Stop as stop:
             raise ValueError("; ".join(stop.problems)) from stop
 
-    async def merge_and_close(self, run_id: int) -> RunOutcome:
+    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome:
+        if parent:
+            return await self._stack_action(run_id, "merge")
+        return await self._merge_and_close_work(run_id)
+
+    async def _merge_and_close_work(
+        self, run_id: int, stack_approval: Approval | None = None, approved_head: str | None = None
+    ) -> RunOutcome:
         """Merge the approved head, verify MERGED, then finish durable closure steps."""
 
         async def work() -> RunOutcome:
@@ -605,7 +634,11 @@ class Engine:
             store = self.deps.store
             state = await port.pr_state(pr)
             head = state.head_sha
-            approval = store.valid_approval(run_id, "merge", str(pr.number), head)
+            approval = stack_approval or store.valid_approval(run_id, "merge", str(pr.number), head)
+            if stack_approval is not None and head != approved_head:
+                raise _Stop(RunState.BLOCKED, ["Stack approval must match the current layer head"])
+            if stack_approval is not None and state.state != "MERGED":
+                raise _Stop(RunState.BLOCKED, ["Every stack layer must be merged before closing"])
             if state.state != "MERGED":
                 if state.state != "OPEN":
                     raise _Stop(RunState.BLOCKED, ["Pull request is not open or merged"])
@@ -652,7 +685,7 @@ class Engine:
                 assert approval is not None
                 body = (
                     f"Merged as {state.merge_sha}. Approval #{approval.id}: "
-                    f"{approval.decided_by} approved {approval.head_sha}. "
+                    f"{approval.decided_by} approved {head}. "
                     f"Reason: {approval.reason}. Recorded: {approval.created_at.isoformat()}."
                 )
                 await close_comment(store, run_id, "comment", port, ticket.number, body)
@@ -710,6 +743,180 @@ class Engine:
             )
 
         return await self._guarded(run_id, work)
+
+    async def _stack_layers(self, parent_run_id: int) -> list[_StackLayer]:
+        layers: list[_StackLayer] = []
+        for work in self.deps.store.list_work(parent_run_id):
+            if work.run_id is None:
+                raise _Stop(RunState.BLOCKED, ["Every work must have a delivered run"])
+            ticket = await self.deps.github.get_ticket(work.ticket_number)
+            if ticket.issue_type == IssueType.QUESTION:
+                if self.deps.store.get_run(work.run_id).state != RunState.COMPLETED:
+                    raise _Stop(RunState.BLOCKED, ["Question work must be completed"])
+                continue
+            if self.deps.store.get_run(work.run_id).ticket_number != work.ticket_number:
+                raise _Stop(RunState.BLOCKED, ["Work run belongs to another ticket"])
+            ticket, identity, pr = await self._merge_context(work.run_id)
+            layers.append(
+                _StackLayer(
+                    work.run_id, ticket, identity, pr, await self._merge_port().pr_state(pr)
+                )
+            )
+        if not layers or len({layer.pr.number for layer in layers}) != len(layers):
+            raise _Stop(RunState.BLOCKED, ["A stack must contain distinct delivered layers"])
+        return layers
+
+    @staticmethod
+    def _stack_heads(layers: Sequence[_StackLayer]) -> str:
+        return json.dumps(
+            [
+                {
+                    "run": layer.run_id,
+                    "pr": layer.pr.number,
+                    "branch": layer.identity.branch,
+                    "head": layer.state.head_sha,
+                }
+                for layer in layers
+            ],
+            sort_keys=True,
+        )
+
+    async def _stack_action(
+        self, parent_run_id: int, action: str, decided_by: str = "", reason: str = ""
+    ) -> RunOutcome:
+        store = self.deps.store
+        parent = store.get_parent_run(parent_run_id)
+        self._recorded_stack_approval = None
+        if parent.repo.casefold() != self.deps.github.repo.strip().casefold():
+            raise ValueError("Parent run belongs to another repository")
+        with ExitStack() as locks:
+            locks.enter_context(TicketLock(self.deps.state_dir, parent.repo, parent.parent_number))
+            for number in sorted({work.ticket_number for work in store.list_work(parent_run_id)}):
+                if number != parent.parent_number:
+                    locks.enter_context(TicketLock(self.deps.state_dir, parent.repo, number))
+            async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
+                store.set_parent_state(parent_run_id, RunState.RUNNING)
+                try:
+                    layers = await self._stack_layers(parent_run_id)
+                    heads = self._stack_heads(layers)
+                    approval = store.stack_approval(parent_run_id, heads)
+                    if action != "merge":
+                        for layer in layers:
+                            if layer.state.state != "OPEN":
+                                raise _Stop(RunState.BLOCKED, ["Every stack layer must be open"])
+                            if action == "request":
+                                outcome = await self.request_approval(layer.run_id)
+                                if outcome.state != RunState.WAITING_FOR_MERGE_APPROVAL:
+                                    raise _Stop(outcome.state, outcome.problems)
+                            else:
+                                await self._merge_guards(
+                                    layer.run_id,
+                                    layer.ticket,
+                                    layer.identity,
+                                    layer.pr,
+                                    require_approval=False,
+                                )
+                        current = await self._stack_layers(parent_run_id)
+                        if self._stack_heads(current) != heads:
+                            store.stack_approval(parent_run_id, self._stack_heads(current))
+                            raise _Stop(RunState.BLOCKED, ["Stack heads changed during approval"])
+                        if action == "request":
+                            store.request_stack_approval(parent_run_id, heads)
+                        else:
+                            self._recorded_stack_approval = store.record_stack_approval(
+                                parent_run_id, layers[0].run_id, heads, decided_by, reason
+                            )
+                        state = RunState.WAITING_FOR_MERGE_APPROVAL
+                    else:
+                        if approval is None:
+                            raise _Stop(
+                                RunState.BLOCKED, ["Stack approval must match every current head"]
+                            )
+                        operation = store.begin_operation(
+                            layers[0].run_id,
+                            "stack_merge",
+                            approval.head_sha,
+                            {"parent_run_id": parent_run_id, "heads": heads},
+                        )
+                        if not all(layer.state.state == "MERGED" for layer in layers):
+                            if any(layer.state.state != "OPEN" for layer in layers):
+                                raise _Stop(
+                                    RunState.BLOCKED, ["Stack merge has not been confirmed"]
+                                )
+                            for layer in layers:
+                                await self._merge_guards(
+                                    layer.run_id,
+                                    layer.ticket,
+                                    layer.identity,
+                                    layer.pr,
+                                    require_approval=False,
+                                )
+                            stack = self.deps.stack_factory(self.deps.repo_root)
+                            if await stack.tracked_branches(layers[0].identity.branch) != [
+                                layer.identity.branch for layer in layers
+                            ]:
+                                raise _Stop(
+                                    RunState.BLOCKED, ["Tracked stack must match approved works"]
+                                )
+                            current = await self._stack_layers(parent_run_id)
+                            if self._stack_heads(current) != heads:
+                                store.stack_approval(parent_run_id, self._stack_heads(current))
+                                raise _Stop(RunState.BLOCKED, ["Stack heads changed before merge"])
+                            await self._stage(
+                                layers[0].run_id,
+                                Stage.MERGE,
+                                lambda: stack.merge(layers[0].pr.number),
+                            )
+                            started = self.deps.clock()
+                            while True:
+                                layers = await self._stack_layers(parent_run_id)
+                                if self._stack_heads(layers) != heads:
+                                    store.stack_approval(parent_run_id, self._stack_heads(layers))
+                                    raise _Stop(
+                                        RunState.BLOCKED, ["Stack heads changed during merge"]
+                                    )
+                                if all(
+                                    layer.state.state == "MERGED" and layer.state.merge_sha
+                                    for layer in layers
+                                ):
+                                    break
+                                remaining = (
+                                    self.deps.config.limits.ci_timeout_seconds
+                                    - (self.deps.clock() - started).total_seconds()
+                                )
+                                if remaining <= 0 or any(
+                                    layer.state.state == "CLOSED" for layer in layers
+                                ):
+                                    raise _Stop(
+                                        RunState.BLOCKED, ["Stack merge has not been confirmed"]
+                                    )
+                                await self.deps.sleep(
+                                    min(self.deps.config.limits.ci_poll_interval_seconds, remaining)
+                                )
+                        if not all(layer.state.merge_sha for layer in layers):
+                            raise _Stop(RunState.BLOCKED, ["Every stack merge must be confirmed"])
+                        store.complete_operation(operation.id, {"merged": True})
+                        # Reuse closure's live-state checks and durable idempotent steps.
+                        for layer in layers:
+                            outcome = await self._merge_and_close_work(
+                                layer.run_id, approval, layer.state.head_sha
+                            )
+                            if outcome.state != RunState.COMPLETED:
+                                raise _Stop(outcome.state, outcome.problems)
+                        state = RunState.COMPLETED
+                    store.set_parent_state(parent_run_id, state)
+                    return RunOutcome(parent_run_id, state, ci_green=True)
+                except _Stop as stop:
+                    store.set_parent_state(parent_run_id, stop.state)
+                    if action == "record":
+                        raise ValueError("; ".join(stop.problems)) from stop
+                    return RunOutcome(parent_run_id, stop.state, problems=stop.problems)
+                except asyncio.CancelledError:
+                    store.set_parent_state(parent_run_id, RunState.INTERRUPTED)
+                    raise
+                except Exception:
+                    store.set_parent_state(parent_run_id, RunState.BLOCKED)
+                    raise
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         return await self._run(ticket_number, until_green=False)
