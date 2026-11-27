@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from fugue.cli.output import Output
+from fugue.cli.views import LabelView, Messages
 from fugue.core.github import Github
 
 app = typer.Typer(help="List, create and delete labels.", no_args_is_help=True)
@@ -14,11 +14,11 @@ app = typer.Typer(help="List, create and delete labels.", no_args_is_help=True)
 @app.command("list")
 def list_() -> None:
     """List the labels."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         labels = asyncio.run(github.label.list())
-    output.labels(labels)
+    LabelView().table(labels)
 
 
 @app.command()
@@ -28,12 +28,12 @@ def create(
     description: Annotated[str, typer.Option("--description", "-d", help="What it is for.")] = "",
 ) -> None:
     """Create a label."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         label = asyncio.run(github.label.create(name, color, description))
-    output.success(f"Created label {label.name} in {github.slug}")
-    output.labels([label])
+    messages.success(f"Created label {label.name} in {github.slug}")
+    LabelView().table([label])
 
 
 @app.command()
@@ -42,9 +42,9 @@ def delete(
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Do not ask first.")] = False,
 ) -> None:
     """Delete a label. It is removed from every issue."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
-        output.confirm(f"Delete label {name!r} from {github.slug}?", yes=yes)
+        messages.confirm(f"Delete label {name!r} from {github.slug}?", yes=yes)
         asyncio.run(github.label.delete(name))
-    output.success(f"Deleted label {name} from {github.slug}")
+    messages.success(f"Deleted label {name} from {github.slug}")

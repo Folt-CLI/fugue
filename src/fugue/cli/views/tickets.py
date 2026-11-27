@@ -1,0 +1,46 @@
+"""Issues."""
+
+from collections.abc import Sequence
+
+from fugue.cli.views.view import View
+from fugue.models import Ticket
+
+
+class TicketView(View):
+    def show(self, ticket: Ticket, repository: str) -> None:
+        """An issue as a panel: state, title, who and when, labels, then the body."""
+        meta = f"by {ticket.author or 'unknown'} · updated {self._ago(ticket.updated_at)}"
+        if ticket.comments:
+            meta += f" · {ticket.comments} comment{'s' if ticket.comments != 1 else ''}"
+        self._item(
+            f"{repository}#{ticket.number}",
+            ticket.state,
+            ticket.title,
+            meta,
+            ticket.labels,
+            ticket.body,
+            ticket.url,
+        )
+
+    def table(self, tickets: Sequence[Ticket], repository: str) -> None:
+        """Issues as a table."""
+        if not tickets:
+            self.console.print("[dim]No issues.[/]")
+            return
+        table = self._table(f"Issues in {repository}")
+        table.add_column("#", justify="right", style="cyan", no_wrap=True)
+        table.add_column("State", no_wrap=True)
+        table.add_column("Title", ratio=1)
+        table.add_column("Labels")
+        table.add_column("Author", style="dim", no_wrap=True)
+        table.add_column("Updated", style="dim", no_wrap=True)
+        for ticket in tickets:
+            table.add_row(
+                str(ticket.number),
+                self._state(ticket.state),
+                ticket.title,
+                self._labels(ticket.labels),
+                ticket.author,
+                self._ago(ticket.updated_at),
+            )
+        self.console.print(table)

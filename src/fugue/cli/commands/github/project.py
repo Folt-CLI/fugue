@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from fugue.cli.output import Output
+from fugue.cli.views import Messages, ProjectView
 from fugue.core.github import Github
 
 app = typer.Typer(help="Work with GitHub projects.", no_args_is_help=True)
@@ -14,11 +14,11 @@ app = typer.Typer(help="Work with GitHub projects.", no_args_is_help=True)
 @app.command("list")
 def list_() -> None:
     """List the projects of the repository's owner."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         projects = asyncio.run(github.project.list())
-    output.projects(projects, github.repository.owner)
+    ProjectView().table(projects, github.repository.owner)
 
 
 @app.command()
@@ -28,11 +28,11 @@ def fields(
     ] = None,
 ) -> None:
     """Show a project's fields and their options."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         view = asyncio.run(github.project.overview(project))
-    output.project_fields(
+    ProjectView().fields(
         view.fields, f"Fields of project {view.project.number}: {view.project.title}"
     )
 
@@ -55,11 +55,11 @@ def items(
     limit: Annotated[int, typer.Option("--limit", "-n", help="How many to show.")] = 50,
 ) -> None:
     """List the items on a project."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         view = asyncio.run(github.project.table(project, query=query, columns=column, limit=limit))
-    output.project_items(
+    ProjectView().items(
         view.items, view.columns, f"Project {view.project.number}: {view.project.title}"
     )
 
@@ -72,11 +72,11 @@ def item(
     ] = None,
 ) -> None:
     """Show one item with all of its field values."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         found = asyncio.run(github.project.details(number, project))
-    output.project_item(found, f"{github.slug}#{number}")
+    ProjectView().item(found, f"{github.slug}#{number}")
 
 
 @app.command()
@@ -90,12 +90,12 @@ def add(
     ] = False,
 ) -> None:
     """Put an issue or pull request on a project."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         found = asyncio.run(github.project.add(number, project, pull_request=pull_request))
-    output.success(f"Added {github.slug}#{number} to the project")
-    output.project_item(found, f"{github.slug}#{number}")
+    messages.success(f"Added {github.slug}#{number} to the project")
+    ProjectView().item(found, f"{github.slug}#{number}")
 
 
 @app.command("set")
@@ -108,11 +108,11 @@ def set_(
     ] = None,
 ) -> None:
     """Set a field of an item."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         change = asyncio.run(github.project.set(number, field, value, project))
-    output.success(f"{github.slug}#{number}: {change.field} = {change.value}")
+    messages.success(f"{github.slug}#{number}: {change.field} = {change.value}")
 
 
 @app.command()
@@ -124,11 +124,11 @@ def clear(
     ] = None,
 ) -> None:
     """Empty a field of an item."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         asyncio.run(github.project.clear(number, field, project))
-    output.success(f"{github.slug}#{number}: {field} cleared")
+    messages.success(f"{github.slug}#{number}: {field} cleared")
 
 
 @app.command()
@@ -140,9 +140,9 @@ def remove(
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Do not ask first.")] = False,
 ) -> None:
     """Take an item off a project. The issue itself is not touched."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
-        output.confirm(f"Remove {github.slug}#{number} from the project?", yes=yes)
+        messages.confirm(f"Remove {github.slug}#{number} from the project?", yes=yes)
         asyncio.run(github.project.remove(number, project))
-    output.success(f"Removed {github.slug}#{number} from the project")
+    messages.success(f"Removed {github.slug}#{number} from the project")

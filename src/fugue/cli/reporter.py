@@ -1,9 +1,10 @@
 """Shows what a core flow reports, with Rich."""
 
 import typer
+from rich.console import Console
 from rich.status import Status
 
-from fugue.cli.output import Output
+from fugue.cli.views import TicketView
 from fugue.core.reporting import (
     Event,
     Message,
@@ -21,15 +22,16 @@ class RichReporter(Reporter):
     """Prints the steps of a flow as they happen. With `quiet`, it shows no events at all;
     questions are still asked, because the flow cannot go on without an answer."""
 
-    def __init__(self, output: Output, *, quiet: bool = False) -> None:
-        self._output = output
+    def __init__(self, console: Console | None = None, *, quiet: bool = False) -> None:
+        self._console = console or Console()
+        self._tickets = TicketView(self._console)
         self._quiet = quiet
         self._spinner: Status | None = None
 
     async def report(self, event: Event) -> None:
         if self._quiet:
             return
-        console = self._output.console
+        console = self._console
         match event:
             case StepStarted(step=step):
                 self._stop()
@@ -44,7 +46,7 @@ class RichReporter(Reporter):
                 console.print(f"[bold red]✗[/] {step}")
             case TicketRead(repository=repository, ticket=ticket):
                 self._stop()
-                self._output.ticket(ticket, repository)
+                self._tickets.show(ticket, repository)
             case StatusMoved():
                 pass
             case Message(text=text, level=level):
@@ -59,7 +61,7 @@ class RichReporter(Reporter):
             answer = str(typer.prompt(f"{question.text} [{options}]", default=question.default))
             if answer in question.choices:
                 return answer
-            self._output.console.print(f"[red]Please answer one of: {options}[/]")
+            self._console.print(f"[red]Please answer one of: {options}[/]")
 
     def _stop(self) -> None:
         if self._spinner is not None:

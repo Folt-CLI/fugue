@@ -8,7 +8,7 @@ import typer
 
 from fugue.cli.choices import StateFilter
 from fugue.cli.inputs import Inputs
-from fugue.cli.output import Output
+from fugue.cli.views import CommentView, Messages, PreviewView, TicketView
 from fugue.core.github import Github
 
 app = typer.Typer(help="Read and change issues.", no_args_is_help=True)
@@ -20,14 +20,14 @@ def get(
     comments: Annotated[bool, typer.Option("--comments", "-c", help="Also show comments.")] = False,
 ) -> None:
     """Show an issue."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         ticket = asyncio.run(github.issue.get(number))
         found = asyncio.run(github.issue.comments(number)) if comments else []
-    output.ticket(ticket, github.slug)
+    TicketView().show(ticket, github.slug)
     if comments:
-        output.comments(found)
+        CommentView().all(found)
 
 
 @app.command("list")
@@ -41,11 +41,11 @@ def list_(
     limit: Annotated[int, typer.Option("--limit", "-n", help="How many to show.")] = 30,
 ) -> None:
     """List issues."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         tickets = asyncio.run(github.issue.list(state=state.value, labels=label or [], limit=limit))
-    output.tickets(tickets, github.slug)
+    TicketView().table(tickets, github.slug)
 
 
 @app.command()
@@ -63,16 +63,16 @@ def create(
     ] = False,
 ) -> None:
     """Create an issue."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         text = Inputs.body(body, body_file)
         if dry_run:
-            output.preview(title, text, label or [], f"Would create in {github.slug}")
+            PreviewView().show(title, text, label or [], f"Would create in {github.slug}")
             return
         ticket = asyncio.run(github.issue.create(title, text, labels=label or []))
-    output.success(f"Created {github.slug}#{ticket.number}")
-    output.ticket(ticket, github.slug)
+    messages.success(f"Created {github.slug}#{ticket.number}")
+    TicketView().show(ticket, github.slug)
 
 
 @app.command()
@@ -88,13 +88,13 @@ def edit(
     ] = None,
 ) -> None:
     """Change an issue's title, text or labels."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         text = Inputs.body(body or "", body_file) if body is not None or body_file else None
         ticket = asyncio.run(github.issue.edit(number, title=title, body=text, labels=label))
-    output.success(f"Updated {github.slug}#{number}")
-    output.ticket(ticket, github.slug)
+    messages.success(f"Updated {github.slug}#{number}")
+    TicketView().show(ticket, github.slug)
 
 
 @app.command()
@@ -103,12 +103,12 @@ def comment(
     body: Annotated[str, typer.Argument(help="The comment.")],
 ) -> None:
     """Comment on an issue."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         added = asyncio.run(github.issue.comment(number, body))
-    output.success(f"Commented on {github.slug}#{number}")
-    output.comment(added)
+    messages.success(f"Commented on {github.slug}#{number}")
+    CommentView().show(added)
 
 
 @app.command()
@@ -119,11 +119,11 @@ def close(
     ] = False,
 ) -> None:
     """Close an issue."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         ticket = asyncio.run(github.issue.close(number, not_planned=not_planned))
-    output.success(
+    messages.success(
         f"Closed {github.slug}#{ticket.number} as {'not planned' if not_planned else 'completed'}"
     )
 
@@ -131,8 +131,8 @@ def close(
 @app.command()
 def reopen(number: Annotated[int, typer.Argument(help="Issue number.")]) -> None:
     """Reopen an issue."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         ticket = asyncio.run(github.issue.reopen(number))
-    output.success(f"Reopened {github.slug}#{ticket.number}")
+    messages.success(f"Reopened {github.slug}#{ticket.number}")

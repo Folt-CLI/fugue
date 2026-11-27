@@ -8,7 +8,7 @@ import typer
 
 from fugue.cli.choices import MergeMethod, StateFilter
 from fugue.cli.inputs import Inputs
-from fugue.cli.output import Output
+from fugue.cli.views import CommentView, Messages, PreviewView, PullRequestView
 from fugue.core.github import Github
 
 app = typer.Typer(help="Read and change pull requests.", no_args_is_help=True)
@@ -20,14 +20,14 @@ def get(
     comments: Annotated[bool, typer.Option("--comments", "-c", help="Also show comments.")] = False,
 ) -> None:
     """Show a pull request."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         pull = asyncio.run(github.pr.get(number))
         found = asyncio.run(github.pr.comments(number)) if comments else []
-    output.pull_request(pull, github.slug)
+    PullRequestView().show(pull, github.slug)
     if comments:
-        output.comments(found)
+        CommentView().all(found)
 
 
 @app.command("list")
@@ -39,11 +39,11 @@ def list_(
     limit: Annotated[int, typer.Option("--limit", "-n", help="How many to show.")] = 30,
 ) -> None:
     """List pull requests."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         pulls = asyncio.run(github.pr.list(state=state.value, base=base, limit=limit))
-    output.pull_requests(pulls, github.slug)
+    PullRequestView().table(pulls, github.slug)
 
 
 @app.command()
@@ -66,13 +66,13 @@ def create(
     ] = False,
 ) -> None:
     """Open a pull request."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         text = Inputs.body(body, body_file)
         if dry_run:
             source, target = asyncio.run(github.pr.resolve(head, base))
-            output.preview(
+            PreviewView().show(
                 title,
                 text,
                 [],
@@ -81,8 +81,8 @@ def create(
             )
             return
         pull = asyncio.run(github.pr.create(title, text, head=head, base=base, draft=draft))
-    output.success(f"Opened {github.slug}#{pull.number}")
-    output.pull_request(pull, github.slug)
+    messages.success(f"Opened {github.slug}#{pull.number}")
+    PullRequestView().show(pull, github.slug)
 
 
 @app.command()
@@ -96,13 +96,13 @@ def edit(
     base: Annotated[str | None, typer.Option("--base", help="New base branch.")] = None,
 ) -> None:
     """Change a pull request's title, text or base branch."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         text = Inputs.body(body or "", body_file) if body is not None or body_file else None
         pull = asyncio.run(github.pr.edit(number, title=title, body=text, base=base))
-    output.success(f"Updated {github.slug}#{number}")
-    output.pull_request(pull, github.slug)
+    messages.success(f"Updated {github.slug}#{number}")
+    PullRequestView().show(pull, github.slug)
 
 
 @app.command()
@@ -111,42 +111,42 @@ def comment(
     body: Annotated[str, typer.Argument(help="The comment.")],
 ) -> None:
     """Comment on a pull request."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         added = asyncio.run(github.pr.comment(number, body))
-    output.success(f"Commented on {github.slug}#{number}")
-    output.comment(added)
+    messages.success(f"Commented on {github.slug}#{number}")
+    CommentView().show(added)
 
 
 @app.command()
 def close(number: Annotated[int, typer.Argument(help="Pull request number.")]) -> None:
     """Close a pull request without merging it."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         pull = asyncio.run(github.pr.close(number))
-    output.success(f"Closed {github.slug}#{pull.number}")
+    messages.success(f"Closed {github.slug}#{pull.number}")
 
 
 @app.command()
 def reopen(number: Annotated[int, typer.Argument(help="Pull request number.")]) -> None:
     """Reopen a closed pull request."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         pull = asyncio.run(github.pr.reopen(number))
-    output.success(f"Reopened {github.slug}#{pull.number}")
+    messages.success(f"Reopened {github.slug}#{pull.number}")
 
 
 @app.command()
 def checks(number: Annotated[int, typer.Argument(help="Pull request number.")]) -> None:
     """Show the checks on a pull request's latest commit."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         found = asyncio.run(github.pr.checks(number))
-    output.checks(found, f"Checks on {github.slug}#{number}")
+    PullRequestView().checks(found, f"Checks on {github.slug}#{number}")
 
 
 @app.command()
@@ -158,11 +158,13 @@ def merge(
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Do not ask first.")] = False,
 ) -> None:
     """Merge a pull request. This cannot be undone."""
-    output = Output()
-    with output.guard():
+    messages = Messages()
+    with messages.guard():
         github = Github()
         pull = asyncio.run(github.pr.get(number))
-        output.pull_request(pull, github.slug)
-        output.confirm(f"Merge {github.slug}#{number} into {pull.base} ({method.value})?", yes=yes)
+        PullRequestView().show(pull, github.slug)
+        messages.confirm(
+            f"Merge {github.slug}#{number} into {pull.base} ({method.value})?", yes=yes
+        )
         merged = asyncio.run(github.pr.merge(number, method=method.value))
-    output.success(f"Merged {github.slug}#{merged.number} into {merged.base}")
+    messages.success(f"Merged {github.slug}#{merged.number} into {merged.base}")

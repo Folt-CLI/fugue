@@ -5,8 +5,8 @@ from typing import Annotated
 
 import typer
 
-from fugue.cli.output import Output
 from fugue.cli.reporter import RichReporter
+from fugue.cli.views import Messages, WorkView
 from fugue.core.work import Work
 
 
@@ -17,8 +17,8 @@ def work(
     ] = False,
 ) -> None:
     """Work one ticket."""
-    output = Output()
-    reporter = RichReporter(output, quiet=quiet)
-    with output.guard():
+    messages = Messages()
+    reporter = RichReporter(quiet=quiet)
+    with messages.guard():
         result = asyncio.run(Work().run(ticket, reporter))
-    output.work_result(result.repository, result.ticket.number, result.status)
+    WorkView().result(result.repository, result.ticket.number, result.status)
