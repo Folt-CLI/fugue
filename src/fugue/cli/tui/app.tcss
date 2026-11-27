@@ -207,3 +207,29 @@ Action {
     background: $success;
     text-style: bold;
 }
+
+FormScreen {
+    align: center middle;
+    background: $background 70%;
+}
+
+#form-window {
+    width: 90%;
+    height: 90%;
+    padding: 0 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#form-intro {
+    margin-top: 1;
+}
+
+FormScreen FormAction {
+    height: 1fr;
+}
+
+FormScreen #form-fields {
+    height: 1fr;
+    max-height: 100%;
+}

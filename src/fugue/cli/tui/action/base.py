@@ -25,6 +25,13 @@ class Action[QuestionT: Question](Vertical):
     class Committed(Message):
         """An embedded action has an answer."""
 
+    class Answered(Message):
+        """The action has ended with this answer. A screen that holds the action closes on it."""
+
+        def __init__(self, answer: Answer) -> None:
+            super().__init__()
+            self.answer = answer
+
     def __init__(self, question: QuestionT, *, embedded: bool = False) -> None:
         super().__init__()
         self.question = question
@@ -55,3 +62,4 @@ class Action[QuestionT: Question](Vertical):
     def finish(self, answer: Answer) -> None:
         if not self._answer.done():
             self._answer.set_result(answer)
+            self.post_message(self.Answered(answer))

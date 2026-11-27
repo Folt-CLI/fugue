@@ -11,6 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from fugue.cli.tui.action import ActionWindow
+from fugue.cli.tui.form_screen import FormScreen
 from fugue.cli.tui.reporter import TuiReporter
 from fugue.cli.tui.status import StatusBar
 from fugue.cli.tui.windows import (
@@ -26,6 +27,7 @@ from fugue.cli.views import WorkView
 from fugue.core.reporting import (
     Answer,
     Event,
+    Form,
     Message,
     Output,
     Question,
@@ -198,8 +200,12 @@ class WorkApp(App[None]):
                 pass  # the error is shown once, when `_run` catches it
 
     async def ask(self, question: Question) -> Answer:
-        """Stop the flow until the person has chosen an answer."""
-        answer = await self.query_one(ActionWindow).ask(question, returning_to=self.focused)
+        """Stop the flow until the person has answered. A form opens its own window; every other
+        kind of question is asked in the window at the bottom."""
+        if isinstance(question, Form):
+            answer = await self.push_screen_wait(FormScreen(question))
+        else:
+            answer = await self.query_one(ActionWindow).ask(question, returning_to=self.focused)
         shown = Text.assemble((f"{question.text} ", "dim"), (answer.text or "(nothing)", "bold"))
         await self._write(StdoutWindow, shown)
         return answer

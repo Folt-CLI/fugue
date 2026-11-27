@@ -11,24 +11,22 @@ from textual.widgets import Label, Static
 from fugue.cli.tui.action.ask import AskAction
 from fugue.cli.tui.action.base import Action
 from fugue.cli.tui.action.chat import ChatAction
-from fugue.cli.tui.action.form import FormAction
 from fugue.cli.tui.action.select import SelectAction
-from fugue.core.reporting import Answer, Ask, Chat, Form, Question, Select
+from fugue.core.reporting import Answer, Ask, Chat, Question, Select
 
 
 class ActionWindow(Vertical):
     """Hidden until the flow asks something, then shown under the other windows.
 
     It shows the question's text and body, which every kind of question has, and under them the
-    action that matches the kind of question (`ACTIONS`): buttons, a tick list, a text box,
-    a whole form.
+    action that matches the kind of question (`ACTIONS`): buttons, a tick list, a text box.
+    A form is too big for this window and has a screen of its own (`FormScreen`).
     """
 
     ACTIONS: ClassVar[dict[type[Question], type[Action]]] = {  # type: ignore[type-arg]
         Ask: AskAction,
         Select: SelectAction,
         Chat: ChatAction,
-        Form: FormAction,
     }
 
     def __init__(self) -> None:
