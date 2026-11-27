@@ -24,6 +24,10 @@ class RunReporter(Reporter):
         self._record = record
 
     @property
+    def can_hold(self) -> bool:  # type: ignore[override]
+        return self._inner.can_hold
+
+    @property
     def record(self) -> Path | None:
         """The file this run is recorded in, if it is recorded."""
         return self._record

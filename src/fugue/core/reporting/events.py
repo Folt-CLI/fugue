@@ -1,11 +1,30 @@
 """What a flow tells the world about, as data. Core says what happened; an interface decides
 how to show it. Each event carries a `kind`, so it can be sent as JSON and read back."""
 
-from typing import Literal
+from enum import StrEnum
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from fugue.models import FieldChange, Ticket
+
+
+class RunState(StrEnum):
+    """The three states a run is in. It is Running, or Stopped, or Finished, and nothing else.
+
+    A run only becomes Finished by finishing, or by being finished from outside on purpose. Any
+    other end of work is a Stop, which can be continued: that is the point of the state."""
+
+    RUNNING = "running"
+    STOPPED = "stopped"
+    FINISHED = "finished"
+
+
+class StopReason(StrEnum):
+    """Why a run stopped. There will be more ways than these."""
+
+    DECLINED = "declined"  # the person said no to going on
+    FAILED = "failed"  # a step raised an error
 
 
 class Event(BaseModel):
@@ -13,6 +32,10 @@ class Event(BaseModel):
     reporter fills them in, so a step never has to know them."""
 
     model_config = ConfigDict(frozen=True)
+
+    state: ClassVar[RunState | None] = (
+        None  # the state a run is in after this event, if it sets one
+    )
 
     run_id: str = ""
     flow: str = ""
@@ -89,34 +112,37 @@ class WorktreeReady(Event):
 
 
 class RunStarted(Event):
+    state: ClassVar[RunState | None] = RunState.RUNNING
+
     kind: Literal["run_started"] = "run_started"
     subject: str
 
 
-class RunFinished(Event):
-    kind: Literal["run_finished"] = "run_finished"
-
-
-class RunFailed(Event):
-    kind: Literal["run_failed"] = "run_failed"
-    message: str
-
-
-class RunPaused(Event):
-    """The person said no to going on; the run waits before `step` until they say continue."""
-
-    kind: Literal["run_paused"] = "run_paused"
-    step: str
-
-
 class RunResumed(Event):
+    """A stopped run goes on."""
+
+    state: ClassVar[RunState | None] = RunState.RUNNING
+
     kind: Literal["run_resumed"] = "run_resumed"
-    step: str
+    step: str = ""
 
 
 class RunStopped(Event):
+    """The run stopped, for the `reason`. For a declined stop the run waits, and the question the
+    person said no to comes back when they ask for it."""
+
+    state: ClassVar[RunState | None] = RunState.STOPPED
+
     kind: Literal["run_stopped"] = "run_stopped"
+    reason: StopReason
     message: str
+    step: str = ""
+
+
+class RunFinished(Event):
+    state: ClassVar[RunState | None] = RunState.FINISHED
+
+    kind: Literal["run_finished"] = "run_finished"
 
 
 class Answered(Event):

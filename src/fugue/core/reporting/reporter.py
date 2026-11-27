@@ -13,6 +13,10 @@ class Reporter(ABC):
     Rich; a server could forward them as JSON; a script can use `SilentReporter`.
     """
 
+    can_hold: bool = False
+    """Whether the interface can leave a question waiting and bring it back later. A terminal
+    prompt cannot, so a run that is declined there ends and is run again to continue."""
+
     @abstractmethod
     async def report(self, event: Event) -> None:
         """Something happened."""

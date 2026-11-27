@@ -12,6 +12,8 @@ class TuiReporter(Reporter):
     """The reporter a flow gets when it runs inside the app. It only forwards: the app
     decides how every event and question looks."""
 
+    can_hold = True
+
     def __init__(self, app: "WorkApp") -> None:
         self._app = app
 

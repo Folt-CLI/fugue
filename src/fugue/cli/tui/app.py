@@ -33,12 +33,14 @@ from fugue.core.reporting import (
     Message,
     Output,
     Question,
-    RunFailed,
     RunFinished,
-    RunPaused,
+    RunResumed,
+    RunState,
+    RunStopped,
     StepFailed,
     StepFinished,
     StepStarted,
+    StopReason,
     TicketRead,
     WorktreeReady,
 )
@@ -77,6 +79,8 @@ class WorkApp(App[None]):
         self._number = number
         self.result: WorkResult | None = None
         self.error: FugueError | None = None
+        self.state = RunState.RUNNING
+        self.stop_message: str | None = None  # why the run is stopped, while it is
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -175,8 +179,7 @@ class WorkApp(App[None]):
         try:
             self.result = await self._work.run(self._number, TuiReporter(self))
         except FlowStopped as stopped:
-            self.error = stopped
-            self.query_one(StatusBar).stopped(str(stopped))
+            self.stop_message = str(stopped)
         except FugueError as error:
             await self._fail(error)
         except Exception as error:  # a worker would swallow this and leave the screen running
@@ -184,13 +187,14 @@ class WorkApp(App[None]):
 
     async def _fail(self, error: FugueError) -> None:
         self.error = error
-        self.query_one(StatusBar).failed(str(error))
         await self._write(StderrWindow, str(error))
 
     async def show(self, event: Event) -> None:
         """Show one event from the flow in the window it belongs to."""
         checklist = self.query_one(ChecklistWindow)
         status = self.query_one(StatusBar)
+        if event.state is not None:
+            self.state = event.state
         match event:
             case StepStarted(step=step):
                 checklist.start(step)
@@ -226,12 +230,14 @@ class WorkApp(App[None]):
             case Output(stream="ai", text=text, agent=agent):
                 await self.query_one(AiWindow).write(agent, text)
                 self._mark(AiWindow)
-            case RunPaused(step=step):
-                status.paused(step)
+            case RunStopped(reason=reason, message=message):
+                self.stop_message = message
+                status.stopped(message, resumable=reason is StopReason.DECLINED)
+            case RunResumed():
+                self.stop_message = None
+                status.resumed()
             case RunFinished():
                 status.finished()
-            case RunFailed():
-                pass  # the error is shown once, when `_run` catches it
 
     async def ask(self, question: Question) -> Answer:
         """Stop the flow until the person has answered. A form opens its own window; every other

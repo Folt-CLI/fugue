@@ -15,7 +15,13 @@ from fugue.core.flow.records import RunReporter
 from fugue.core.flow.state import FlowDeps
 from fugue.core.flow.step import Step
 from fugue.core.github import Github
-from fugue.core.reporting import Reporter, RunFailed, RunFinished, RunStarted, RunStopped
+from fugue.core.reporting import (
+    Reporter,
+    RunFinished,
+    RunStarted,
+    RunStopped,
+    StopReason,
+)
 from fugue.errors import FlowError, FlowStopped, FugueError
 
 
@@ -70,14 +76,14 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
         try:
             result = await self._graph.run(state=state, deps=deps, inputs=self.start())
         except FlowStopped as stopped:
-            await scoped.report(RunStopped(message=str(stopped)))
+            await scoped.report(RunStopped(reason=StopReason.DECLINED, message=str(stopped)))
             raise
         except FugueError as error:
-            await scoped.report(RunFailed(message=str(error)))
+            await scoped.report(RunStopped(reason=StopReason.FAILED, message=str(error)))
             raise
         except Exception as error:
             message = f"{self.name} failed unexpectedly: {error!r}"
-            await scoped.report(RunFailed(message=message))
+            await scoped.report(RunStopped(reason=StopReason.FAILED, message=message))
             raise FlowError(message) from error
         await scoped.report(RunFinished())
         return result

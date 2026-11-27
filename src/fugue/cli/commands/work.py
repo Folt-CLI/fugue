@@ -12,6 +12,7 @@ from fugue.cli.views import Messages, WorkView
 from fugue.config import GithubConfig
 from fugue.core.github import Github
 from fugue.core.work import Work, WorkConfig, WorkResult
+from fugue.errors import FlowStopped
 
 
 def work(
@@ -37,7 +38,7 @@ def work(
         typer.Option(
             "--project",
             "-p",
-            help="Project number for the ticket's status. Default: GITHUB_PROJECT, or fugue.toml.",
+            help="Project for the ticket's status. Default: GITHUB_PROJECT or `fugue config`.",
         ),
     ] = None,
     quiet: Annotated[
@@ -69,5 +70,7 @@ def _in_screen(flow: Work, ticket: int) -> WorkResult:
     if app.error is not None:
         raise app.error
     if app.result is None:
+        if app.stop_message:  # the screen was closed while the run was stopped
+            raise FlowStopped(f"{app.stop_message} Run the command again to continue.")
         raise typer.Exit(1)
     return app.result
