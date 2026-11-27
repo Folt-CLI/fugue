@@ -68,12 +68,12 @@ ActionWindow {
 #action-choices {
     height: auto;
     margin-top: 1;
+    grid-gutter: 0 2;
 }
 
 #action-choices Button {
-    min-width: 14;
+    width: 100%;
     height: 3;
-    margin-right: 2;
     border: round $panel-lighten-2;
     border-top: round $panel-lighten-2;
     border-bottom: round $panel-lighten-2;

@@ -7,7 +7,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import ItemGrid, Vertical, VerticalScroll
 from textual.events import Key
 from textual.widget import Widget
 from textual.widgets import Button, Label, Static
@@ -21,8 +21,9 @@ class ActionWindow(Vertical):
 
     It is made of three parts that are set from the question and nothing else:
     `#action-text` (the question), `#action-body` (what to read first, as Markdown, hidden when
-    empty) and `#action-choices` (the answers). A new kind of question changes those parts in
-    `_present`; nothing else in the screen knows how a question looks.
+    empty) and `#action-choices` (the answers, in a grid that wraps when they do not fit). A
+    new kind of question changes those parts in `_present`; nothing else in the screen knows
+    how a question looks.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -41,7 +42,7 @@ class ActionWindow(Vertical):
         yield Label(id="action-text")
         with VerticalScroll(id="action-body"):
             yield Static()
-        yield Horizontal(id="action-choices")
+        yield ItemGrid(id="action-choices")
 
     @property
     def waiting(self) -> bool:
@@ -76,7 +77,10 @@ class ActionWindow(Vertical):
         body = self.query_one("#action-body", VerticalScroll)
         body.display = bool(question.body)
         self.query_one("#action-body Static", Static).update(Markdown(question.body))
-        choices = self.query_one("#action-choices", Horizontal)
+        choices = self.query_one("#action-choices", ItemGrid)
+        widest = max(len(choice) for choice in question.choices) + 8
+        choices.min_column_width = max(widest, 14)
+        choices.max_column_width = max(widest, 14) + 10
         await choices.remove_children()
         await choices.mount(
             *(
