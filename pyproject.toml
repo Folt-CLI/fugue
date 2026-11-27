@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.14.4,<3",
     "pydantic-ai-slim[claude-agent,openai]",
     "pydantic-graph",
+    "pydantic-settings>=2.16.3,<3",
     "pygit2>=1.21.0,<1.22",
     "typer>=0.29.3",
 ]

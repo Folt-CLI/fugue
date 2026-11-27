@@ -5,8 +5,8 @@ from typing import Annotated
 
 import typer
 
-from fugue.context import ContextError
-from fugue.github import Github, GitHubError
+from fugue.errors import FugueError
+from fugue.github import Github
 
 
 def work(
@@ -16,7 +16,7 @@ def work(
     try:
         github = Github()
         found = asyncio.run(github.issue.get(ticket))
-    except (ContextError, GitHubError) as error:
+    except FugueError as error:
         typer.echo(f"fugue: {error}", err=True)
         raise typer.Exit(1) from error
     typer.echo(f"{github.slug}#{found.number} [{found.state}] {found.title}")
