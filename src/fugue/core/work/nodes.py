@@ -12,7 +12,15 @@ from typing import Any
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from fugue.core.flow import FlowDeps, MoveStatus, PrepareBranch, ReadTicket, RunGate, Step
+from fugue.core.flow import (
+    FlowDeps,
+    MoveStatus,
+    PrepareBranch,
+    ReadDetails,
+    ReadTicket,
+    RunGate,
+    Step,
+)
 from fugue.core.work.config import WorkConfig
 from fugue.core.work.result import WorkResult
 from fugue.core.work.state import WorkState
@@ -32,6 +40,7 @@ class ReadTicketNode(WorkStep):
 
     async def act(self, state: WorkState, deps: Deps) -> str:
         state.ticket = await ReadTicket(deps.github, deps.reporter).perform(state.number)
+        state.details = await ReadDetails(deps.github, deps.reporter).perform(state.number)
         return f"#{state.ticket.number} {state.ticket.title}"
 
     async def run(self, ctx: Context) -> MoveStatusNode:

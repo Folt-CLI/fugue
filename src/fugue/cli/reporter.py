@@ -23,6 +23,7 @@ from fugue.core.reporting import (
     StepFailed,
     StepFinished,
     StepStarted,
+    TicketDetails,
     TicketRead,
     WorktreeReady,
 )
@@ -60,6 +61,9 @@ class RichReporter(Reporter):
             case TicketRead(repository=repository, ticket=ticket):
                 self._stop()
                 self._tickets.show(ticket, repository)
+            case TicketDetails(fields=fields):
+                self._stop()
+                console.print(self._tickets.fields_panel(fields))
             case StatusMoved():
                 pass
             case WorktreeReady() as ready:

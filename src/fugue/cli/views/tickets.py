@@ -3,6 +3,8 @@
 from collections.abc import Sequence
 
 from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from fugue.cli.views.view import View
 from fugue.models import Ticket
@@ -27,6 +29,15 @@ class TicketView(View):
             ticket.body,
             ticket.url,
         )
+
+    @staticmethod
+    def fields_panel(fields: dict[str, str]) -> Panel:
+        """What the project knows about the ticket, one field per line."""
+        grid = Table.grid(padding=(0, 2))
+        for name, value in fields.items():
+            style = "yellow" if name == "Status" else ""
+            grid.add_row(Text(name, style="dim"), Text(value or "-", style=style))
+        return Panel(grid, title="[bold cyan]Project[/]", border_style="cyan", padding=(0, 2))
 
     def table(self, tickets: Sequence[Ticket], repository: str) -> None:
         """Issues as a table."""

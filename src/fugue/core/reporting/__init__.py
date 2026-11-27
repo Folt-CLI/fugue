@@ -19,6 +19,7 @@ from fugue.core.reporting.events import (
     StepFinished,
     StepStarted,
     StopReason,
+    TicketDetails,
     TicketRead,
     WorktreeReady,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "StepFinished",
     "StepStarted",
     "StopReason",
+    "TicketDetails",
     "TicketRead",
     "WorktreeReady",
 ]

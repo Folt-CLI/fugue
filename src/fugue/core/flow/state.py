@@ -1,6 +1,6 @@
 """The shapes of state and dependencies that flows share."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fugue.core.flow.checkpoint import Checkpoint
 from fugue.core.github import Github
@@ -15,6 +15,7 @@ class TicketState:
 
     number: int
     ticket: Ticket | None = None
+    details: dict[str, str] = field(default_factory=dict)
     status: str | None = None
 
     @property

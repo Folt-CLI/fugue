@@ -113,6 +113,16 @@ class TicketRead(Event):
     ticket: Ticket
 
 
+class TicketDetails(Event):
+    """What the project knows about the ticket: its status, size, type, priority and the other
+    fields, in the order they are worth reading."""
+
+    kind: Literal["ticket_details"] = "ticket_details"
+    repository: str
+    number: int
+    fields: dict[str, str]
+
+
 class StatusMoved(Event):
     kind: Literal["status_moved"] = "status_moved"
     repository: str
