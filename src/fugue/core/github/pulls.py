@@ -35,13 +35,40 @@ class PullRequests(Area):
             )
         return [self._to_pull_request(pull) for pull in self._each(response.parsed_data)][:limit]
 
+    async def resolve(self, head: str | None = None, base: str | None = None) -> tuple[str, str]:
+        """The branches a pull request would use: (head, base).
+
+        The head defaults to the checked-out branch and the base to the repository's default
+        branch. A pull request from a branch into itself is refused.
+        """
+        source = head or self._github.repository.branch
+        if not source:
+            raise GitHubError("no branch to open from: check one out or give a head")
+        target = base or (await self._github.repo.info()).default_branch
+        if source == target:
+            raise GitHubError(f"{source} is the base branch: check out a branch or give a head")
+        return source, target
+
     async def create(
-        self, title: str, head: str, base: str, body: str = "", *, draft: bool = False
+        self,
+        title: str,
+        body: str = "",
+        *,
+        head: str | None = None,
+        base: str | None = None,
+        draft: bool = False,
     ) -> PullRequest:
-        """Open a pull request from branch `head` into `base`."""
+        """Open a pull request. See `resolve` for the default branches."""
+        source, target = await self.resolve(head, base)
         with self._github.guard(f"a new pull request in {self._slug}"):
             response = await self._client.rest.pulls.async_create(
-                self._owner, self._name, title=title, head=head, base=base, body=body, draft=draft
+                self._owner,
+                self._name,
+                title=title,
+                head=source,
+                base=target,
+                body=body,
+                draft=draft,
             )
         return self._to_pull_request(response.parsed_data)
 

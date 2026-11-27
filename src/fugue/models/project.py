@@ -47,3 +47,32 @@ class ProjectItem(BaseModel):
     state: str = ""
     url: str = ""
     fields: dict[str, str] = Field(default_factory=dict)
+
+
+class ProjectOverview(BaseModel):
+    """A project together with its fields."""
+
+    model_config = ConfigDict(frozen=True)
+
+    project: Project
+    fields: tuple[ProjectField, ...]
+
+
+class ProjectTable(BaseModel):
+    """Items of a project with the fields that were read for them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    project: Project
+    columns: tuple[str, ...]
+    items: tuple[ProjectItem, ...]
+
+
+class FieldChange(BaseModel):
+    """A field of an item after it was set, under the field's real name."""
+
+    model_config = ConfigDict(frozen=True)
+
+    issue: int
+    field: str
+    value: str

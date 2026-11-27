@@ -22,3 +22,7 @@ class Branches(Area):
         """Delete a branch on GitHub."""
         with self._github.guard(f"branch {name!r} in {self._slug}"):
             await self._client.rest.git.async_delete_ref(self._owner, self._name, f"heads/{name}")
+
+    async def default(self) -> str:
+        """The name of the repository's default branch."""
+        return (await self._github.repo.info()).default_branch

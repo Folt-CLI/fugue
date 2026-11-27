@@ -31,9 +31,10 @@ def fields(
     output = Output()
     with output.guard():
         github = Github()
-        found = asyncio.run(github.project.fields(project))
-        info = asyncio.run(github.project.get(project))
-    output.project_fields(found, f"Fields of project {info.number}: {info.title}")
+        view = asyncio.run(github.project.overview(project))
+    output.project_fields(
+        view.fields, f"Fields of project {view.project.number}: {view.project.title}"
+    )
 
 
 @app.command()
@@ -57,12 +58,10 @@ def items(
     output = Output()
     with output.guard():
         github = Github()
-        columns = column or list(github.project.DEFAULT_COLUMNS)
-        found = asyncio.run(
-            github.project.items(project, query=query, columns=columns, limit=limit)
-        )
-        info = asyncio.run(github.project.get(project))
-    output.project_items(found, columns, f"Project {info.number}: {info.title}")
+        view = asyncio.run(github.project.table(project, query=query, columns=column, limit=limit))
+    output.project_items(
+        view.items, view.columns, f"Project {view.project.number}: {view.project.title}"
+    )
 
 
 @app.command()
@@ -76,11 +75,7 @@ def item(
     output = Output()
     with output.guard():
         github = Github()
-        fields_ = asyncio.run(github.project.fields(project))
-        names = [
-            f.name for f in fields_ if f.type not in ("title", "labels", "linked_pull_requests")
-        ]
-        found = asyncio.run(github.project.item(number, project, columns=names))
+        found = asyncio.run(github.project.details(number, project))
     output.project_item(found, f"{github.slug}#{number}")
 
 
@@ -116,12 +111,8 @@ def set_(
     output = Output()
     with output.guard():
         github = Github()
-        found = asyncio.run(github.project.set(number, field, value, project))
-    name, shown = next(
-        ((k, v) for k, v in found.fields.items() if k.casefold() == field.casefold()),
-        (field, value),
-    )
-    output.success(f"{github.slug}#{number}: {name} = {shown}")
+        change = asyncio.run(github.project.set(number, field, value, project))
+    output.success(f"{github.slug}#{number}: {change.field} = {change.value}")
 
 
 @app.command()

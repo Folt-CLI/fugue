@@ -122,9 +122,7 @@ def close(
     output = Output()
     with output.guard():
         github = Github()
-        ticket = asyncio.run(
-            github.issue.close(number, reason="not_planned" if not_planned else "completed")
-        )
+        ticket = asyncio.run(github.issue.close(number, not_planned=not_planned))
     output.success(
         f"Closed {github.slug}#{ticket.number} as {'not planned' if not_planned else 'completed'}"
     )

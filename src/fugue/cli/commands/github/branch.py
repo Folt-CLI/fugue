@@ -20,7 +20,7 @@ def list_(
     with output.guard():
         github = Github()
         branches = asyncio.run(github.branch.list(limit=limit))
-        default = asyncio.run(github.repo.info()).default_branch
+        default = asyncio.run(github.branch.default())
     output.branches(branches, default)
 
 

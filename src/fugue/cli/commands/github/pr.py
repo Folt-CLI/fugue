@@ -10,7 +10,6 @@ from fugue.cli.choices import MergeMethod, StateFilter
 from fugue.cli.inputs import Inputs
 from fugue.cli.output import Output
 from fugue.core.github import Github
-from fugue.errors import GitHubError
 
 app = typer.Typer(help="Read and change pull requests.", no_args_is_help=True)
 
@@ -70,14 +69,9 @@ def create(
     output = Output()
     with output.guard():
         github = Github()
-        source = head or github.repository.branch
-        if not source:
-            raise GitHubError("no branch to open from: check one out or give --head")
-        target = base or asyncio.run(github.repo.info()).default_branch
-        if source == target:
-            raise GitHubError(f"{source} is the base branch: check out a branch or give --head")
         text = Inputs.body(body, body_file)
         if dry_run:
+            source, target = asyncio.run(github.pr.resolve(head, base))
             output.preview(
                 title,
                 text,
@@ -86,7 +80,7 @@ def create(
                 f"{source} → {target}{' · draft' if draft else ''}",
             )
             return
-        pull = asyncio.run(github.pr.create(title, source, target, text, draft=draft))
+        pull = asyncio.run(github.pr.create(title, text, head=head, base=base, draft=draft))
     output.success(f"Opened {github.slug}#{pull.number}")
     output.pull_request(pull, github.slug)
 

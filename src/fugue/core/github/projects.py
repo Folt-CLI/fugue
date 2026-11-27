@@ -9,11 +9,21 @@ from typing import Any, Literal
 
 from fugue.core.github.area import Area
 from fugue.errors import GitHubError
-from fugue.models import Project, ProjectField, ProjectItem, ProjectOption
+from fugue.models import (
+    FieldChange,
+    Project,
+    ProjectField,
+    ProjectItem,
+    ProjectOption,
+    ProjectOverview,
+    ProjectTable,
+)
 
 
 class Projects(Area):
     DEFAULT_COLUMNS = ("Status", "Priority", "Size")
+    # Field types whose value is shown elsewhere, so `details` leaves them out.
+    UNSHOWN_TYPES = ("title", "labels", "linked_pull_requests")
 
     def __init__(self, github: Any) -> None:
         super().__init__(github)
@@ -41,6 +51,12 @@ class Projects(Area):
             "GET", f"/{number}/fields", f"fields of project {number}", per_page=self.MAX_LIMIT
         )
         return [self._to_field(field) for field in data]
+
+    async def overview(self, project: int | None = None) -> ProjectOverview:
+        """A project together with its fields."""
+        return ProjectOverview(
+            project=await self.get(project), fields=tuple(await self.fields(project))
+        )
 
     # ----- items -----
 
@@ -84,6 +100,28 @@ class Projects(Area):
             if cursor is None:
                 raise GitHubError(f"#{issue} is not on project {number}")
 
+    async def table(
+        self,
+        project: int | None = None,
+        *,
+        query: str | None = None,
+        columns: Sequence[str] | None = None,
+        limit: int = 50,
+    ) -> ProjectTable:
+        """Items with their columns. The columns default to Status, Priority and Size."""
+        chosen = tuple(columns) if columns else self.DEFAULT_COLUMNS
+        return ProjectTable(
+            project=await self.get(project),
+            columns=chosen,
+            items=tuple(await self.items(project, query=query, columns=chosen, limit=limit)),
+        )
+
+    async def details(self, issue: int, project: int | None = None) -> ProjectItem:
+        """One item with the value of every field that has one to show."""
+        fields = await self.fields(project)
+        names = [field.name for field in fields if field.type not in self.UNSHOWN_TYPES]
+        return await self.item(issue, project, columns=names)
+
     async def add(
         self, issue: int, project: int | None = None, *, pull_request: bool = False
     ) -> ProjectItem:
@@ -100,15 +138,18 @@ class Projects(Area):
                 "number": issue,
             },
         )
-        return await self.item(issue, number)
+        return await self.details(issue, number)
 
     async def set(
         self, issue: int, field: str, value: str, project: int | None = None
-    ) -> ProjectItem:
+    ) -> FieldChange:
         """Set a field of an item. A select field takes the name of one of its options."""
         number = self._number(project)
         target = self._field(await self.fields(number), field)
-        return await self._write(issue, number, target, self._encode(target, value))
+        item = await self._write(issue, number, target, self._encode(target, value))
+        return FieldChange(
+            issue=issue, field=target.name, value=item.fields.get(target.name, value)
+        )
 
     async def clear(self, issue: int, field: str, project: int | None = None) -> ProjectItem:
         """Empty a field of an item."""

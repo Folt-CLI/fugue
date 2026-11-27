@@ -75,10 +75,9 @@ class Issues(Area):
             raise GitHubError("nothing to change: give a title, a body or labels")
         return await self._update(number, changes)
 
-    async def close(
-        self, number: int, *, reason: Literal["completed", "not_planned"] = "completed"
-    ) -> Ticket:
-        """Close an issue."""
+    async def close(self, number: int, *, not_planned: bool = False) -> Ticket:
+        """Close an issue as completed, or as not planned."""
+        reason = "not_planned" if not_planned else "completed"
         return await self._update(number, {"state": "closed", "state_reason": reason})
 
     async def reopen(self, number: int) -> Ticket:
