@@ -3,11 +3,12 @@
 from pathlib import Path
 from typing import ClassVar
 
+from rich.console import RenderableType
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header
+from textual.containers import Horizontal
+from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from fugue.cli.tui.question import QuestionScreen
 from fugue.cli.tui.reporter import TuiReporter
@@ -15,6 +16,7 @@ from fugue.cli.tui.status import StatusBar
 from fugue.cli.tui.windows import (
     AiWindow,
     ChecklistWindow,
+    LogWindow,
     StderrWindow,
     StdoutWindow,
     TicketWindow,
@@ -37,13 +39,7 @@ from fugue.core.reporting import (
 from fugue.core.work import Work, WorkResult
 from fugue.errors import FlowError, FugueError
 
-WINDOWS: tuple[type[Window], ...] = (
-    ChecklistWindow,
-    TicketWindow,
-    StdoutWindow,
-    StderrWindow,
-    AiWindow,
-)
+PAGES: tuple[type[Window], ...] = (TicketWindow, StdoutWindow, StderrWindow, AiWindow)
 
 
 class WorkApp(App[None]):
@@ -58,7 +54,8 @@ class WorkApp(App[None]):
 
     CSS_PATH: ClassVar[Path] = Path(__file__).with_name("app.tcss")
     BINDINGS: ClassVar[list[BindingType]] = [
-        *(Binding(window.key, f"toggle('{window.key}')", window.title) for window in WINDOWS),
+        Binding(ChecklistWindow.key, "toggle_checklist", ChecklistWindow.title),
+        *(Binding(page.key, f"show_page('{page.key}')", page.title) for page in PAGES),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -73,12 +70,10 @@ class WorkApp(App[None]):
         yield Header()
         with Horizontal(id="windows"):
             yield ChecklistWindow(self._work.steps())
-            with Vertical(id="main"):
-                yield TicketWindow()
-                with Horizontal(id="logs"):
-                    yield StdoutWindow()
-                    yield StderrWindow()
-                    yield AiWindow()
+            with TabbedContent(id="pages", initial=self._pane(TicketWindow)):
+                for page in PAGES:
+                    with TabPane(self._label(page), id=self._pane(page)):
+                        yield page()
         yield StatusBar()
         yield Footer()
 
@@ -86,11 +81,33 @@ class WorkApp(App[None]):
         self.title = f"fugue work #{self._number}"
         self.run_worker(self._run(), exit_on_error=False)
 
-    async def action_toggle(self, key: str) -> None:
-        """Show or hide the window that has this key."""
-        for window in self.query(Window):
-            if window.key == key:
-                window.toggle()
+    async def action_toggle_checklist(self) -> None:
+        self.query_one(ChecklistWindow).toggle()
+
+    async def action_show_page(self, key: str) -> None:
+        """Bring the page with this key to the front."""
+        self.query_one(TabbedContent).active = f"page-{key}"
+
+    @staticmethod
+    def _pane(page: type[Window]) -> str:
+        return f"page-{page.key}"
+
+    @staticmethod
+    def _label(page: type[Window], *, unseen: bool = False) -> str:
+        return f"{page.title} ({page.key}){' •' if unseen else ''}"
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """A page that comes to the front has been seen."""
+        for page in PAGES:
+            if self._pane(page) == event.pane.id:
+                self.query_one(TabbedContent).get_tab(event.pane.id).label = self._label(page)
+
+    async def _write(self, page: type[LogWindow], content: RenderableType) -> None:
+        """Write to a page, and mark it if it is not the one in front."""
+        await self.query_one(page).write(content)
+        tabs = self.query_one(TabbedContent)
+        if tabs.active != self._pane(page):
+            tabs.get_tab(self._pane(page)).label = self._label(page, unseen=True)
 
     async def _run(self) -> None:
         try:
@@ -103,7 +120,7 @@ class WorkApp(App[None]):
     async def _fail(self, error: FugueError) -> None:
         self.error = error
         self.query_one(StatusBar).failed(str(error))
-        await self.query_one(StderrWindow).write(str(error))
+        await self._write(StderrWindow, str(error))
 
     async def show(self, event: Event) -> None:
         """Show one event from the flow in the window it belongs to."""
@@ -127,17 +144,17 @@ class WorkApp(App[None]):
                     new_branch=ready.new_branch,
                     reused=ready.reused,
                 )
-                await self.query_one(StdoutWindow).write(Text.from_markup(f"{first}\n{second}"))
+                await self._write(StdoutWindow, Text.from_markup(f"{first}\n{second}"))
             case Message(text=text, level="warning"):
-                await self.query_one(StderrWindow).write(text)
+                await self._write(StderrWindow, text)
             case Message(text=text):
-                await self.query_one(StdoutWindow).write(text)
+                await self._write(StdoutWindow, text)
             case Output(stream="stdout", text=text):
-                await self.query_one(StdoutWindow).write(text)
+                await self._write(StdoutWindow, text)
             case Output(stream="stderr", text=text):
-                await self.query_one(StderrWindow).write(text)
+                await self._write(StderrWindow, text)
             case Output(stream="ai", text=text):
-                await self.query_one(AiWindow).write(text)
+                await self._write(AiWindow, text)
             case RunFinished():
                 status.finished()
             case RunFailed():
@@ -146,7 +163,7 @@ class WorkApp(App[None]):
     async def ask(self, question: Question) -> str:
         """Stop the flow until the person has chosen an answer."""
         answer: str = await self.push_screen_wait(QuestionScreen(question))
-        await self.query_one(StdoutWindow).write(
-            Text.from_markup(f"[dim]{question.text}[/] [bold]{answer}[/]")
+        await self._write(
+            StdoutWindow, Text.from_markup(f"[dim]{question.text}[/] [bold]{answer}[/]")
         )
         return answer

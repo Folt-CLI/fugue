@@ -2,8 +2,17 @@
     height: 1fr;
 }
 
-#main {
+#pages {
     width: 1fr;
+}
+
+TabPane {
+    padding: 0;
+}
+
+TabPane > Window {
+    border: none;
+    height: 1fr;
 }
 
 Window {
@@ -26,18 +35,6 @@ Window > .placeholder {
 
 ChecklistWindow {
     width: 38;
-}
-
-TicketWindow {
-    height: 2fr;
-}
-
-#logs {
-    height: 1fr;
-}
-
-#logs > Window {
-    width: 1fr;
 }
 
 StatusBar {
