@@ -9,7 +9,7 @@ from githubkit.exception import RequestFailed
 from fugue.config import GithubConfig
 from fugue.errors import GitHubError
 from fugue.github.issues import Issues
-from fugue.repository import Repository
+from fugue.gitops import Repository
 
 
 class Github:
