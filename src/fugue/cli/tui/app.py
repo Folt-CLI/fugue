@@ -56,6 +56,10 @@ class WorkApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding(ChecklistWindow.key, "toggle_checklist", ChecklistWindow.title),
         *(Binding(page.key, f"show_page('{page.key}')", page.title) for page in PAGES),
+        Binding("H", "move('left')", "Move", key_display="HJKL"),
+        Binding("J", "move('down')", "Next page", show=False),
+        Binding("K", "move('up')", "Previous page", show=False),
+        Binding("L", "move('right')", "Page", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -90,6 +94,24 @@ class WorkApp(App[None]):
         for page in PAGES:
             if page.key == key:
                 self.call_after_refresh(self.query_one(page).focus)
+
+    async def action_move(self, direction: str) -> None:
+        """Move the selection with Shift+H J K L: H to the checklist, L to the page in front,
+        J and K to the next and previous page."""
+        tabs = self.query_one(TabbedContent)
+        keys = [page.key for page in PAGES]
+        current = keys.index(tabs.active.removeprefix("page-"))
+        match direction:
+            case "left":
+                checklist = self.query_one(ChecklistWindow)
+                if checklist.display:
+                    checklist.focus()
+            case "right":
+                await self.action_show_page(keys[current])
+            case "down":
+                await self.action_show_page(keys[(current + 1) % len(keys)])
+            case "up":
+                await self.action_show_page(keys[(current - 1) % len(keys)])
 
     @staticmethod
     def _pane(page: type[Window]) -> str:

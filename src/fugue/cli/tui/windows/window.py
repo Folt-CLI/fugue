@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from rich.console import RenderableType
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
@@ -15,6 +16,11 @@ class Window(VerticalScroll):
     A subclass adds methods that speak its own language, such as `TicketWindow.show`, and
     builds the renderable. Windows never know about flows or events: the app feeds them.
     """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("j", "scroll_down", "Down", show=False),
+        Binding("k", "scroll_up", "Up", show=False),
+    ]
 
     title: ClassVar[str]
     key: ClassVar[str]

@@ -29,6 +29,10 @@ Window > Static {
     margin-bottom: 1;
 }
 
+LogWindow > Static {
+    margin-bottom: 0;
+}
+
 Window > .placeholder {
     color: $text-muted;
 }
