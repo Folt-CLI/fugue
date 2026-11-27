@@ -26,6 +26,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "2.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "docstring-parser" },
+    { name = "httpx2" },
+    { name = "jiter" },
+    { name = "opentelemetry-api" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ae/ca/714857a41e333b9292b1db0d642d46256d27b3efe4697df642286ca23ad9/anthropic-2.14.0.tar.gz", hash = "sha256:afb02f4df8efba429ff769bbfd71340d8b244b41ba42c073a45cc307702549fe", size = 2090851, upload-time = "2026-11-24T21:01:49.208Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/27/8bbae12e619497c651f35fec779389ab04e6b7b92b022f94390ec82be973/anthropic-2.14.0-py3-none-any.whl", hash = "sha256:5cf986851f61c0858ac88c6f7c28490369a68ff4a89c309849605b764da0664d", size = 2726387, upload-time = "2026-11-24T21:01:46.861Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -449,6 +468,15 @@ wheels = [
 ]
 
 [[package]]
+name = "docstring-parser"
+version = "0.18.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
 name = "fugue"
 version = "0.4.0"
 source = { editable = "." }
@@ -457,7 +485,8 @@ dependencies = [
     { name = "githubkit" },
     { name = "openai-codex" },
     { name = "pydantic" },
-    { name = "pydantic-ai-slim", extra = ["openai"] },
+    { name = "pydantic-ai-slim", extra = ["claude-agent", "openai"] },
+    { name = "pydantic-graph" },
     { name = "pygit2" },
     { name = "typer" },
 ]
@@ -475,7 +504,8 @@ requires-dist = [
     { name = "githubkit", specifier = ">=0.17.1,<0.18" },
     { name = "openai-codex", specifier = ">=0.172.0,<0.173" },
     { name = "pydantic", specifier = ">=2.14.4,<3" },
-    { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.76.0,<3" },
+    { name = "pydantic-ai-slim", extras = ["claude-agent", "openai"], git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_ai_slim&rev=1cbd8fa8b18c835a06b2007e463e8c210d553a8e" },
+    { name = "pydantic-graph", git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_graph&rev=1cbd8fa8b18c835a06b2007e463e8c210d553a8e" },
     { name = "pygit2", specifier = ">=1.21.0,<1.22" },
     { name = "typer", specifier = ">=0.29.3" },
 ]
@@ -1214,8 +1244,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "2.76.0"
-source = { registry = "https://pypi.org/simple" }
+version = "2.75.1.dev65+1cbd8fa8b"
+source = { git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_ai_slim&rev=1cbd8fa8b18c835a06b2007e463e8c210d553a8e#1cbd8fa8b18c835a06b2007e463e8c210d553a8e" }
 dependencies = [
     { name = "anyio" },
     { name = "genai-prices" },
@@ -1227,12 +1257,12 @@ dependencies = [
     { name = "truststore", marker = "sys_platform != 'emscripten'" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/01/05/08d6a9c50f74bdecdb3e389b15037e359d5d19730429ef013a2a8cc13e5b/pydantic_ai_slim-2.76.0.tar.gz", hash = "sha256:5844b50b1974ee276ed1ba973e0c88cd27e58430f6ea3e7aee6d4265216cc849", size = 2845684, upload-time = "2026-11-27T01:00:19.774Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/50/86da6c6df1d62c9d8c8affbc837fb4c5020f6027a7c72138fef6b5d7ccbb/pydantic_ai_slim-2.76.0-py3-none-any.whl", hash = "sha256:cc23e4538d25bbb9a2ad60ef36671e9291dc2abbebb2fab2c0e40163747bee74", size = 3256243, upload-time = "2026-11-27T01:00:06.622Z" },
-]
 
 [package.optional-dependencies]
+claude-agent = [
+    { name = "anthropic" },
+    { name = "claude-agent-sdk" },
+]
 openai = [
     { name = "openai" },
     { name = "tiktoken" },
@@ -1349,17 +1379,13 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "2.76.0"
-source = { registry = "https://pypi.org/simple" }
+version = "2.75.1.dev65+1cbd8fa8b"
+source = { git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_graph&rev=1cbd8fa8b18c835a06b2007e463e8c210d553a8e#1cbd8fa8b18c835a06b2007e463e8c210d553a8e" }
 dependencies = [
     { name = "anyio" },
     { name = "logfire-api" },
     { name = "pydantic" },
     { name = "typing-inspection" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/41/85/bf661a2174af30dda8cbedb8d9f784d71ebf4adee9ff3377cf68519137f7/pydantic_graph-2.76.0.tar.gz", hash = "sha256:838b8a452620f58a4c51b8e00fe3d0cd1f17408ec74e7ce1940de10e3d615f1c", size = 47715, upload-time = "2026-11-27T01:00:23.35Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1c/be/64ccaf5c765dd3420cfb11e8f5c270cc52905c9c658522a73edc1bae54c3/pydantic_graph-2.76.0-py3-none-any.whl", hash = "sha256:0d500e3afeb5eb169ee728b294def99524f59bb6f1c81a4ce708a02698a96fca", size = 54877, upload-time = "2026-11-27T01:00:12.067Z" },
 ]
 
 [[package]]
