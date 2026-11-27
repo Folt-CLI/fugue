@@ -19,7 +19,8 @@ from fugue.core.reporting import Answer, Ask, Chat, Form, Question, Select
 
 class FormAction(Action[Form]):
     """The form's questions one under another in a scrolling area, each with its own action,
-    and a Submit button above them, so it never scrolls out of sight.
+    and a separate Submit button under them, which is how the form is finished. The button
+    stays in view while the questions scroll.
 
     Tab and Shift+Tab move between the questions, and answering one moves on to the next. Ctrl+S
     or the Submit button sends every answer at once. A field that was not answered gives its
@@ -42,9 +43,7 @@ class FormAction(Action[Form]):
         self._progress = Static(id="form-progress")
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="form-header"):
-            yield self._progress
-            yield Button(self.question.submit, id="form-submit", compact=True)
+        yield self._progress
         with VerticalScroll(id="form-fields"):
             for index, field in enumerate(self.question.fields, 1):
                 action = self.FIELDS[type(field)](field, embedded=True)
@@ -54,6 +53,8 @@ class FormAction(Action[Form]):
                     if field.body:
                         yield Static(Markdown(field.body), classes="form-body")
                     yield action
+        with Horizontal(id="form-actions"):
+            yield Button(self.question.submit, id="form-submit")
 
     def on_mount(self) -> None:
         self._show_progress(0)

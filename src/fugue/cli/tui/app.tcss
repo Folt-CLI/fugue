@@ -163,13 +163,8 @@ Action {
     color: $text;
 }
 
-#form-header {
-    height: 1;
-    margin-top: 1;
-}
-
 #form-progress {
-    width: 1fr;
+    margin-top: 1;
     color: $text-muted;
 }
 
@@ -196,15 +191,27 @@ Action {
     color: $text-muted;
 }
 
+#form-actions {
+    height: 3;
+    margin-top: 1;
+    align-horizontal: right;
+}
+
 #form-submit {
     width: auto;
-    min-width: 18;
-    background: $success 40%;
+    min-width: 22;
+    height: 3;
+    border: round $success;
+    background: transparent;
     color: $text;
 }
 
+#form-submit:hover {
+    background: $success 20%;
+}
+
 #form-submit:focus {
-    background: $success;
+    background: $success 35%;
     text-style: bold;
 }
 
