@@ -76,6 +76,12 @@ class Worktrees:
             raise RepositoryError(f"origin has no branch {base!r}") from None
 
         existing = repo.lookup_branch(branch)
+        if existing is not None:
+            elsewhere = self._checked_out(repo, branch)
+            if elsewhere is not None:
+                return Worktree(
+                    path=elsewhere, branch=branch, base=base, new_branch=False, reused=True
+                )
         if path.exists():
             if self._is_worktree_of(path, branch):
                 return Worktree(path=path, branch=branch, base=base, new_branch=False, reused=True)
@@ -87,8 +93,21 @@ class Worktrees:
         try:
             repo.add_worktree(path.name, str(path), target)
         except pygit2.GitError as error:
+            if created:
+                target.delete()
             raise RepositoryError(f"could not add a worktree on {branch}: {error}") from error
         return Worktree(path=path, branch=branch, base=base, new_branch=created, reused=False)
+
+    def _checked_out(self, repo: pygit2.Repository, branch: str) -> Path | None:
+        """Where `branch` is already checked out, in the repository itself or a worktree."""
+        root = self._repository.root
+        if not repo.head_is_unborn and not repo.head_is_detached and repo.head.shorthand == branch:
+            raise RepositoryError(f"{branch} is checked out in the repository itself, at {root}")
+        for name in repo.list_worktrees():
+            where = Path(repo.lookup_worktree(name).path)
+            if where.exists() and self._is_worktree_of(where, branch):
+                return where
+        return None
 
     @staticmethod
     def _is_worktree_of(path: Path, branch: str) -> bool:

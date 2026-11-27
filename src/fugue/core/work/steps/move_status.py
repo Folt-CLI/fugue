@@ -1,21 +1,31 @@
 """Move the ticket to its starting status on the project."""
 
+from dataclasses import dataclass
+
+from pydantic_graph import GraphRunContext
+
 from fugue.core.reporting import Message, StatusMoved
-from fugue.core.work.run import Run
+from fugue.core.work.state import WorkDeps, WorkState
+from fugue.core.work.steps.prepare_branch import PrepareBranch
 from fugue.core.work.steps.step import Step
 
 
+@dataclass
 class MoveStatus(Step):
     name = "Move the status"
 
-    async def run(self, run: Run) -> str:
-        if run.github.config.project is None:
+    async def act(self, state: WorkState, deps: WorkDeps) -> str:
+        if deps.github.config.project is None:
             text = "No project is set (GITHUB_PROJECT), so the status was not moved."
-            await run.reporter.report(Message(text=text, level="warning"))
+            await deps.reporter.report(Message(text=text, level="warning"))
             return "skipped"
-        change = await run.github.project.set(
-            run.number, run.config.status_field, run.config.started_status
+        change = await deps.github.project.set(
+            state.number, deps.config.status_field, deps.config.started_status
         )
-        run.status = change.value
-        await run.reporter.report(StatusMoved(repository=run.github.slug, change=change))
+        state.status = change.value
+        await deps.reporter.report(StatusMoved(repository=deps.github.slug, change=change))
         return f"{change.field} = {change.value}"
+
+    async def run(self, ctx: GraphRunContext[WorkState, WorkDeps]) -> PrepareBranch:
+        await self.execute(ctx)
+        return PrepareBranch()
