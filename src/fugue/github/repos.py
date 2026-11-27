@@ -15,6 +15,7 @@ class Repo(Area):
             description=repo.description or "",
             default_branch=repo.default_branch,
             private=repo.private,
+            owner_is_org=repo.owner.type == "Organization",
             open_issues=repo.open_issues_count,
             stars=repo.stargazers_count,
             url=repo.html_url,

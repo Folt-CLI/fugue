@@ -11,6 +11,7 @@ from fugue.errors import GitHubError
 from fugue.github.branches import Branches
 from fugue.github.issues import Issues
 from fugue.github.labels import Labels
+from fugue.github.projects import Projects
 from fugue.github.pulls import PullRequests
 from fugue.github.repos import Repo
 from fugue.gitops import Repository
@@ -26,7 +27,7 @@ class Github:
         ticket = await github.issue.get(246)
         pull = await github.pr.create("Title", head="feature", base="develop")
 
-    Areas: `issue`, `pr`, `label`, `branch` and `repo`.
+    Areas: `issue`, `pr`, `label`, `branch`, `repo` and `project`.
     """
 
     def __init__(
@@ -40,6 +41,7 @@ class Github:
         self.label = Labels(self)
         self.branch = Branches(self)
         self.repo = Repo(self)
+        self.project = Projects(self)
 
     @property
     def slug(self) -> str:
