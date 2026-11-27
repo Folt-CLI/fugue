@@ -489,6 +489,7 @@ dependencies = [
     { name = "pydantic-graph" },
     { name = "pydantic-settings" },
     { name = "pygit2" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -509,6 +510,7 @@ requires-dist = [
     { name = "pydantic-graph", git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_graph&rev=1cbd8fa8b18c835a06b2007e463e8c210d553a8e" },
     { name = "pydantic-settings", specifier = ">=2.16.3,<3" },
     { name = "pygit2", specifier = ">=1.21.0,<1.22" },
+    { name = "rich", specifier = ">=15.0.0,<16" },
     { name = "typer", specifier = ">=0.29.3" },
 ]
 
