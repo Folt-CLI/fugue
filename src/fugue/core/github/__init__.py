@@ -1,6 +1,6 @@
 """GitHub access through githubkit."""
 
+from fugue.core.github.github import Github
 from fugue.errors import GitHubError
-from fugue.github.github import Github
 
 __all__ = ["GitHubError", "Github"]

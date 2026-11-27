@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from fugue.cli.output import Output
-from fugue.github import Github
+from fugue.core.github import Github
 
 
 def work(

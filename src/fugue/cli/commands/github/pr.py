@@ -9,8 +9,8 @@ import typer
 from fugue.cli.choices import MergeMethod, StateFilter
 from fugue.cli.inputs import Inputs
 from fugue.cli.output import Output
+from fugue.core.github import Github
 from fugue.errors import GitHubError
-from fugue.github import Github
 
 app = typer.Typer(help="Read and change pull requests.", no_args_is_help=True)
 

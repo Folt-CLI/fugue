@@ -7,14 +7,14 @@ from githubkit import GitHub as _Client
 from githubkit.exception import RequestFailed
 
 from fugue.config import GithubConfig
+from fugue.core.github.branches import Branches
+from fugue.core.github.issues import Issues
+from fugue.core.github.labels import Labels
+from fugue.core.github.projects import Projects
+from fugue.core.github.pulls import PullRequests
+from fugue.core.github.repos import Repo
+from fugue.core.gitops import Repository
 from fugue.errors import GitHubError
-from fugue.github.branches import Branches
-from fugue.github.issues import Issues
-from fugue.github.labels import Labels
-from fugue.github.projects import Projects
-from fugue.github.pulls import PullRequests
-from fugue.github.repos import Repo
-from fugue.gitops import Repository
 
 
 class Github:

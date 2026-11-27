@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from githubkit import GitHub as Client
 
 if TYPE_CHECKING:
-    from fugue.github.github import Github
+    from fugue.core.github.github import Github
 
 
 class Area:

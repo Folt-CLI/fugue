@@ -7,8 +7,8 @@ The project defaults to GITHUB_PROJECT.
 from collections.abc import MutableSequence, Sequence
 from typing import Any, Literal
 
+from fugue.core.github.area import Area
 from fugue.errors import GitHubError
-from fugue.github.area import Area
 from fugue.models import Project, ProjectField, ProjectItem, ProjectOption
 
 

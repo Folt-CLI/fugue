@@ -9,7 +9,7 @@ import typer
 from fugue.cli.choices import StateFilter
 from fugue.cli.inputs import Inputs
 from fugue.cli.output import Output
-from fugue.github import Github
+from fugue.core.github import Github
 
 app = typer.Typer(help="Read and change issues.", no_args_is_help=True)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fugue.process import CommandResult, run_command
+from fugue.core.process import CommandResult, run_command
 
 
 def _python(code: str) -> tuple[str, ...]:

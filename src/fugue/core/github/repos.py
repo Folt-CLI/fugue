@@ -1,6 +1,6 @@
 """The repository itself: `github.repo`."""
 
-from fugue.github.area import Area
+from fugue.core.github.area import Area
 from fugue.models import RepoInfo
 
 

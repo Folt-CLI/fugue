@@ -5,8 +5,8 @@ from typing import Any, Literal
 
 from githubkit.utils import UNSET
 
+from fugue.core.github.area import Area
 from fugue.errors import GitHubError
-from fugue.github.area import Area
 from fugue.models import Comment, Ticket
 
 

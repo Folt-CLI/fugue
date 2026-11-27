@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-from fugue.github.area import Area
+from fugue.core.github.area import Area
 from fugue.models import Label
 
 

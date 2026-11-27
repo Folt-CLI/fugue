@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from fugue.cli.output import Output
-from fugue.github import Github
+from fugue.core.github import Github
 
 app = typer.Typer(help="List, create and delete labels.", no_args_is_help=True)
 

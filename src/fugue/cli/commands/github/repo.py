@@ -5,7 +5,7 @@ import asyncio
 import typer
 
 from fugue.cli.output import Output
-from fugue.github import Github
+from fugue.core.github import Github
 
 app = typer.Typer(help="Show the repository.", no_args_is_help=True)
 
