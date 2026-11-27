@@ -325,6 +325,12 @@ class Output:
             )
         )
 
+    # ----- work -----
+
+    def work_result(self, repository: str, number: int, status: str | None) -> None:
+        """The one line a finished `work` run ends with."""
+        self.success(f"{repository}#{number}" + (f" · {status}" if status else ""))
+
     # ----- messages -----
 
     def success(self, message: str) -> None:

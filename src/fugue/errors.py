@@ -15,3 +15,7 @@ class RepositoryError(FugueError):
 
 class GitHubError(FugueError):
     """GitHub refused or could not answer a request."""
+
+
+class WorkError(FugueError):
+    """A work flow cannot go on."""
