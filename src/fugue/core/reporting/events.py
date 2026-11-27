@@ -94,3 +94,4 @@ class Answered(Event):
     kind: Literal["answered"] = "answered"
     question: str
     answer: str
+    other: bool = False

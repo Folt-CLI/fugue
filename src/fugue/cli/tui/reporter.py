@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from fugue.core.reporting import Event, Question, Reporter
+from fugue.core.reporting import Answer, Event, Question, Reporter
 
 if TYPE_CHECKING:
     from fugue.cli.tui.app import WorkApp
@@ -18,5 +18,5 @@ class TuiReporter(Reporter):
     async def report(self, event: Event) -> None:
         await self._app.show(event)
 
-    async def ask(self, question: Question) -> str:
+    async def ask(self, question: Question) -> Answer:
         return await self._app.ask(question)

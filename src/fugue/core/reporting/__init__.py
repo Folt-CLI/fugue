@@ -16,12 +16,16 @@ from fugue.core.reporting.events import (
     TicketRead,
     WorktreeReady,
 )
-from fugue.core.reporting.questions import Question
+from fugue.core.reporting.questions import Answer, Ask, Chat, Form, Question, Select
 from fugue.core.reporting.reporter import Reporter, SilentReporter
 
 __all__ = [
+    "Answer",
     "Answered",
+    "Ask",
+    "Chat",
     "Event",
+    "Form",
     "Message",
     "Output",
     "Question",
@@ -30,6 +34,7 @@ __all__ = [
     "RunFinished",
     "RunStarted",
     "RunStopped",
+    "Select",
     "SilentReporter",
     "StatusMoved",
     "StepFailed",

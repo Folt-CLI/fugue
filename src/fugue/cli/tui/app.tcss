@@ -65,10 +65,70 @@ ActionWindow {
     margin-top: 1;
 }
 
+#action-area {
+    height: auto;
+}
+
 #action-choices {
     height: auto;
     margin-top: 1;
     grid-gutter: 0 2;
+}
+
+#action-other {
+    height: 3;
+    margin-top: 1;
+}
+
+#action-other .marker {
+    width: 3;
+    padding: 1 1 0 1;
+    color: $text-muted;
+}
+
+#action-other.-chosen .marker {
+    color: $accent;
+}
+
+#action-other Input {
+    width: 1fr;
+    border: round $panel-lighten-2;
+    background: transparent;
+}
+
+#action-other Input:focus,
+#action-other.-chosen Input {
+    border: round $accent;
+}
+
+#action-picker {
+    height: auto;
+    max-height: 8;
+    margin-top: 1;
+    border: round $panel-lighten-2;
+    background: transparent;
+}
+
+#action-picker:focus {
+    border: round $accent;
+}
+
+#action-chat {
+    height: auto;
+    min-height: 3;
+    max-height: 8;
+    margin-top: 1;
+    border: round $panel-lighten-2;
+    background: transparent;
+}
+
+#action-chat:focus {
+    border: round $accent;
+}
+
+.hint {
+    color: $text-muted;
+    margin-bottom: 0;
 }
 
 #action-choices Button {
@@ -91,5 +151,59 @@ ActionWindow {
     border: round $accent;
     background: $accent 25%;
     color: $text;
+    text-style: bold;
+}
+
+Action {
+    height: auto;
+}
+
+#action-choices Button.-picked {
+    border: round $success;
+    color: $text;
+}
+
+#form-header {
+    height: 1;
+    margin-top: 1;
+}
+
+#form-progress {
+    width: 1fr;
+    color: $text-muted;
+}
+
+#form-fields {
+    height: auto;
+    max-height: 12;
+    margin-top: 1;
+    border: round $panel-lighten-2;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+.form-field {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-question {
+    text-style: bold;
+    color: $accent;
+}
+
+.form-body {
+    color: $text-muted;
+}
+
+#form-submit {
+    width: auto;
+    min-width: 18;
+    background: $success 40%;
+    color: $text;
+}
+
+#form-submit:focus {
+    background: $success;
     text-style: bold;
 }

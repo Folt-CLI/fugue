@@ -7,11 +7,16 @@ from rich.status import Status
 
 from fugue.cli.views import TicketView, WorkView
 from fugue.core.reporting import (
+    Answer,
+    Ask,
+    Chat,
     Event,
+    Form,
     Message,
     Output,
     Question,
     Reporter,
+    Select,
     StatusMoved,
     StepFailed,
     StepFinished,
@@ -76,22 +81,97 @@ class RichReporter(Reporter):
                 style = "yellow" if level == "warning" else "dim"
                 console.print(f"[{style}]{text}[/]")
 
-    async def ask(self, question: Question) -> str:
-        """Ask on the terminal. The first letters of a choice are enough. Giving up (Ctrl-C,
-        or no input left) stops the flow."""
+    async def ask(self, question: Question) -> Answer:
+        """Ask on the terminal. Giving up (Ctrl-C, or no input left) stops the flow."""
         self._stop()
         if question.body:
             self._console.print(Markdown(question.body))
-        options = "/".join(question.choices)
+        try:
+            match question:
+                case Ask():
+                    return self._pick_one(question)
+                case Select():
+                    return self._pick_many(question)
+                case Chat():
+                    return self._write(question)
+                case Form():
+                    return await self._fill(question)
+                case _:
+                    return question.default_answer()
+        except typer.Abort as abort:
+            raise FlowStopped("Stopped: no answer was given.") from abort
+
+    async def _fill(self, form: Form) -> Answer:
+        """Ask each question of the form in turn; the form is submitted by the last answer."""
+        self._console.print(f"[bold]{form.text}[/]")
+        answers = []
+        for number, field in enumerate(form.fields, 1):
+            self._console.print(f"[dim]Question {number} of {len(form.fields)}[/]")
+            answers.append(await self.ask(field))
+        return Answer(answers=tuple(answers))
+
+    def _pick_one(self, question: Ask) -> Answer:
+        """Type an option, or the first letters of it; `other` asks for the text next."""
+        other = question.other.lower() if question.other else None
+        names = [*question.options, *([other] if other else [])]
+        listed = "/".join(names)
         while True:
-            try:
-                typed = str(typer.prompt(f"{question.text} [{options}]", default=question.default))
-            except typer.Abort as abort:
-                raise FlowStopped("Stopped: no answer was given.") from abort
-            matches = [c for c in question.choices if c.startswith(typed.strip().lower())]
-            if typed.strip() and len(matches) == 1:
-                return matches[0]
-            self._console.print(f"[red]Please answer one of: {options}[/]")
+            typed = str(
+                typer.prompt(f"{question.text} [{listed}]", default=question.default)
+            ).strip()
+            matches = [name for name in names if typed and name.lower().startswith(typed.lower())]
+            if len(matches) != 1:
+                self._console.print(f"[red]Please answer one of: {listed}[/]")
+            elif matches[0] == other:
+                return Answer(values=(self._text(question.other or "Other"),), other=True)
+            else:
+                return Answer(values=(matches[0],))
+
+    def _pick_many(self, question: Select) -> Answer:
+        """Type numbers or names, separated by commas; `other` is the next number."""
+        names = list(question.options)
+        if question.other:
+            names.append(question.other)
+        for number, name in enumerate(names, 1):
+            tick = "x" if name in question.selected else " "
+            self._console.print(f"  [{tick}] {number}. {name}", markup=False)
+        preset = ",".join(str(names.index(s) + 1) for s in question.selected if s in names)
+        while True:
+            typed = str(
+                typer.prompt("Choose, separated by commas, or none", default=preset)
+            ).strip()
+            chosen: list[str] = []
+            for part in filter(None, (p.strip() for p in typed.split(","))):
+                found = (
+                    names[int(part) - 1]
+                    if part.isdigit() and 0 < int(part) <= len(names)
+                    else next((n for n in names if n.lower().startswith(part.lower())), None)
+                )
+                if found is None:
+                    break
+                if found not in chosen:
+                    chosen.append(found)
+            else:
+                values = [name for name in chosen if name != question.other]
+                if question.other and question.other in chosen:
+                    values.append(self._text(question.other))
+                return Answer(values=tuple(values), other=bool(question.other in chosen))
+            self._console.print("[red]Use the numbers or names above.[/]")
+
+    def _write(self, question: Chat) -> Answer:
+        """A reply, on one line. Empty is not accepted unless there is a default."""
+        while True:
+            text = str(typer.prompt(question.text, default=question.default)).strip()
+            if text:
+                return Answer(values=(text,))
+            self._console.print("[red]Please write something.[/]")
+
+    def _text(self, label: str) -> str:
+        """The text for an Other option."""
+        while True:
+            text = str(typer.prompt(label, default="")).strip()
+            if text:
+                return text
 
     def _stop(self) -> None:
         if self._spinner is not None:

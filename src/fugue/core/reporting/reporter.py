@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 
 from fugue.core.reporting.events import Event
-from fugue.core.reporting.questions import Question
+from fugue.core.reporting.questions import Answer, Question
 
 
 class Reporter(ABC):
@@ -18,15 +18,15 @@ class Reporter(ABC):
         """Something happened."""
 
     @abstractmethod
-    async def ask(self, question: Question) -> str:
-        """Stop and ask. Returns one of the question's choices."""
+    async def ask(self, question: Question) -> Answer:
+        """Stop and ask. Returns the answer."""
 
 
 class SilentReporter(Reporter):
-    """Shows nothing and answers every question with its default."""
+    """Shows nothing and answers every question with its default answer."""
 
     async def report(self, event: Event) -> None:
         return None
 
-    async def ask(self, question: Question) -> str:
-        return question.default
+    async def ask(self, question: Question) -> Answer:
+        return question.default_answer()

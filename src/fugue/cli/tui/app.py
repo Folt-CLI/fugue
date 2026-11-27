@@ -24,6 +24,7 @@ from fugue.cli.tui.windows import (
 )
 from fugue.cli.views import WorkView
 from fugue.core.reporting import (
+    Answer,
     Event,
     Message,
     Output,
@@ -91,7 +92,7 @@ class WorkApp(App[None]):
         """Bring focus back to an open question, after moving away from it."""
         actions = self.query_one(ActionWindow)
         if actions.waiting:
-            actions.focus_default()
+            actions.focus_first()
 
     async def action_toggle_checklist(self) -> None:
         self.query_one(ChecklistWindow).toggle()
@@ -196,10 +197,9 @@ class WorkApp(App[None]):
             case RunFailed():
                 pass  # the error is shown once, when `_run` catches it
 
-    async def ask(self, question: Question) -> str:
+    async def ask(self, question: Question) -> Answer:
         """Stop the flow until the person has chosen an answer."""
         answer = await self.query_one(ActionWindow).ask(question, returning_to=self.focused)
-        await self._write(
-            StdoutWindow, Text.from_markup(f"[dim]{question.text}[/] [bold]{answer}[/]")
-        )
+        shown = Text.assemble((f"{question.text} ", "dim"), (answer.text or "(nothing)", "bold"))
+        await self._write(StdoutWindow, shown)
         return answer

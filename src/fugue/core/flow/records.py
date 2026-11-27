@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from fugue.core.reporting import Answered, Event, Question, Reporter
+from fugue.core.reporting import Answer, Answered, Event, Question, Reporter
 
 
 class RunReporter(Reporter):
@@ -29,10 +29,16 @@ class RunReporter(Reporter):
         self._write(stamped)
         await self._inner.report(stamped)
 
-    async def ask(self, question: Question) -> str:
+    async def ask(self, question: Question) -> Answer:
         answer = await self._inner.ask(question)
         self._write(
-            Answered(run_id=self._run_id, flow=self._flow, question=question.text, answer=answer)
+            Answered(
+                run_id=self._run_id,
+                flow=self._flow,
+                question=question.text,
+                answer=answer.text,
+                other=answer.other,
+            )
         )
         return answer
 

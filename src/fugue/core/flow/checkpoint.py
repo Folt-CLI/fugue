@@ -1,6 +1,6 @@
 """The stop between steps."""
 
-from fugue.core.reporting import Question, Reporter
+from fugue.core.reporting import Ask, Reporter
 from fugue.errors import FlowStopped
 
 
@@ -23,7 +23,7 @@ class Checkpoint:
         if first or not self._enabled:
             return
         answer = await self._reporter.ask(
-            Question(text=f"Continue with \u201c{step}\u201d?", default="yes")
+            Ask(text=f"Continue with \u201c{step}\u201d?", default="yes")
         )
-        if answer != "yes":
+        if answer.value != "yes":
             raise FlowStopped(f"Stopped before \u201c{step}\u201d.")
