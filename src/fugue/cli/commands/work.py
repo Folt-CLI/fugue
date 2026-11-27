@@ -9,6 +9,8 @@ import typer
 from fugue.cli.reporter import RichReporter
 from fugue.cli.tui import WorkApp
 from fugue.cli.views import Messages, WorkView
+from fugue.config import GithubConfig
+from fugue.core.github import Github
 from fugue.core.work import Work, WorkConfig, WorkResult
 
 
@@ -30,6 +32,14 @@ def work(
             help="Answer the permission questions (continue with each step) by itself.",
         ),
     ] = False,
+    project: Annotated[
+        int | None,
+        typer.Option(
+            "--project",
+            "-p",
+            help="Project number for the ticket's status. Default: GITHUB_PROJECT, or fugue.toml.",
+        ),
+    ] = None,
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Show no progress, only the final line.")
     ] = False,
@@ -40,7 +50,10 @@ def work(
         config = WorkConfig.load()
         if auto:
             config = config.model_copy(update={"auto": True})
-        flow = Work(config=config)
+        github_config = GithubConfig.load()
+        if project is not None:
+            github_config = github_config.model_copy(update={"project": project})
+        flow = Work(Github(github_config), config)
         if headless or quiet or not (sys.stdin.isatty() and sys.stdout.isatty()):
             result = asyncio.run(flow.run(ticket, RichReporter(quiet=quiet)))
         else:

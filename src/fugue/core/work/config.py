@@ -14,9 +14,14 @@ class WorkConfig(FlowConfig):
     repository, one folder per branch (`.worktrees/feature/1-title`).
     FUGUE_WORK_BASE_BRANCH: the branch work starts from; default the repository's default.
     FUGUE_WORK_SLUG_LENGTH: the longest slug in a branch or folder name.
-    FUGUE_WORK_AUTO, FUGUE_WORK_RECORD_RUNS and FUGUE_WORK_RUNS_DIR: see FlowConfig."""
+    FUGUE_WORK_AUTO, FUGUE_WORK_RECORD_RUNS and FUGUE_WORK_RUNS_DIR: see FlowConfig.
+
+    Each can also be set in the `[work]` table of the repository's `fugue.toml`, in lowercase
+    without the prefix (`started_status = "S4: In Implementation"`)."""
 
     model_config = SettingsConfigDict(env_prefix="FUGUE_WORK_")
+
+    section = "work"
 
     started_status: str = "S4: In Implementation"
     status_field: str = "Status"
