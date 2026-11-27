@@ -3,18 +3,15 @@
 from pathlib import Path
 from typing import ClassVar
 
-from rich.console import RenderableType
-from rich.panel import Panel
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, Header, Static
+from textual.containers import Horizontal, Vertical
+from textual.widgets import Footer, Header
 
 from fugue.cli.tui.question import QuestionScreen
 from fugue.cli.tui.reporter import TuiReporter
-from fugue.cli.tui.steps import StepList
-from fugue.cli.views import TicketView, WorkView
+from fugue.cli.tui.status import StatusBar
+from fugue.cli.tui.windows import ChecklistWindow, LogWindow, TicketWindow, Window
 from fugue.core.reporting import (
     Event,
     Message,
@@ -30,34 +27,50 @@ from fugue.core.reporting import (
 from fugue.core.work import Work, WorkResult
 from fugue.errors import FlowError, FugueError
 
+WINDOWS: tuple[type[Window], ...] = (ChecklistWindow, TicketWindow, LogWindow)
+
 
 class WorkApp(App[None]):
-    """Runs the work flow for one ticket and shows it live: the steps on the left, what they
-    found on the right. The screen stays open when the run ends, so the result can be read;
-    `q` closes it. After `run()` returns, `result` or `error` says how it went."""
+    """Runs the work flow for one ticket and shows it live in three windows (the checklist of
+    every step, the ticket, the log) with a status bar under them that names the current step.
+    A window is shown or hidden with its key; Tab moves between them. A question from the flow
+    floats over whatever is showing.
+
+    The screen stays open when the run ends, so the result can be read; `q` closes it. After
+    `run()` returns, `result` or `error` says how it went."""
 
     CSS_PATH: ClassVar[Path] = Path(__file__).with_name("app.tcss")
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("q", "quit", "Quit")]
+    BINDINGS: ClassVar[list[BindingType]] = [
+        *(Binding(window.key, f"toggle('{window.key}')", window.title) for window in WINDOWS),
+        Binding("q", "quit", "Quit"),
+    ]
 
     def __init__(self, work: Work, number: int) -> None:
         super().__init__()
         self._work = work
         self._number = number
-        self._tickets = TicketView()
         self.result: WorkResult | None = None
         self.error: FugueError | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal():
-            yield StepList(id="steps")
-            yield VerticalScroll(id="feed")
+        with Horizontal(id="windows"):
+            yield ChecklistWindow(self._work.steps())
+            with Vertical(id="main"):
+                yield TicketWindow()
+                yield LogWindow()
+        yield StatusBar()
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = f"fugue work #{self._number}"
-        self.sub_title = "running"
         self.run_worker(self._run(), exit_on_error=False)
+
+    async def action_toggle(self, key: str) -> None:
+        """Show or hide the window that has this key."""
+        for window in self.query(Window):
+            if window.key == key:
+                window.toggle()
 
     async def _run(self) -> None:
         try:
@@ -69,44 +82,40 @@ class WorkApp(App[None]):
 
     async def _fail(self, error: FugueError) -> None:
         self.error = error
-        self.sub_title = "failed, press q to close"
-        await self._add(Panel(Text(str(error)), title="[bold red]failed[/]", border_style="red"))
+        self.query_one(StatusBar).failed(str(error))
+        await self.query_one(LogWindow).failure(str(error))
 
     async def show(self, event: Event) -> None:
-        """Show one event from the flow."""
-        steps = self.query_one(StepList)
+        """Show one event from the flow in the window it belongs to."""
+        checklist = self.query_one(ChecklistWindow)
+        status = self.query_one(StatusBar)
         match event:
             case StepStarted(step=step):
-                steps.start(step)
+                checklist.start(step)
+                status.running(step, checklist.position(step), checklist.total)
             case StepFinished(step=step, detail=detail):
-                steps.finish(step, detail)
+                checklist.finish(step, detail)
             case StepFailed(step=step):
-                steps.fail(step)
+                checklist.fail(step)
             case TicketRead(repository=repository, ticket=ticket):
-                await self._add(self._tickets.panel(ticket, repository))
+                await self.query_one(TicketWindow).show(ticket, repository)
             case WorktreeReady() as ready:
-                first, second = WorkView.worktree_lines(
+                await self.query_one(LogWindow).worktree(
                     ready.path,
                     ready.branch,
                     ready.base,
                     new_branch=ready.new_branch,
                     reused=ready.reused,
                 )
-                await self._add(Text.from_markup(f"{first}\n{second}"))
             case Message(text=text, level=level):
-                await self._add(Text(text, style="yellow" if level == "warning" else "dim"))
+                await self.query_one(LogWindow).note(text, warning=level == "warning")
             case RunFinished():
-                self.sub_title = "done, press q to close"
+                status.finished()
             case RunFailed():
-                self.sub_title = "failed, press q to close"
+                pass  # the error is shown once, when `_run` catches it
 
     async def ask(self, question: Question) -> str:
         """Stop the flow until the person has chosen an answer."""
         answer: str = await self.push_screen_wait(QuestionScreen(question))
-        await self._add(Text.from_markup(f"[dim]{question.text}[/] [bold]{answer}[/]"))
+        await self.query_one(LogWindow).answer(question.text, answer)
         return answer
-
-    async def _add(self, content: RenderableType) -> None:
-        feed = self.query_one("#feed", VerticalScroll)
-        await feed.mount(Static(content))
-        feed.scroll_end(animate=False)

@@ -2,7 +2,8 @@
 
 from abc import ABC
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from types import UnionType
+from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 from uuid import uuid4
 
 from pydantic_graph import Graph, GraphBuilder
@@ -65,6 +66,26 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
             raise FlowError(message) from error
         await scoped.report(RunFinished())
         return result
+
+    def steps(self) -> list[str]:
+        """The name of every step the flow can run, in the order the graph reaches them.
+
+        An interface shows this as the flow's checklist before anything has run."""
+        found: list[type[Step[Any, Any, Any]]] = []
+        queue = [self.start]
+        while queue:
+            node = queue.pop(0)
+            if node not in found:
+                found.append(node)
+                queue.extend(self._next(node))
+        return [node.name for node in found]
+
+    @staticmethod
+    def _next(node: type[Step[Any, Any, Any]]) -> list[type[Step[Any, Any, Any]]]:
+        """The steps a step can lead to: the classes in the return type of its `run`."""
+        hint = get_type_hints(node.run).get("return")
+        options = get_args(hint) if get_origin(hint) in (Union, UnionType) else (hint,)
+        return [o for o in options if isinstance(o, type) and issubclass(o, Step)]
 
     def diagram(self) -> str:
         """The flow as a Mermaid state diagram."""

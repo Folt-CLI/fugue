@@ -1,26 +1,57 @@
-#steps {
-    width: 34;
-    padding: 1 2;
-    border-right: tall $primary-background-lighten-2;
+#windows {
+    height: 1fr;
 }
 
-#feed {
+#main {
+    width: 1fr;
+}
+
+Window {
+    border: round $primary-background-lighten-2;
     padding: 0 1;
+    scrollbar-size-vertical: 1;
 }
 
-#feed > Static {
+Window:focus {
+    border: round $accent;
+}
+
+Window > Static {
     margin-bottom: 1;
+}
+
+Window > .placeholder {
+    color: $text-muted;
+}
+
+ChecklistWindow {
+    width: 38;
+}
+
+TicketWindow {
+    height: 2fr;
+}
+
+LogWindow {
+    height: 1fr;
+}
+
+StatusBar {
+    height: 1;
+    padding: 0 1;
+    background: $primary-background;
 }
 
 QuestionScreen {
     align: center middle;
+    background: $background 60%;
 }
 
 #dialog {
-    width: 64;
+    width: 56;
     height: auto;
     padding: 1 2;
-    border: thick $primary;
+    border: round $accent;
     background: $surface;
 }
 
