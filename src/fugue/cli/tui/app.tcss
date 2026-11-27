@@ -47,27 +47,29 @@ StatusBar {
     background: $primary-background;
 }
 
-QuestionScreen {
-    align: center middle;
-    background: $background 60%;
-}
-
-#dialog {
-    width: 56;
+ActionWindow {
     height: auto;
-    padding: 1 2;
+    max-height: 60%;
+    padding: 0 2;
     border: round $accent;
     background: $surface;
 }
 
-#question {
-    margin-bottom: 1;
+#action-text {
+    text-style: bold;
 }
 
-#choices {
+#action-body {
     height: auto;
+    max-height: 8;
+    margin-top: 1;
 }
 
-#choices Button {
+#action-choices {
+    height: auto;
+    margin-top: 1;
+}
+
+#action-choices Button {
     margin-right: 2;
 }

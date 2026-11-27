@@ -2,6 +2,7 @@
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.status import Status
 
 from fugue.cli.views import TicketView, WorkView
@@ -79,6 +80,8 @@ class RichReporter(Reporter):
         """Ask on the terminal. The first letters of a choice are enough. Giving up (Ctrl-C,
         or no input left) stops the flow."""
         self._stop()
+        if question.body:
+            self._console.print(Markdown(question.body))
         options = "/".join(question.choices)
         while True:
             try:

@@ -10,7 +10,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
-from fugue.cli.tui.question import QuestionScreen
+from fugue.cli.tui.action import ActionWindow
 from fugue.cli.tui.reporter import TuiReporter
 from fugue.cli.tui.status import StatusBar
 from fugue.cli.tui.windows import (
@@ -60,6 +60,7 @@ class WorkApp(App[None]):
         Binding("J", "move('down')", "Next page", show=False),
         Binding("K", "move('up')", "Previous page", show=False),
         Binding("L", "move('right')", "Page", show=False),
+        Binding("escape", "answer", "Answer", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -78,12 +79,19 @@ class WorkApp(App[None]):
                 for page in PAGES:
                     with TabPane(self._label(page), id=self._pane(page)):
                         yield page()
+        yield ActionWindow()
         yield StatusBar()
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = f"fugue work #{self._number}"
         self.run_worker(self._run(), exit_on_error=False)
+
+    async def action_answer(self) -> None:
+        """Bring focus back to an open question, after moving away from it."""
+        actions = self.query_one(ActionWindow)
+        if actions.waiting:
+            actions.focus_default()
 
     async def action_toggle_checklist(self) -> None:
         self.query_one(ChecklistWindow).toggle()
@@ -190,7 +198,7 @@ class WorkApp(App[None]):
 
     async def ask(self, question: Question) -> str:
         """Stop the flow until the person has chosen an answer."""
-        answer: str = await self.push_screen_wait(QuestionScreen(question))
+        answer = await self.query_one(ActionWindow).ask(question, returning_to=self.focused)
         await self._write(
             StdoutWindow, Text.from_markup(f"[dim]{question.text}[/] [bold]{answer}[/]")
         )
