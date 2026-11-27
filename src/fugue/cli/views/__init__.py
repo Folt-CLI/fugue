@@ -2,6 +2,7 @@
 
 from fugue.cli.views.branches import BranchView
 from fugue.cli.views.comments import CommentView
+from fugue.cli.views.config import ConfigView
 from fugue.cli.views.labels import LabelView
 from fugue.cli.views.messages import Messages
 from fugue.cli.views.preview import PreviewView
@@ -15,6 +16,7 @@ from fugue.cli.views.work import WorkView
 __all__ = [
     "BranchView",
     "CommentView",
+    "ConfigView",
     "LabelView",
     "Messages",
     "PreviewView",

@@ -22,6 +22,9 @@ class Messages(View):
     def success(self, message: str) -> None:
         self.console.print(f"[bold green]✓[/] {message}")
 
+    def warning(self, message: str) -> None:
+        self.console.print(f"[yellow]![/] {message}")
+
     def error(self, message: str) -> None:
         self.errors.print(Panel(Text(message), title="[bold red]fugue[/]", border_style="red"))
 

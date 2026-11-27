@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 
 from fugue import __version__
-from fugue.cli.commands import github, work
+from fugue.cli.commands import config, github, work
 
 app = typer.Typer(
     help="Take GitHub tickets to reviewed pull requests.",
@@ -32,3 +32,4 @@ def root(
 
 app.command()(work.work)
 app.add_typer(github.app, name="github")
+app.add_typer(config.app, name="config")

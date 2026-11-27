@@ -10,3 +10,5 @@ build/
 
 src-temp/
 .worktrees/
+.fugue/runs/
+.fugue/config.local.toml

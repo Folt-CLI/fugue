@@ -14,7 +14,7 @@ class MoveStatus(Action):
         if self.github.config.project is None:
             text = (
                 "No project is set, so the status was not moved. Set one with --project,"
-                " GITHUB_PROJECT, or `project` in the github table of fugue.toml."
+                " GITHUB_PROJECT, or `fugue config set github.project N`."
             )
             await self.reporter.report(Message(text=text, level="warning"))
             return None

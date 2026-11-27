@@ -16,12 +16,13 @@ class WorkConfig(FlowConfig):
     FUGUE_WORK_SLUG_LENGTH: the longest slug in a branch or folder name.
     FUGUE_WORK_AUTO, FUGUE_WORK_RECORD_RUNS and FUGUE_WORK_RUNS_DIR: see FlowConfig.
 
-    Each can also be set in the `[work]` table of the repository's `fugue.toml`, in lowercase
-    without the prefix (`started_status = "S4: In Implementation"`)."""
+    Each can also be set with `fugue config set work.<name> <value>`; `base_branch` belongs to
+    one repository and is never taken from the global file."""
 
     model_config = SettingsConfigDict(env_prefix="FUGUE_WORK_")
 
     section = "work"
+    local_only = frozenset({"base_branch"})
 
     started_status: str = "S4: In Implementation"
     status_field: str = "Status"
