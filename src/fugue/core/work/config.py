@@ -10,8 +10,8 @@ from fugue.core.flow import FlowConfig
 class WorkConfig(FlowConfig):
     """FUGUE_WORK_STARTED_STATUS: the project status a ticket moves to when work starts.
     FUGUE_WORK_STATUS_FIELD: the name of the project field that holds the status.
-    FUGUE_WORK_WORKTREE_ROOT: the folder worktrees go in; default `<repo folder>-worktrees`
-    next to the repository.
+    FUGUE_WORK_WORKTREE_ROOT: the folder worktrees go in; default `.worktrees` in the
+    repository, one folder per branch (`.worktrees/feature/1-title`).
     FUGUE_WORK_BASE_BRANCH: the branch work starts from; default the repository's default.
     FUGUE_WORK_SLUG_LENGTH: the longest slug in a branch or folder name.
     FUGUE_WORK_CONFIRM_STEPS, FUGUE_WORK_RECORD_RUNS and FUGUE_WORK_RUNS_DIR: see FlowConfig."""

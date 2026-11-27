@@ -91,7 +91,7 @@ class Worktrees:
         target = existing or repo.create_branch(branch, start_point)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            repo.add_worktree(path.name, str(path), target)
+            repo.add_worktree(branch.replace("/", "-"), str(path), target)
         except pygit2.GitError as error:
             if created:
                 target.delete()
@@ -122,8 +122,11 @@ class Worktrees:
             if not force and pygit2.Repository(str(path)).status():
                 raise RepositoryError(f"{path} has uncommitted changes: commit or force")
             shutil.rmtree(path)
-        with contextlib.suppress(KeyError, pygit2.GitError):
-            repo.lookup_worktree(path.name).prune(True)
+        for name in repo.list_worktrees():
+            worktree = repo.lookup_worktree(name)
+            if Path(worktree.path) == path:
+                with contextlib.suppress(pygit2.GitError):
+                    worktree.prune(True)
         if branch is not None:
             existing = repo.lookup_branch(branch)
             if existing is not None:

@@ -20,17 +20,17 @@ class PrepareBranch(Action):
     ) -> Worktree:
         """A worktree on the ticket's branch, started from the latest `origin/<base>`.
 
-        `base` defaults to the repository's default branch and `root` to `<repo folder>-worktrees`
-        next to the repository. A worktree that already exists for the branch is reused.
+        `base` defaults to the repository's default branch. The worktree goes in `root`, by
+        default `.worktrees` inside the repository, in a folder named like the branch
+        (`.worktrees/feature/1-title`). A worktree that already exists for the branch is reused.
         """
         naming = Naming(slug_length)
         repository = self.github.repository
         start = base or await self.github.branch.default()
-        folder = root or repository.root.parent / f"{repository.root.name}-worktrees"
+        folder = Path(root) if root else repository.root / ".worktrees"
+        branch = naming.branch(ticket)
         worktrees = Worktrees(repository, self.github.config.token.get_secret_value())
-        worktree = await worktrees.start(
-            naming.branch(ticket), start, Path(folder) / naming.folder(ticket)
-        )
+        worktree = await worktrees.start(branch, start, folder / branch)
         await self.reporter.report(
             WorktreeReady(
                 path=str(worktree.path),

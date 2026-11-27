@@ -1,7 +1,8 @@
 """How a ticket's branch and worktree are named.
 
-The branch is `<issue type>/<number>-<slug>` and the worktree folder `<number>-<slug>`, the
-way the repository's existing branches are named.
+The branch is `<issue type>/<number>-<slug>`, the way the repository's existing branches are
+named. The worktree folder has the same name, so `feature/1-title` lives in
+`.worktrees/feature/1-title`.
 """
 
 import re
