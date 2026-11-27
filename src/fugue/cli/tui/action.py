@@ -1,9 +1,12 @@
 """The window at the bottom where the flow asks the person running it for something."""
 
 import asyncio
+from typing import ClassVar
 
 from rich.markdown import Markdown
+from rich.text import Text
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key
 from textual.widget import Widget
@@ -21,6 +24,11 @@ class ActionWindow(Vertical):
     empty) and `#action-choices` (the answers). A new kind of question changes those parts in
     `_present`; nothing else in the screen knows how a question looks.
     """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("left", "choose(-1)", "Choose", key_display="←→"),
+        Binding("right", "choose(1)", "Choose", show=False),
+    ]
 
     def __init__(self) -> None:
         super().__init__(id="actions")
@@ -72,14 +80,27 @@ class ActionWindow(Vertical):
         await choices.remove_children()
         await choices.mount(
             *(
-                Button(
-                    choice,
-                    name=choice,
-                    variant="primary" if choice == question.default else "default",
-                )
+                Button(self._label(choice, question.choices), name=choice)
                 for choice in question.choices
             )
         )
+
+    @staticmethod
+    def _label(choice: str, choices: tuple[str, ...]) -> Text:
+        """A choice with the letter that picks it underlined, if no choice before it has it."""
+        first = next(c for c in choices if c[:1].lower() == choice[:1].lower())
+        if first != choice:
+            return Text(choice)
+        return Text.assemble((choice[:1], "bold underline"), choice[1:])
+
+    def action_choose(self, step: int) -> None:
+        """Move to the previous or next answer, wrapping around."""
+        buttons = list(self.query(Button))
+        if not buttons:
+            return
+        focused = self.app.focused
+        index = buttons.index(focused) if focused in buttons else 0
+        buttons[(index + step) % len(buttons)].focus()
 
     def _choose(self, choice: str) -> None:
         if self._answer is not None and not self._answer.done():

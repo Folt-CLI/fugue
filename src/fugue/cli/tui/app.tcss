@@ -71,5 +71,25 @@ ActionWindow {
 }
 
 #action-choices Button {
+    min-width: 14;
+    height: 3;
     margin-right: 2;
+    border: round $panel-lighten-2;
+    border-top: round $panel-lighten-2;
+    border-bottom: round $panel-lighten-2;
+    background: transparent;
+    color: $text-muted;
+    text-style: none;
+}
+
+#action-choices Button:hover {
+    border: round $accent;
+    color: $text;
+}
+
+#action-choices Button:focus {
+    border: round $accent;
+    background: $accent 25%;
+    color: $text;
+    text-style: bold;
 }
