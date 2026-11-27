@@ -192,7 +192,8 @@ class Projects(Area):
         """
         kind = "orgs" if await self._is_org() else "users"
         url = f"/{kind}/{self._owner}/projectsV2{path}"
-        with self._github.guard(subject):
+        scopes = ("read:project", "project") if method == "GET" else ("project",)
+        with self._github.guard(subject, scopes=scopes):
             response = await self._client.arequest(method, url, params=params or None, json=body)
         data = response.json() if response.content else None
         return data, response.headers.get("link", "")
