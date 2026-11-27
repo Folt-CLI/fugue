@@ -66,7 +66,8 @@ class WorkApp(App[None]):
         Binding("J", "move('down')", "Next page", show=False),
         Binding("K", "move('up')", "Previous page", show=False),
         Binding("L", "move('right')", "Page", show=False),
-        Binding("escape", "answer", "Answer", show=False),
+        Binding("r", "answer", "Answer"),
+        Binding("escape", "toggle_question", "Hide the question", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -94,10 +95,28 @@ class WorkApp(App[None]):
         self.run_worker(self._run(), exit_on_error=False)
 
     async def action_answer(self) -> None:
-        """Bring focus back to an open question, after moving away from it."""
+        """Call up the question the run is waiting on, and focus it."""
         actions = self.query_one(ActionWindow)
         if actions.waiting:
-            actions.focus_first()
+            actions.show()
+
+    async def action_toggle_question(self) -> None:
+        """Escape puts a pending question away, so the other windows can be read; it brings
+        the question back when it is already away."""
+        actions = self.query_one(ActionWindow)
+        if not actions.waiting:
+            return
+        if actions.is_open:
+            actions.hide()
+            self.set_focus(None)
+        else:
+            actions.show()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """The `r` key is only offered while the run is waiting on a question."""
+        if action == "answer":
+            return self.query_one(ActionWindow).waiting
+        return True
 
     async def action_toggle_checklist(self) -> None:
         self.query_one(ChecklistWindow).toggle()
@@ -220,7 +239,11 @@ class WorkApp(App[None]):
         if isinstance(question, Form):
             answer = await self.push_screen_wait(FormScreen(question))
         else:
-            answer = await self.query_one(ActionWindow).ask(question, returning_to=self.focused)
+            self.refresh_bindings()
+            try:
+                answer = await self.query_one(ActionWindow).ask(question, returning_to=self.focused)
+            finally:
+                self.refresh_bindings()
         shown = Text.assemble((f"{question.text} ", "dim"), (answer.text or "(nothing)", "bold"))
         await self._write(StdoutWindow, shown)
         return answer

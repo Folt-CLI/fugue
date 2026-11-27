@@ -1,6 +1,6 @@
 """The stop between steps."""
 
-from fugue.core.reporting import PERMISSION, Ask, Reporter, RunPaused, RunResumed
+from fugue.core.reporting import HOLD, PERMISSION, Ask, Reporter, RunPaused, RunResumed
 from fugue.errors import FlowStopped
 
 
@@ -40,6 +40,7 @@ class Checkpoint:
                 "when you are ready, or stop the run.",
                 options=("continue", "stop"),
                 default="continue",
+                tags=(HOLD,),
             )
         )
         if answer.value != "continue":

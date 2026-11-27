@@ -46,13 +46,21 @@ class ActionWindow(Vertical):
         """Whether a question is open."""
         return self._action is not None
 
+    @property
+    def is_open(self) -> bool:
+        return bool(self.display)
+
     async def ask(self, question: Question, *, returning_to: Widget | None = None) -> Answer:
-        """Show the question and wait for an answer. Focus goes back to `returning_to` after."""
+        """Show the question and wait for an answer. Focus goes back to `returning_to` after.
+
+        A question tagged as a hold is not shown: it waits until `show` is called."""
         action = self.ACTIONS[type(question)](question)
         await self._present(question, action)
         self._action = action
-        self.display = True
-        self.call_after_refresh(action.focus_first)
+        if question.is_hold:
+            self.display = False
+        else:
+            self.show()
         try:
             return await action.answer()
         finally:
@@ -60,6 +68,16 @@ class ActionWindow(Vertical):
             self._action = None
             if returning_to is not None and returning_to.is_attached:
                 returning_to.focus()
+
+    def show(self) -> None:
+        """Open the pending question and focus it."""
+        if self._action is not None:
+            self.display = True
+            self.call_after_refresh(self._action.focus_first)
+
+    def hide(self) -> None:
+        """Put the pending question away. It stays pending until it is shown and answered."""
+        self.display = False
 
     def focus_first(self) -> None:
         """Bring focus back to the open question."""

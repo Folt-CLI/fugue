@@ -20,6 +20,10 @@ PERMISSION = "permission"
 """The tag of a question that only asks leave to go on. A run started with `auto` answers it
 by itself, with the question's default answer, so such a question must default to yes."""
 
+HOLD = "hold"
+"""The tag of a question the run waits on quietly: a screen does not open it by itself, and the
+person calls it up when ready (the pause between steps is one)."""
+
 
 class Answer(BaseModel):
     """What the person answered. `values` holds the chosen options, or the written text;
@@ -49,7 +53,8 @@ class Question(BaseModel, ABC):
     """What every question has: the `text` that asks it, a `body` in Markdown to read before
     answering (a plan, a summary), and `tags` that say what kind of question it is.
 
-    A question tagged `PERMISSION` only asks leave to go on, and an automatic run skips it."""
+    A question tagged `PERMISSION` only asks leave to go on, and an automatic run skips it. One
+    tagged `HOLD` waits until the person calls it up."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -60,6 +65,10 @@ class Question(BaseModel, ABC):
     @property
     def is_permission(self) -> bool:
         return PERMISSION in self.tags
+
+    @property
+    def is_hold(self) -> bool:
+        return HOLD in self.tags
 
     @abstractmethod
     def default_answer(self) -> Answer:
