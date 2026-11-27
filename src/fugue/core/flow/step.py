@@ -1,6 +1,7 @@
 """A step of a flow: a node of its graph."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from pydantic_graph import BaseNode, GraphRunContext
@@ -8,6 +9,14 @@ from pydantic_graph import BaseNode, GraphRunContext
 from fugue.core.flow.state import FlowDeps
 from fugue.core.reporting import StepFailed, StepFinished, StepStarted
 from fugue.errors import FlowError, FugueError
+
+
+@dataclass(frozen=True)
+class StepOutline:
+    """A step as an interface lists it before the run: its name, and the names of its parts."""
+
+    name: str
+    parts: tuple[str, ...] = ()
 
 
 class Step[StateT, DepsT: FlowDeps[Any], ResultT](BaseNode[StateT, DepsT, ResultT], ABC):
@@ -28,6 +37,13 @@ class Step[StateT, DepsT: FlowDeps[Any], ResultT](BaseNode[StateT, DepsT, Result
     """
 
     name: ClassVar[str]
+
+    @classmethod
+    def parts(cls, config: Any) -> tuple[str, ...]:
+        """The parts the step is made of, when it has some that are known before it runs, such as
+        the checks of a gate. They are listed under the step in the checklist, and the step
+        reports each with `PartStarted` and `PartFinished`."""
+        return ()
 
     @abstractmethod
     async def act(self, state: StateT, deps: DepsT) -> str:

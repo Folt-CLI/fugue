@@ -13,7 +13,7 @@ from fugue.core.flow.checkpoint import Checkpoint
 from fugue.core.flow.config import FlowConfig
 from fugue.core.flow.records import RunReporter
 from fugue.core.flow.state import FlowDeps
-from fugue.core.flow.step import Step
+from fugue.core.flow.step import Step, StepOutline
 from fugue.core.github import Github
 from fugue.core.reporting import (
     Reporter,
@@ -88,8 +88,8 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
         await scoped.report(RunFinished())
         return result
 
-    def steps(self) -> list[str]:
-        """The name of every step the flow can run, in the order the graph reaches them.
+    def steps(self) -> list[StepOutline]:
+        """Every step the flow can run, in the order the graph reaches them, with their parts.
 
         An interface shows this as the flow's checklist before anything has run."""
         found: list[type[Step[Any, Any, Any]]] = []
@@ -99,7 +99,7 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
             if node not in found:
                 found.append(node)
                 queue.extend(self._next(node))
-        return [node.name for node in found]
+        return [StepOutline(node.name, node.parts(self.config)) for node in found]
 
     @staticmethod
     def _next(node: type[Step[Any, Any, Any]]) -> list[type[Step[Any, Any, Any]]]:

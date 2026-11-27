@@ -52,6 +52,23 @@ class StepFinished(Event):
     detail: str = ""
 
 
+class PartStarted(Event):
+    """A part of a step began: one check of a gate, say. A step names its parts up front
+    (`Step.parts`), so an interface can list them before they run."""
+
+    kind: Literal["part_started"] = "part_started"
+    step: str
+    part: str
+
+
+class PartFinished(Event):
+    kind: Literal["part_finished"] = "part_finished"
+    step: str
+    part: str
+    ok: bool = True
+    detail: str = ""
+
+
 class StepFailed(Event):
     kind: Literal["step_failed"] = "step_failed"
     step: str

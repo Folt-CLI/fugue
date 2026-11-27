@@ -32,6 +32,8 @@ from fugue.core.reporting import (
     Form,
     Message,
     Output,
+    PartFinished,
+    PartStarted,
     Question,
     RunFinished,
     RunResumed,
@@ -203,6 +205,10 @@ class WorkApp(App[None]):
                 checklist.finish(step, detail)
             case StepFailed(step=step):
                 checklist.fail(step)
+            case PartStarted(step=step, part=part):
+                checklist.start_part(step, part)
+            case PartFinished(step=step, part=part, ok=ok, detail=detail):
+                checklist.finish_part(step, part, ok=ok, detail=detail)
             case TicketRead(repository=repository, ticket=ticket):
                 await self.query_one(TicketWindow).show(ticket, repository)
             case WorktreeReady() as ready:
