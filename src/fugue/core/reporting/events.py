@@ -42,12 +42,29 @@ class Message(Event):
 
 
 class Output(Event):
-    """A line a process or the agent wrote. `stdout` and `stderr` are what the commands a flow
-    runs print (git, the gate); `ai` is what the agent says as it works."""
+    """A line a process or an agent wrote. `stdout` and `stderr` are what the commands a flow
+    runs print (git, the gate); `ai` is what an agent says as it works, and `agent` names which
+    one, since several can run at once."""
 
     kind: Literal["output"] = "output"
     stream: Literal["stdout", "stderr", "ai"]
     text: str
+    agent: str = ""
+
+
+class AgentStarted(Event):
+    """An agent session began. `agent` is its name, unique within the run (`implementer`,
+    `reviewer 2`); `role` says what it is for."""
+
+    kind: Literal["agent_started"] = "agent_started"
+    agent: str
+    role: str = ""
+
+
+class AgentFinished(Event):
+    kind: Literal["agent_finished"] = "agent_finished"
+    agent: str
+    failed: bool = False
 
 
 class TicketRead(Event):

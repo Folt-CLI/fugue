@@ -1,6 +1,8 @@
 """How a flow reports progress and asks questions, without knowing who is listening."""
 
 from fugue.core.reporting.events import (
+    AgentFinished,
+    AgentStarted,
     Answered,
     Event,
     Message,
@@ -20,6 +22,8 @@ from fugue.core.reporting.questions import Answer, Ask, Chat, Form, Question, Se
 from fugue.core.reporting.reporter import Reporter, SilentReporter
 
 __all__ = [
+    "AgentFinished",
+    "AgentStarted",
     "Answer",
     "Answered",
     "Ask",

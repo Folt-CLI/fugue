@@ -25,6 +25,8 @@ from fugue.cli.tui.windows import (
 )
 from fugue.cli.views import WorkView
 from fugue.core.reporting import (
+    AgentFinished,
+    AgentStarted,
     Answer,
     Event,
     Form,
@@ -141,6 +143,10 @@ class WorkApp(App[None]):
     async def _write(self, page: type[LogWindow], content: RenderableType) -> None:
         """Write to a page, and mark it if it is not the one in front."""
         await self.query_one(page).write(content)
+        self._mark(page)
+
+    def _mark(self, page: type[Window]) -> None:
+        """Put a dot on a page's tab if it got something while another page is in front."""
         tabs = self.query_one(TabbedContent)
         if tabs.active != self._pane(page):
             tabs.get_tab(self._pane(page)).label = self._label(page, unseen=True)
@@ -192,8 +198,14 @@ class WorkApp(App[None]):
                 await self._write(StdoutWindow, text)
             case Output(stream="stderr", text=text):
                 await self._write(StderrWindow, text)
-            case Output(stream="ai", text=text):
-                await self._write(AiWindow, text)
+            case AgentStarted(agent=agent, role=role):
+                await self.query_one(AiWindow).start(agent, role)
+                self._mark(AiWindow)
+            case AgentFinished(agent=agent, failed=failed):
+                self.query_one(AiWindow).finish(agent, failed=failed)
+            case Output(stream="ai", text=text, agent=agent):
+                await self.query_one(AiWindow).write(agent, text)
+                self._mark(AiWindow)
             case RunFinished():
                 status.finished()
             case RunFailed():

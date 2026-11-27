@@ -1,4 +1,5 @@
-"""The windows that show what is written while a run goes on: one per stream."""
+"""The windows that show what is written while a run goes on: one per stream. The agents'
+own window is in `ai.py`."""
 
 from rich.console import RenderableType
 from rich.text import Text
@@ -32,11 +33,3 @@ class StderrWindow(LogWindow):
     key = "e"
     placeholder = "No errors."
     style = "red"
-
-
-class AiWindow(LogWindow):
-    """What the agent says as it works."""
-
-    title = "AI"
-    key = "a"
-    placeholder = "The agent has not started."

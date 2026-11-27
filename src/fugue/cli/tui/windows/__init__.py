@@ -1,7 +1,8 @@
 """The windows of the work screen. Each one is a `Window`."""
 
+from fugue.cli.tui.windows.ai import AiWindow
 from fugue.cli.tui.windows.checklist import ChecklistWindow
-from fugue.cli.tui.windows.log import AiWindow, LogWindow, StderrWindow, StdoutWindow
+from fugue.cli.tui.windows.log import LogWindow, StderrWindow, StdoutWindow
 from fugue.cli.tui.windows.ticket import TicketWindow
 from fugue.cli.tui.windows.window import Window
 

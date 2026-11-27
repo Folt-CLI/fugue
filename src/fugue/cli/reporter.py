@@ -7,6 +7,8 @@ from rich.status import Status
 
 from fugue.cli.views import TicketView, WorkView
 from fugue.core.reporting import (
+    AgentFinished,
+    AgentStarted,
     Answer,
     Ask,
     Chat,
@@ -69,6 +71,16 @@ class RichReporter(Reporter):
                     new_branch=ready.new_branch,
                     reused=ready.reused,
                 )
+            case AgentStarted(agent=agent, role=role):
+                self._stop()
+                console.print(f"[cyan]▶[/] {agent}" + (f" [dim]· {role}[/]" if role else ""))
+            case AgentFinished(agent=agent, failed=failed):
+                self._stop()
+                console.print(f"[bold red]✗[/] {agent}" if failed else f"[bold green]✓[/] {agent}")
+            case Output(stream="ai", text=text, agent=agent):
+                self._stop()
+                prefix = f"[{agent}] " if agent else ""
+                console.print(f"{prefix}{text}", markup=False, highlight=False)
             case Output(stream=stream, text=text):
                 self._stop()
                 if stream == "stderr":

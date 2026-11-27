@@ -240,3 +240,40 @@ FormScreen #form-fields {
     height: 1fr;
     max-height: 100%;
 }
+
+AiWindow {
+    overflow: hidden;
+    padding: 0;
+}
+
+AiWindow > Horizontal {
+    height: 100%;
+}
+
+#agent-list {
+    width: 28;
+    height: 100%;
+    border: none;
+    border-right: tall $panel-lighten-2;
+    background: transparent;
+    padding: 0;
+}
+
+#agent-list:focus {
+    border-right: tall $accent;
+}
+
+#agent-logs {
+    width: 1fr;
+    height: 100%;
+}
+
+#agent-logs RichLog {
+    height: 100%;
+    background: transparent;
+    padding: 0 1;
+}
+
+#agents-empty {
+    padding: 0 1;
+}
