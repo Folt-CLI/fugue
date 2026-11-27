@@ -14,8 +14,13 @@ from fugue.core.work import Work, WorkResult
 
 def work(
     ticket: Annotated[int, typer.Argument(help="Ticket number.")],
-    plain: Annotated[
-        bool, typer.Option("--plain", help="Print progress as lines instead of the full screen.")
+    headless: Annotated[
+        bool,
+        typer.Option(
+            "--headless",
+            envvar="FUGUE_HEADLESS",
+            help="Run without the full screen: print progress as lines.",
+        ),
     ] = False,
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Show no progress, only the final line.")
@@ -25,7 +30,7 @@ def work(
     messages = Messages()
     with messages.guard():
         flow = Work()
-        if plain or quiet or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        if headless or quiet or not (sys.stdin.isatty() and sys.stdout.isatty()):
             result = asyncio.run(flow.run(ticket, RichReporter(quiet=quiet)))
         else:
             result = _in_screen(flow, ticket)
