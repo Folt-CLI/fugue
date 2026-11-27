@@ -21,7 +21,8 @@ Window {
     scrollbar-size-vertical: 1;
 }
 
-Window:focus {
+Window:focus,
+Window:focus-within {
     border: round $accent;
 }
 
@@ -268,12 +269,35 @@ AiWindow > Horizontal {
     height: 100%;
 }
 
-#agent-logs RichLog {
+#agent-logs AgentLog {
     height: 100%;
+    scrollbar-size-vertical: 1;
     background: transparent;
     padding: 0 1;
 }
 
 #agents-empty {
     padding: 0 1;
+}
+
+#agent-list > .option-list--option-highlighted {
+    background: $accent 30%;
+    color: $text;
+    text-style: bold;
+}
+
+#agent-list:focus > .option-list--option-highlighted {
+    background: $accent 60%;
+}
+
+#agent-list > .option-list--option-hover {
+    background: transparent;
+}
+
+#agent-list > .option-list--option-hover-highlighted {
+    background: $accent 30%;
+}
+
+.agent-line {
+    height: auto;
 }
