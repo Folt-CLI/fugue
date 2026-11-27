@@ -102,6 +102,18 @@ class RunFailed(Event):
     message: str
 
 
+class RunPaused(Event):
+    """The person said no to going on; the run waits before `step` until they say continue."""
+
+    kind: Literal["run_paused"] = "run_paused"
+    step: str
+
+
+class RunResumed(Event):
+    kind: Literal["run_resumed"] = "run_resumed"
+    step: str
+
+
 class RunStopped(Event):
     kind: Literal["run_stopped"] = "run_stopped"
     message: str

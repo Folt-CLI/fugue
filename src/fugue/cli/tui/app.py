@@ -35,6 +35,7 @@ from fugue.core.reporting import (
     Question,
     RunFailed,
     RunFinished,
+    RunPaused,
     StepFailed,
     StepFinished,
     StepStarted,
@@ -206,6 +207,8 @@ class WorkApp(App[None]):
             case Output(stream="ai", text=text, agent=agent):
                 await self.query_one(AiWindow).write(agent, text)
                 self._mark(AiWindow)
+            case RunPaused(step=step):
+                status.paused(step)
             case RunFinished():
                 status.finished()
             case RunFailed():

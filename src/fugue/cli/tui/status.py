@@ -17,6 +17,11 @@ class StatusBar(Static):
     def finished(self) -> None:
         self.update(Text.assemble(("✓ ", "bold green"), ("Done", "bold")))
 
+    def paused(self, step: str) -> None:
+        self.update(
+            Text.assemble(("⏸ ", "bold yellow"), ("Paused", "bold"), (f" · before {step}", "dim"))
+        )
+
     def stopped(self, message: str) -> None:
         self.update(
             Text.assemble(("■ ", "bold yellow"), ("Stopped", "bold"), (f" · {message}", "dim"))

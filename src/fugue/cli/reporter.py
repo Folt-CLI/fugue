@@ -18,6 +18,7 @@ from fugue.core.reporting import (
     Output,
     Question,
     Reporter,
+    RunPaused,
     Select,
     StatusMoved,
     StepFailed,
@@ -71,6 +72,9 @@ class RichReporter(Reporter):
                     new_branch=ready.new_branch,
                     reused=ready.reused,
                 )
+            case RunPaused(step=step):
+                self._stop()
+                console.print(f"[yellow]⏸[/] paused before {step}")
             case AgentStarted(agent=agent, role=role):
                 self._stop()
                 console.print(f"[cyan]▶[/] {agent}" + (f" [dim]· {role}[/]" if role else ""))
