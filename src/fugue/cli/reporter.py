@@ -8,6 +8,7 @@ from fugue.cli.views import TicketView, WorkView
 from fugue.core.reporting import (
     Event,
     Message,
+    Output,
     Question,
     Reporter,
     StatusMoved,
@@ -25,6 +26,7 @@ class RichReporter(Reporter):
 
     def __init__(self, console: Console | None = None, *, quiet: bool = False) -> None:
         self._console = console or Console()
+        self._errors = Console(stderr=True)
         self._tickets = TicketView(self._console)
         self._work = WorkView(self._console)
         self._quiet = quiet
@@ -60,6 +62,13 @@ class RichReporter(Reporter):
                     new_branch=ready.new_branch,
                     reused=ready.reused,
                 )
+            case Output(stream=stream, text=text):
+                self._stop()
+                if stream == "stderr":
+                    self._errors.print(text, style="red", markup=False, highlight=False)
+                else:
+                    style = "dim" if stream == "stdout" else None
+                    console.print(text, style=style, markup=False, highlight=False)
             case Message(text=text, level=level):
                 self._stop()
                 style = "yellow" if level == "warning" else "dim"

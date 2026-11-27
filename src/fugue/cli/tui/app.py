@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import ClassVar
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -11,10 +12,19 @@ from textual.widgets import Footer, Header
 from fugue.cli.tui.question import QuestionScreen
 from fugue.cli.tui.reporter import TuiReporter
 from fugue.cli.tui.status import StatusBar
-from fugue.cli.tui.windows import ChecklistWindow, LogWindow, TicketWindow, Window
+from fugue.cli.tui.windows import (
+    AiWindow,
+    ChecklistWindow,
+    StderrWindow,
+    StdoutWindow,
+    TicketWindow,
+    Window,
+)
+from fugue.cli.views import WorkView
 from fugue.core.reporting import (
     Event,
     Message,
+    Output,
     Question,
     RunFailed,
     RunFinished,
@@ -27,12 +37,19 @@ from fugue.core.reporting import (
 from fugue.core.work import Work, WorkResult
 from fugue.errors import FlowError, FugueError
 
-WINDOWS: tuple[type[Window], ...] = (ChecklistWindow, TicketWindow, LogWindow)
+WINDOWS: tuple[type[Window], ...] = (
+    ChecklistWindow,
+    TicketWindow,
+    StdoutWindow,
+    StderrWindow,
+    AiWindow,
+)
 
 
 class WorkApp(App[None]):
-    """Runs the work flow for one ticket and shows it live in three windows (the checklist of
-    every step, the ticket, the log) with a status bar under them that names the current step.
+    """Runs the work flow for one ticket and shows it live: the checklist of every step, the
+    ticket, and three log windows (STDOUT, STDERR, AI), with a status bar under them that
+    names the current step.
     A window is shown or hidden with its key; Tab moves between them. A question from the flow
     floats over whatever is showing.
 
@@ -58,7 +75,10 @@ class WorkApp(App[None]):
             yield ChecklistWindow(self._work.steps())
             with Vertical(id="main"):
                 yield TicketWindow()
-                yield LogWindow()
+                with Horizontal(id="logs"):
+                    yield StdoutWindow()
+                    yield StderrWindow()
+                    yield AiWindow()
         yield StatusBar()
         yield Footer()
 
@@ -83,7 +103,7 @@ class WorkApp(App[None]):
     async def _fail(self, error: FugueError) -> None:
         self.error = error
         self.query_one(StatusBar).failed(str(error))
-        await self.query_one(LogWindow).failure(str(error))
+        await self.query_one(StderrWindow).write(str(error))
 
     async def show(self, event: Event) -> None:
         """Show one event from the flow in the window it belongs to."""
@@ -100,15 +120,24 @@ class WorkApp(App[None]):
             case TicketRead(repository=repository, ticket=ticket):
                 await self.query_one(TicketWindow).show(ticket, repository)
             case WorktreeReady() as ready:
-                await self.query_one(LogWindow).worktree(
+                first, second = WorkView.worktree_lines(
                     ready.path,
                     ready.branch,
                     ready.base,
                     new_branch=ready.new_branch,
                     reused=ready.reused,
                 )
-            case Message(text=text, level=level):
-                await self.query_one(LogWindow).note(text, warning=level == "warning")
+                await self.query_one(StdoutWindow).write(Text.from_markup(f"{first}\n{second}"))
+            case Message(text=text, level="warning"):
+                await self.query_one(StderrWindow).write(text)
+            case Message(text=text):
+                await self.query_one(StdoutWindow).write(text)
+            case Output(stream="stdout", text=text):
+                await self.query_one(StdoutWindow).write(text)
+            case Output(stream="stderr", text=text):
+                await self.query_one(StderrWindow).write(text)
+            case Output(stream="ai", text=text):
+                await self.query_one(AiWindow).write(text)
             case RunFinished():
                 status.finished()
             case RunFailed():
@@ -117,5 +146,7 @@ class WorkApp(App[None]):
     async def ask(self, question: Question) -> str:
         """Stop the flow until the person has chosen an answer."""
         answer: str = await self.push_screen_wait(QuestionScreen(question))
-        await self.query_one(LogWindow).answer(question.text, answer)
+        await self.query_one(StdoutWindow).write(
+            Text.from_markup(f"[dim]{question.text}[/] [bold]{answer}[/]")
+        )
         return answer

@@ -32,8 +32,12 @@ TicketWindow {
     height: 2fr;
 }
 
-LogWindow {
+#logs {
     height: 1fr;
+}
+
+#logs > Window {
+    width: 1fr;
 }
 
 StatusBar {

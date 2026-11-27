@@ -41,6 +41,15 @@ class Message(Event):
     level: Literal["info", "warning"] = "info"
 
 
+class Output(Event):
+    """A line a process or the agent wrote. `stdout` and `stderr` are what the commands a flow
+    runs print (git, the gate); `ai` is what the agent says as it works."""
+
+    kind: Literal["output"] = "output"
+    stream: Literal["stdout", "stderr", "ai"]
+    text: str
+
+
 class TicketRead(Event):
     kind: Literal["ticket_read"] = "ticket_read"
     repository: str
