@@ -8,7 +8,11 @@ from githubkit.exception import RequestFailed
 
 from fugue.config import GithubConfig
 from fugue.errors import GitHubError
+from fugue.github.branches import Branches
 from fugue.github.issues import Issues
+from fugue.github.labels import Labels
+from fugue.github.pulls import PullRequests
+from fugue.github.repos import Repo
 from fugue.gitops import Repository
 
 
@@ -20,6 +24,9 @@ class Github:
 
         github = Github()
         ticket = await github.issue.get(246)
+        pull = await github.pr.create("Title", head="feature", base="develop")
+
+    Areas: `issue`, `pr`, `label`, `branch` and `repo`.
     """
 
     def __init__(
@@ -27,8 +34,12 @@ class Github:
     ) -> None:
         self.config = config or GithubConfig.load()
         self.repository = repository or Repository.discover()
-        self.client = _Client(self.config.token.get_secret_value())
+        self.client = _Client(self.config.token.get_secret_value(), base_url=self.config.api_url)
         self.issue = Issues(self)
+        self.pr = PullRequests(self)
+        self.label = Labels(self)
+        self.branch = Branches(self)
+        self.repo = Repo(self)
 
     @property
     def slug(self) -> str:
@@ -45,4 +56,6 @@ class Github:
                 raise GitHubError(f"{subject} does not exist") from error
             if status in (401, 403):
                 raise GitHubError(f"GitHub refused the token (HTTP {status})") from error
+            if status in (405, 409, 422):
+                raise GitHubError(f"GitHub rejected the request for {subject}: {error}") from error
             raise GitHubError(f"GitHub answered HTTP {status} for {subject}") from error

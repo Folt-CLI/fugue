@@ -27,8 +27,9 @@ class Config(BaseSettings):
 
 
 class GithubConfig(Config):
-    """GITHUB_TOKEN: the token Fugue uses for GitHub."""
+    """GITHUB_TOKEN: the token Fugue uses for GitHub. GITHUB_API_URL: another API address."""
 
     model_config = SettingsConfigDict(frozen=True, extra="ignore", env_prefix="GITHUB_")
 
     token: SecretStr
+    api_url: str = "https://api.github.com"

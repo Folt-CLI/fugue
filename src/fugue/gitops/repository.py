@@ -16,6 +16,7 @@ class Repository(BaseModel):
     root: Path
     owner: str
     name: str
+    branch: str = ""
 
     _REMOTE: ClassVar[re.Pattern[str]] = re.compile(
         r"^(?:https://(?:[^@/]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)"
@@ -51,4 +52,5 @@ class Repository(BaseModel):
         if origin.url is None:
             raise RepositoryError("origin has no URL")
         owner, name = cls.parse_remote(origin.url)
-        return cls(root=Path(repo.workdir), owner=owner, name=name)
+        branch = "" if repo.head_is_unborn or repo.head_is_detached else repo.head.shorthand
+        return cls(root=Path(repo.workdir), owner=owner, name=name, branch=branch)

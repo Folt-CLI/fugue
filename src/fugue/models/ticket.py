@@ -1,5 +1,6 @@
 """A GitHub issue as Fugue sees it."""
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,4 +14,7 @@ class Ticket(BaseModel):
     body: str = ""
     state: Literal["open", "closed"]
     labels: tuple[str, ...] = Field(default_factory=tuple)
+    author: str = ""
+    comments: int = 0
+    updated_at: datetime
     url: str
