@@ -37,7 +37,7 @@ from fugue.core.reporting import (
     WorktreeReady,
 )
 from fugue.core.work import Work, WorkResult
-from fugue.errors import FlowError, FugueError
+from fugue.errors import FlowError, FlowStopped, FugueError
 
 PAGES: tuple[type[Window], ...] = (TicketWindow, StdoutWindow, StderrWindow, AiWindow)
 
@@ -137,6 +137,9 @@ class WorkApp(App[None]):
     async def _run(self) -> None:
         try:
             self.result = await self._work.run(self._number, TuiReporter(self))
+        except FlowStopped as stopped:
+            self.error = stopped
+            self.query_one(StatusBar).stopped(str(stopped))
         except FugueError as error:
             await self._fail(error)
         except Exception as error:  # a worker would swallow this and leave the screen running

@@ -9,13 +9,14 @@ from uuid import uuid4
 from pydantic_graph import Graph, GraphBuilder
 from pydantic_graph.step import NodeStep
 
+from fugue.core.flow.checkpoint import Checkpoint
 from fugue.core.flow.config import FlowConfig
 from fugue.core.flow.records import RunReporter
 from fugue.core.flow.state import FlowDeps
 from fugue.core.flow.step import Step
 from fugue.core.github import Github
-from fugue.core.reporting import Reporter, RunFailed, RunFinished, RunStarted
-from fugue.errors import FlowError, FugueError
+from fugue.core.reporting import Reporter, RunFailed, RunFinished, RunStarted, RunStopped
+from fugue.errors import FlowError, FlowStopped, FugueError
 
 
 class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
@@ -53,10 +54,18 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
         """Run the flow from its first step. `subject` says what it is about, for the record."""
         run_id = self._new_run_id()
         scoped = RunReporter(reporter, run_id=run_id, flow=self.name, record=self._record(run_id))
-        deps = FlowDeps(github=self.github, config=self.config, reporter=scoped)
+        deps = FlowDeps(
+            github=self.github,
+            config=self.config,
+            reporter=scoped,
+            checkpoint=Checkpoint(scoped, enabled=self.config.confirm_steps),
+        )
         await scoped.report(RunStarted(subject=subject))
         try:
             result = await self._graph.run(state=state, deps=deps, inputs=self.start())
+        except FlowStopped as stopped:
+            await scoped.report(RunStopped(message=str(stopped)))
+            raise
         except FugueError as error:
             await scoped.report(RunFailed(message=str(error)))
             raise

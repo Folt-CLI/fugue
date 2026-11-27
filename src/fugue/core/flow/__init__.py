@@ -2,6 +2,7 @@
 shapes of state, dependencies and configuration."""
 
 from fugue.core.flow.actions import Action, MoveStatus, PrepareBranch, ReadTicket
+from fugue.core.flow.checkpoint import Checkpoint
 from fugue.core.flow.config import FlowConfig
 from fugue.core.flow.flow import Flow
 from fugue.core.flow.naming import Naming
@@ -11,6 +12,7 @@ from fugue.core.flow.step import Step
 
 __all__ = [
     "Action",
+    "Checkpoint",
     "Flow",
     "FlowConfig",
     "FlowDeps",

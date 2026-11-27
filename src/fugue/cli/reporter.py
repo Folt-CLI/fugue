@@ -18,6 +18,7 @@ from fugue.core.reporting import (
     TicketRead,
     WorktreeReady,
 )
+from fugue.errors import FlowStopped
 
 
 class RichReporter(Reporter):
@@ -75,12 +76,18 @@ class RichReporter(Reporter):
                 console.print(f"[{style}]{text}[/]")
 
     async def ask(self, question: Question) -> str:
+        """Ask on the terminal. The first letters of a choice are enough. Giving up (Ctrl-C,
+        or no input left) stops the flow."""
         self._stop()
         options = "/".join(question.choices)
         while True:
-            answer = str(typer.prompt(f"{question.text} [{options}]", default=question.default))
-            if answer in question.choices:
-                return answer
+            try:
+                typed = str(typer.prompt(f"{question.text} [{options}]", default=question.default))
+            except typer.Abort as abort:
+                raise FlowStopped("Stopped: no answer was given.") from abort
+            matches = [c for c in question.choices if c.startswith(typed.strip().lower())]
+            if typed.strip() and len(matches) == 1:
+                return matches[0]
             self._console.print(f"[red]Please answer one of: {options}[/]")
 
     def _stop(self) -> None:

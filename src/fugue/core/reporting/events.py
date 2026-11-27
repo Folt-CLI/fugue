@@ -85,6 +85,11 @@ class RunFailed(Event):
     message: str
 
 
+class RunStopped(Event):
+    kind: Literal["run_stopped"] = "run_stopped"
+    message: str
+
+
 class Answered(Event):
     kind: Literal["answered"] = "answered"
     question: str

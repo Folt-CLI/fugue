@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from fugue.core.flow.checkpoint import Checkpoint
 from fugue.core.github import Github
 from fugue.core.gitops import Worktree
 from fugue.core.reporting import Reporter
@@ -38,3 +39,4 @@ class FlowDeps[ConfigT]:
     github: Github
     config: ConfigT
     reporter: Reporter
+    checkpoint: Checkpoint

@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from fugue.cli.views.view import View
-from fugue.errors import FugueError
+from fugue.errors import FlowStopped, FugueError
 
 
 class Messages(View):
@@ -38,6 +38,9 @@ class Messages(View):
         """Show a FugueError as a red panel and exit with code 1."""
         try:
             yield
+        except FlowStopped as stopped:
+            self.console.print(f"[yellow]{stopped}[/]")
+            raise typer.Exit(1) from stopped
         except FugueError as error:
             self.error(str(error))
             raise typer.Exit(1) from error

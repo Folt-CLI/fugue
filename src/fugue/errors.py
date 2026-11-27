@@ -19,3 +19,7 @@ class GitHubError(FugueError):
 
 class FlowError(FugueError):
     """A flow cannot go on."""
+
+
+class FlowStopped(FugueError):
+    """The person running a flow chose not to go on. Nothing went wrong."""

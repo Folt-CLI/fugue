@@ -9,7 +9,7 @@ import typer
 from fugue.cli.reporter import RichReporter
 from fugue.cli.tui import WorkApp
 from fugue.cli.views import Messages, WorkView
-from fugue.core.work import Work, WorkResult
+from fugue.core.work import Work, WorkConfig, WorkResult
 
 
 def work(
@@ -22,6 +22,10 @@ def work(
             help="Run without the full screen: print progress as lines.",
         ),
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Do not ask before each step; go straight through."),
+    ] = False,
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Show no progress, only the final line.")
     ] = False,
@@ -29,7 +33,10 @@ def work(
     """Work one ticket."""
     messages = Messages()
     with messages.guard():
-        flow = Work()
+        config = WorkConfig.load()
+        if yes:
+            config = config.model_copy(update={"confirm_steps": False})
+        flow = Work(config=config)
         if headless or quiet or not (sys.stdin.isatty() and sys.stdout.isatty()):
             result = asyncio.run(flow.run(ticket, RichReporter(quiet=quiet)))
         else:
