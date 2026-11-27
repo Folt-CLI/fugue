@@ -78,11 +78,15 @@ class Settings:
         field = cls.model_fields[name]
         if field.annotation is SecretStr:
             raise ConfigError(f"{key} is a secret, so it is set with an environment variable only")
+        adapter = TypeAdapter(cast(Any, field.annotation))
         try:
-            value = TypeAdapter(cast(Any, field.annotation)).validate_python(raw)
+            value = adapter.validate_python(raw)
         except ValidationError as error:
-            reason = error.errors()[0]["msg"]
-            raise ConfigError(f"{raw!r} is not a valid value for {key}: {reason}") from error
+            try:  # a table is given as JSON
+                value = adapter.validate_json(raw)
+            except ValidationError:
+                reason = error.errors()[0]["msg"]
+                raise ConfigError(f"{raw!r} is not a valid value for {key}: {reason}") from error
         stored = str(value) if isinstance(value, Path) else value
         return self.files.write(scope, section, name, stored)
 

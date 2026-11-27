@@ -2,6 +2,7 @@
 
 from fugue.models.branch import Branch
 from fugue.models.comment import Comment
+from fugue.models.gate import CheckResult, GateResult
 from fugue.models.label import Label
 from fugue.models.project import (
     FieldChange,
@@ -19,8 +20,10 @@ from fugue.models.ticket import Ticket
 __all__ = [
     "Branch",
     "Check",
+    "CheckResult",
     "Comment",
     "FieldChange",
+    "GateResult",
     "Label",
     "Project",
     "ProjectField",

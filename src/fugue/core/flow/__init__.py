@@ -1,7 +1,7 @@
 """What every flow shares: the Flow and Step base classes, the actions steps use, and the
 shapes of state, dependencies and configuration."""
 
-from fugue.core.flow.actions import Action, MoveStatus, PrepareBranch, ReadTicket
+from fugue.core.flow.actions import Action, MoveStatus, PrepareBranch, ReadTicket, RunGate
 from fugue.core.flow.checkpoint import Checkpoint
 from fugue.core.flow.config import FlowConfig
 from fugue.core.flow.flow import Flow
@@ -20,6 +20,7 @@ __all__ = [
     "Naming",
     "PrepareBranch",
     "ReadTicket",
+    "RunGate",
     "RunReporter",
     "Step",
     "StepOutline",

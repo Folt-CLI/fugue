@@ -3,7 +3,7 @@
 from pydantic import BaseModel, ConfigDict
 
 from fugue.core.gitops import Worktree
-from fugue.models import Ticket
+from fugue.models import GateResult, Ticket
 
 
 class WorkResult(BaseModel):
@@ -13,3 +13,4 @@ class WorkResult(BaseModel):
     ticket: Ticket
     status: str | None = None
     worktree: Worktree | None = None
+    gate: GateResult | None = None

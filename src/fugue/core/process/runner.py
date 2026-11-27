@@ -183,8 +183,10 @@ async def run_command(
     max_line_bytes: int | None = 65536,
     spool_dir: Path | None = None,
     on_stdout_line: Callable[[str], Awaitable[None]] | None = None,
+    on_stderr_line: Callable[[str], Awaitable[None]] | None = None,
 ) -> CommandResult:
-    """Execute argv; callback lines retain newlines, including an unterminated tail.
+    """Execute argv; callback lines retain newlines, including an unterminated tail. Lines of
+    stdout go to `on_stdout_line` and lines of stderr to `on_stderr_line`, as they arrive.
 
     Callback line content is capped at max_line_bytes (65536 by default), with a
     truncation marker before any retained newline. The result field
@@ -225,7 +227,9 @@ async def run_command(
         asyncio.create_task(
             _read_stream(stdout_stream, stdout, spool, on_stdout_line, max_line_bytes)
         ),
-        asyncio.create_task(_read_stream(stderr_stream, stderr, spool)),
+        asyncio.create_task(
+            _read_stream(stderr_stream, stderr, spool, on_stderr_line, max_line_bytes)
+        ),
         asyncio.create_task(_write_stdin(stdin_stream, stdin)),
     ]
     completion = asyncio.gather(*tasks, process.wait())

@@ -12,10 +12,11 @@ from typing import Any
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from fugue.core.flow import FlowDeps, MoveStatus, PrepareBranch, ReadTicket, Step
+from fugue.core.flow import FlowDeps, MoveStatus, PrepareBranch, ReadTicket, RunGate, Step
 from fugue.core.work.config import WorkConfig
 from fugue.core.work.result import WorkResult
 from fugue.core.work.state import WorkState
+from fugue.errors import FlowError
 
 Deps = FlowDeps[WorkConfig]
 Context = GraphRunContext[WorkState, Deps]
@@ -69,6 +70,37 @@ class PrepareBranchNode(WorkStep):
         )
         return state.worktree.branch
 
+    async def run(self, ctx: Context) -> GateNode:
+        await self.execute(ctx)
+        return GateNode()
+
+
+@dataclass
+class GateNode(WorkStep):
+    """Run the checks the repository asks for, in the worktree. Every check runs, and the run
+    stops if any failed."""
+
+    name = "Run the gate"
+
+    @classmethod
+    def parts(cls, config: Any) -> tuple[str, ...]:
+        return tuple(config.gate)
+
+    async def act(self, state: WorkState, deps: Deps) -> str:
+        checks = deps.config.gate
+        if not checks:
+            return "no checks set"
+        worktree = state.worktree
+        if worktree is None:
+            raise FlowError("there is no worktree to run the gate in")
+        state.gate = await RunGate(deps.github, deps.reporter).perform(
+            self.name, checks, worktree.path, timeout=deps.config.gate_timeout
+        )
+        if not state.gate.passed:
+            failed = ", ".join(check.name for check in state.gate.failed)
+            raise FlowError(f"the gate failed: {failed}")
+        return f"{len(state.gate.checks)} checks passed"
+
     async def run(self, ctx: Context) -> Finish:
         await self.execute(ctx)
         return Finish()
@@ -86,8 +118,16 @@ class Finish(BaseNode[WorkState, Deps, WorkResult]):
                 ticket=state.read_ticket,
                 status=state.status,
                 worktree=state.worktree,
+                gate=state.gate,
             )
         )
 
 
-__all__: list[Any] = ["Finish", "MoveStatusNode", "PrepareBranchNode", "ReadTicketNode", "WorkStep"]
+__all__: list[Any] = [
+    "Finish",
+    "GateNode",
+    "MoveStatusNode",
+    "PrepareBranchNode",
+    "ReadTicketNode",
+    "WorkStep",
+]
