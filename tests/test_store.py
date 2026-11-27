@@ -64,7 +64,17 @@ def test_parent_migration_preserves_existing_rows(tmp_path: Path) -> None:
             table: connection.execute(f"SELECT * FROM {table}").fetchall() for table in tables
         }
     with Store(path) as migrated:
+        remaining = {
+            row[0]
+            for row in migrated._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
         for table, rows in before.items():
+            if table.startswith("stack_approval"):
+                # Parent runs no longer build stacks, so their approval tables are dropped.
+                assert table not in remaining
+                continue
             assert [
                 tuple(row) for row in migrated._connection.execute(f"SELECT * FROM {table}")
             ] == rows
@@ -73,6 +83,12 @@ def test_parent_migration_preserves_existing_rows(tmp_path: Path) -> None:
         migrated.add_work(parent.id, 12, 0)
         migrated.set_work_run(parent.id, 12, 1)
         assert migrated.list_work(parent.id)[0].run_id == 1
+        assert parent.feature_run_id is None
+        migrated.set_feature_run(parent.id, 1)
+        migrated.set_feature_run(parent.id, 1)
+        assert migrated.get_parent_run(parent.id).feature_run_id == 1
+        with pytest.raises(StoreError, match="another feature run"):
+            migrated.set_feature_run(parent.id, 2)
         assert migrated._connection.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
 
 

@@ -141,7 +141,6 @@ def test_private_atomic_store_and_edit_helpers(tmp_path: Path) -> None:
         {"size": "L"},
         {"components": []},
         {"components": ["Source Code", "Tests"]},
-        {"size": "S"},
         {"size": "S", "scope_text": "No allowed files"},
         {"blocked_by": ["unknown"]},
     ],

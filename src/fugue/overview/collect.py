@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Protocol
 
 from fugue.config import RepoPolicy
-from fugue.engine.facts import scope_url, selected_solution
+from fugue.engine.facts import selected_solution
 from fugue.github.overview import ClosedIssue, MergedPr, OverviewPr
 from fugue.models import IssueType, Size, Status, Ticket
 from fugue.store.records import Approval, Run
@@ -150,7 +150,12 @@ def offline_overview(runs: Sequence[Run], *, repo: str, now: datetime, reason: s
 
 
 def _analysis_pending_decision(ticket: Ticket) -> bool:
-    if ticket.size not in (Size.M, Size.L) and ticket.issue_type != IssueType.QUESTION:
+    # An S or XS waits for a decision only once its full analysis parked it at S1.
+    if (
+        ticket.size not in (Size.M, Size.L)
+        and ticket.issue_type != IssueType.QUESTION
+        and ticket.status != Status.IN_ANALYSIS
+    ):
         return False
     analysis = ticket.body_sections.get("Analysis", "").strip()
     return bool(analysis) and analysis != _PENDING and not selected_solution(ticket)
@@ -162,13 +167,17 @@ def _is_ready(ticket: Ticket, policy: RepoPolicy) -> bool:
     problems = ready_for_implementation(
         ticket,
         policy,
-        has_scope_attachment=scope_url(ticket) is not None,
         selected_solution=selected_solution(ticket),
     )
     if problems:
         return False
-    wanted = Status.TO_DO if ticket.size in (Size.XS, Size.S) else Status.READY_FOR_IMPLEMENTATION
-    return ticket.status == wanted
+    # An S or XS starts at S0, its run analysing it first, or at S3 once its solution is selected.
+    wanted = (
+        (Status.TO_DO, Status.READY_FOR_IMPLEMENTATION)
+        if ticket.size in (Size.XS, Size.S)
+        else (Status.READY_FOR_IMPLEMENTATION,)
+    )
+    return ticket.status in wanted
 
 
 async def gather(

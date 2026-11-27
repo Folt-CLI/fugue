@@ -40,7 +40,9 @@ async def _run(client: GitHubClient, *args: str) -> str:
 async def download_attachment(client: GitHubClient, url: str, dest: Path) -> Path:
     if not url.startswith("https://github.com/user-attachments/"):
         raise ValueError("Expected a GitHub user-attachments URL")
-    await _run(client, "attach", "download", url, "--output", str(dest))
+    # The destination is a cache of the attachment: replace one left by an earlier run, which
+    # `gh attach download` otherwise refuses to overwrite.
+    await _run(client, "attach", "download", url, "--clobber", "--output", str(dest))
     return dest
 
 

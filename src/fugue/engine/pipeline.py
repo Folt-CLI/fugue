@@ -3,8 +3,8 @@
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import ExitStack
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -24,6 +24,9 @@ from fugue.agents import (
     ProviderSwitch,
     resolve_models,
 )
+from fugue.analysis.render import render_scope_text
+from fugue.analysis.schema import ScopingResult, scoping_schema
+from fugue.analysis.scoping import resize_comment, scoping_prompt
 from fugue.artifacts import ArtifactConflict, ArtifactRef, ArtifactStore
 from fugue.config import FugueConfig, ProviderEntry, RoleConfig
 from fugue.engine.ci import (
@@ -33,6 +36,7 @@ from fugue.engine.ci import (
     classify_failure,
     read_checks,
     summarize_checks,
+    without_ignored,
 )
 from fugue.engine.closure import close_comment, close_step, gate_passed, review_clean
 from fugue.engine.decision import (
@@ -51,12 +55,21 @@ from fugue.engine.decision import (
 from fugue.engine.facts import (
     allowed_files,
     branch_name,
+    read_test_change_reason,
     scope_url,
     selected_solution,
     worktree_path,
 )
-from fugue.engine.locks import RepoLock, TicketLock
-from fugue.engine.ports import CiGitHubPort, GitHubPort, MergeGitHubPort, ReviewGitHubPort
+from fugue.engine.locks import RepoLock
+from fugue.engine.ports import (
+    CheckRestartPort,
+    CiGitHubPort,
+    GitHubPort,
+    IssueClosePort,
+    MergeGitHubPort,
+    ReviewGitHubPort,
+    SizePort,
+)
 from fugue.engine.prompts import (
     commit_message,
     fallback_changes,
@@ -81,13 +94,24 @@ from fugue.engine.review import (
 )
 from fugue.gate import GateResult, format_failure, run_gate
 from fugue.github import CheckResult, GitHubError, PullRequest
-from fugue.github.client import PrState, ResolvePermissionError
-from fugue.github.stack import StackClient, lower_branch
-from fugue.gitops import CommitMessage, Git, GitError, validate_message, validate_staging
-from fugue.models import Disposition, IssueType, Role, Size, Status, Ticket
+from fugue.github.client import HeadChanged, ResolvePermissionError
+from fugue.gitops import (
+    CommitMessage,
+    Git,
+    GitError,
+    protected_paths,
+    validate_message,
+    validate_staging,
+)
+from fugue.models import AnalysisDepth, Disposition, IssueType, Role, Size, Status, Ticket
+from fugue.process import run_command
 from fugue.store import Approval, Operation, Run, Store
+from fugue.store.sizes import RESIZE
 from fugue.workflow import RunState, Stage, ready_for_implementation
 from fugue.workflow.guards import can_close, merge_allowed, review_required
+
+# Polls with no checks at all before a pull request is reopened to start its workflows.
+EMPTY_POLLS_BEFORE_RESTART = 3
 
 
 class GateRunner(Protocol):
@@ -119,7 +143,6 @@ class EngineDeps:
     progress: Callable[[str], None] | None = None
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     repo_lock: RepoLock | None = None
-    stack_factory: Callable[[Path], StackClient] = StackClient
     code_root: Path | None = None
 
     @property
@@ -147,13 +170,10 @@ class Identity:
     path: Path
 
 
-@dataclass(frozen=True)
-class _StackLayer:
-    run_id: int
-    ticket: Ticket
-    identity: Identity
-    pr: PullRequest
-    state: PrState
+_RESIZE_SIGNALS = ("Repair limit reached", "CI repair limit reached")
+
+
+_AGENT_TEST_CHANGE_RE = re.compile(r"^\s*Test-change:\s*(\S.*?)\s*$", re.MULTILINE)
 
 
 class _Stop(Exception):
@@ -327,10 +347,27 @@ async def observe(
 
 
 def _ticket_base(deps: EngineDeps, run_id: int) -> str:
-    saved = _operation_by_key(deps.store, run_id, "stack_base", "base")
+    saved = _operation_by_key(deps.store, run_id, "base", "base")
     if saved is not None and saved[4] is not None:
         return str(json.loads(saved[4])["branch"])
     return deps.base_branch
+
+
+def feature_parent(store: Store, run_id: int) -> int | None:
+    """The parent whose feature branch this run delivers to or delivers itself, if any."""
+    for kind, key in (("base", "base"), ("feature", "feature")):
+        saved = _operation_by_key(store, run_id, kind, key)
+        if saved is not None and saved[4] is not None:
+            parent = json.loads(saved[4]).get("parent")
+            if parent is not None:
+                return int(parent)
+    return None
+
+
+def is_feature_run(store: Store, run_id: int) -> bool:
+    """True for the run that delivers a parent's feature branch to the base branch."""
+    saved = _operation_by_key(store, run_id, "feature", "feature")
+    return saved is not None and saved[4] is not None
 
 
 def _base_ref(deps: EngineDeps, run_id: int) -> str:
@@ -342,7 +379,6 @@ def _base_ref(deps: EngineDeps, run_id: int) -> str:
 class Engine:
     def __init__(self, deps: EngineDeps) -> None:
         self.deps = deps
-        self._recorded_stack_approval: Approval | None = None
         self._attempt_id: ContextVar[int | None] = ContextVar("engine_attempt_id", default=None)
 
     def _artifact(self, run_id: int, kind: str, text: str, suffix: str = ".txt") -> ArtifactRef:
@@ -401,14 +437,8 @@ class Engine:
     async def _operation(
         self, run_id: int, kind: str, intent: dict[str, Any], action: Callable[[], Awaitable[Any]]
     ) -> None:
-        key = (
-            f"{intent['branch']}:{intent.get('head', '')}"
-            if kind.startswith("stack_")
-            else str(self._attempt_id.get())
-        )
+        key = str(self._attempt_id.get())
         operation = self.deps.store.begin_operation(run_id, kind, key, intent)
-        if kind.startswith("stack_") and operation.result_json is not None:
-            return
         await action()
         self.deps.store.complete_operation(operation.id, {"done": True})
 
@@ -537,9 +567,20 @@ class Engine:
         approval = self.deps.store.valid_approval(run_id, "merge", subject, head)
         problems = merge_allowed(
             gate_passed=gate_passed(self.deps.store, run_id, head),
-            ci_green=summarize_checks(await port.checks(pr)).is_green,
+            ci_green=summarize_checks(
+                without_ignored(
+                    await read_checks(partial(port.checks, pr)),
+                    self.deps.config.limits.ignored_checks,
+                )
+            ).is_green,
             review_clean_or_not_required=(
-                not review_required(ticket.size, self.deps.config.policy)
+                # A feature pull request needs its own review unless `policy.feature_review`
+                # is false; a ticket follows its Size rule.
+                not review_required(
+                    ticket.size,
+                    self.deps.config.policy,
+                    feature=is_feature_run(self.deps.store, run_id),
+                )
                 or review_clean(self.deps.store, run_id, head)
             ),
             approval_head_sha=(approval.head_sha if approval else None)
@@ -556,11 +597,8 @@ class Engine:
             raise _Stop(RunState.BLOCKED, problems)
         return head, approval
 
-    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome:
+    async def request_approval(self, run_id: int) -> RunOutcome:
         """Check delivery guards and wait for an explicit exact-head approval."""
-
-        if parent:
-            return await self._stack_action(run_id, "request")
 
         async def work() -> RunOutcome:
             ticket, identity, pr = await self._merge_context(run_id)
@@ -590,42 +628,89 @@ class Engine:
 
         return await self._guarded(run_id, work)
 
-    def approve(
-        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
-    ) -> Approval:
+    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval:
         """Record a live-guarded approval; call this synchronous API outside an event loop."""
-        if not decided_by.strip() or not reason.strip():
-            raise ValueError("Approval requires decided_by and reason")
-
-        async def check() -> Approval:
-            if parent:
-                await self._stack_action(run_id, "record", decided_by, reason)
-                approval = self._recorded_stack_approval
-                if approval is None:
-                    raise ValueError("Stack approval was blocked")
-                return approval
-            ticket, identity, pr = await self._merge_context(run_id)
-            head, _ = await self._merge_guards(run_id, ticket, identity, pr, require_approval=False)
-            requests = _operations(self.deps.store, run_id, "merge_request")
-            if not requests or json.loads(requests[-1][3])["head"] != head:
-                raise ValueError("Request approval for the current head first")
-            return self.deps.store.record_approval(
-                run_id, "merge", str(pr.number), head, "approved", decided_by, reason
-            )
-
         try:
-            return asyncio.run(check())
+            return asyncio.run(self.record_approval(run_id, decided_by, reason))
         except _Stop as stop:
             raise ValueError("; ".join(stop.problems)) from stop
 
-    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome:
-        if parent:
-            return await self._stack_action(run_id, "merge")
+    async def record_approval(self, run_id: int, decided_by: str, reason: str) -> Approval:
+        """Record approval for the requested current head; a guard problem raises _Stop."""
+        if not decided_by.strip() or not reason.strip():
+            raise ValueError("Approval requires decided_by and reason")
+        ticket, identity, pr = await self._merge_context(run_id)
+        head, _ = await self._merge_guards(run_id, ticket, identity, pr, require_approval=False)
+        requests = _operations(self.deps.store, run_id, "merge_request")
+        if not requests or json.loads(requests[-1][3])["head"] != head:
+            raise ValueError("Request approval for the current head first")
+        return self.deps.store.record_approval(
+            run_id, "merge", str(pr.number), head, "approved", decided_by, reason
+        )
+
+    async def merge_and_close(self, run_id: int) -> RunOutcome:
+        parent = feature_parent(self.deps.store, run_id)
+        if parent is not None:
+
+            async def refuse() -> RunOutcome:
+                raise _Stop(
+                    RunState.BLOCKED,
+                    [
+                        f"Run {run_id} belongs to the feature branch of #{parent}; "
+                        f"merge it with fugue run {parent}"
+                    ],
+                )
+
+            return await self._guarded(run_id, refuse)
         return await self._merge_and_close_work(run_id)
 
-    async def _merge_and_close_work(
-        self, run_id: int, stack_approval: Approval | None = None, approved_head: str | None = None
-    ) -> RunOutcome:
+    async def merge_approved(self, run_id: int, kind: str) -> tuple[PullRequest, str, str]:
+        """Merge the approved head with a merge commit and confirm it; resumable by `kind`.
+
+        Returns the pull request, the merged head and the merge commit. A pull request
+        already merged at a recorded head is confirmed without merging again.
+        """
+        ticket, identity, pr = await self._merge_context(run_id)
+        port = self._merge_port()
+        store = self.deps.store
+        state = await port.pr_state(pr)
+        if state.state == "MERGED":
+            operation = store.begin_operation(
+                run_id, kind, state.head_sha, {"number": pr.number, "head": state.head_sha}
+            )
+        else:
+            if state.state != "OPEN":
+                raise _Stop(RunState.BLOCKED, [f"Pull request #{pr.number} is not open or merged"])
+            head, _ = await self._merge_guards(run_id, ticket, identity, pr, require_approval=True)
+            operation = store.begin_operation(
+                run_id, kind, head, {"number": pr.number, "head": head}
+            )
+            try:
+                await self._stage(run_id, Stage.MERGE, lambda: port.merge(pr, head, "merge"))
+            except HeadChanged as error:
+                raise _Stop(
+                    RunState.BLOCKED, [f"{error}; the approval for {head} has lapsed"]
+                ) from error
+            started = self.deps.clock()
+            while True:
+                state = await port.pr_state(pr)
+                if state.state == "MERGED":
+                    break
+                remaining = (
+                    self.deps.config.limits.ci_timeout_seconds
+                    - (self.deps.clock() - started).total_seconds()
+                )
+                if remaining <= 0 or state.state != "OPEN":
+                    raise _Stop(RunState.BLOCKED, [f"Merge of #{pr.number} has not been confirmed"])
+                await self.deps.sleep(
+                    min(self.deps.config.limits.ci_poll_interval_seconds, remaining)
+                )
+        if not state.merge_sha:
+            raise _Stop(RunState.BLOCKED, [f"Merge of #{pr.number} has no merge commit"])
+        store.complete_operation(operation.id, {"merge_sha": state.merge_sha})
+        return pr, state.head_sha, state.merge_sha
+
+    async def _merge_and_close_work(self, run_id: int) -> RunOutcome:
         """Merge the approved head, verify MERGED, then finish durable closure steps."""
 
         async def work() -> RunOutcome:
@@ -634,11 +719,7 @@ class Engine:
             store = self.deps.store
             state = await port.pr_state(pr)
             head = state.head_sha
-            approval = stack_approval or store.valid_approval(run_id, "merge", str(pr.number), head)
-            if stack_approval is not None and head != approved_head:
-                raise _Stop(RunState.BLOCKED, ["Stack approval must match the current layer head"])
-            if stack_approval is not None and state.state != "MERGED":
-                raise _Stop(RunState.BLOCKED, ["Every stack layer must be merged before closing"])
+            approval = store.valid_approval(run_id, "merge", str(pr.number), head)
             if state.state != "MERGED":
                 if state.state != "OPEN":
                     raise _Stop(RunState.BLOCKED, ["Pull request is not open or merged"])
@@ -670,73 +751,17 @@ class Engine:
             if problems:
                 raise _Stop(RunState.BLOCKED, problems)
 
-            notes: list[str] = []
-
-            async def close() -> None:
-                await close_step(
-                    store,
-                    run_id,
-                    "disposition",
-                    lambda: port.set_disposition(ticket.number, Disposition.MERGED),
-                )
-                await close_step(
-                    store, run_id, "status", lambda: port.set_status(ticket.number, Status.DONE)
-                )
-                assert approval is not None
-                body = (
-                    f"Merged as {state.merge_sha}. Approval #{approval.id}: "
-                    f"{approval.decided_by} approved {head}. "
-                    f"Reason: {approval.reason}. Recorded: {approval.created_at.isoformat()}."
-                )
-                await close_comment(store, run_id, "comment", port, ticket.number, body)
-
-                async def remove() -> None:
-                    if identity.path.exists():
-                        await Git(self.deps.repo_root).remove_worktree(identity.path)
-
-                await close_step(store, run_id, "worktree", remove)
-                operation = store.begin_operation(
-                    run_id,
-                    "closure",
-                    "local_branch",
-                    {"branch": identity.branch, "merged_head": head},
-                )
-                warning: str | None = None
-                if operation.status != "done":
-                    deleted = False
-                    reason: str | None = None
-                    try:
-                        if not isinstance(port, _BranchCleanupGitHubPort):
-                            reason = "Cannot check open pull requests targeting the branch"
-                        elif await port._paginated(
-                            f"repos/{port.repo}/pulls?state=open"
-                            f"&base={quote(identity.branch, safe='')}&per_page=100"
-                        ):
-                            reason = "Branch is the base of another open pull request"
-                        else:
-                            deleted, reason = await Git(self.deps.repo_root).delete_local_branch(
-                                identity.branch, merged_head=head
-                            )
-                    except (GitError, GitHubError, OSError) as error:
-                        reason = str(error)
-                    if not deleted and reason != "Branch is already absent":
-                        warning = f"Warning: local branch {identity.branch!r} kept: {reason}"
-                    store.complete_operation(
-                        operation.id, {"deleted": deleted, "reason": reason, "warning": warning}
-                    )
-                elif operation.result_json is not None:
-                    warning = json.loads(operation.result_json).get("warning")
-                if warning:
-                    notes.append(warning)
-                    self._report(warning)
-                await close_step(
-                    store,
-                    run_id,
-                    "remote_branch",
-                    lambda: port.delete_remote_branch(identity.branch, self.deps.repo_root),
-                )
-
-            await self._stage(run_id, Stage.CLOSE, close)
+            assert approval is not None
+            body = (
+                f"Merged as {state.merge_sha}. Approval #{approval.id}: "
+                f"{approval.decided_by} approved {head}. "
+                f"Reason: {approval.reason}. Recorded: {approval.created_at.isoformat()}."
+            )
+            notes = await self._stage(
+                run_id,
+                Stage.CLOSE,
+                lambda: self._close_ticket(run_id, ticket, identity, head, body),
+            )
             store.set_run_state(run_id, RunState.COMPLETED)
             return RunOutcome(
                 run_id, RunState.COMPLETED, pr.number, head, ci_green=True, notes=tuple(notes)
@@ -744,179 +769,102 @@ class Engine:
 
         return await self._guarded(run_id, work)
 
-    async def _stack_layers(self, parent_run_id: int) -> list[_StackLayer]:
-        layers: list[_StackLayer] = []
-        for work in self.deps.store.list_work(parent_run_id):
-            if work.run_id is None:
-                raise _Stop(RunState.BLOCKED, ["Every work must have a delivered run"])
-            ticket = await self.deps.github.get_ticket(work.ticket_number)
-            if ticket.issue_type == IssueType.QUESTION:
-                if self.deps.store.get_run(work.run_id).state != RunState.COMPLETED:
-                    raise _Stop(RunState.BLOCKED, ["Question work must be completed"])
-                continue
-            if self.deps.store.get_run(work.run_id).ticket_number != work.ticket_number:
-                raise _Stop(RunState.BLOCKED, ["Work run belongs to another ticket"])
-            ticket, identity, pr = await self._merge_context(work.run_id)
-            layers.append(
-                _StackLayer(
-                    work.run_id, ticket, identity, pr, await self._merge_port().pr_state(pr)
-                )
-            )
-        if not layers or len({layer.pr.number for layer in layers}) != len(layers):
-            raise _Stop(RunState.BLOCKED, ["A stack must contain distinct delivered layers"])
-        return layers
+    async def _mark_merged(
+        self, run_id: int, number: int, pr: PullRequest, feature: str, merge_sha: str
+    ) -> None:
+        """Record a child as merged as soon as it joins the feature branch; each step resumes.
 
-    @staticmethod
-    def _stack_heads(layers: Sequence[_StackLayer]) -> str:
-        return json.dumps(
-            [
-                {
-                    "run": layer.run_id,
-                    "pr": layer.pr.number,
-                    "branch": layer.identity.branch,
-                    "head": layer.state.head_sha,
-                }
-                for layer in layers
-            ],
-            sort_keys=True,
-        )
-
-    async def _stack_action(
-        self, parent_run_id: int, action: str, decided_by: str = "", reason: str = ""
-    ) -> RunOutcome:
+        Disposition and Status share their step names with `_close_ticket`, so the final
+        closure repeats neither; its own comment still names the delivery to the base branch.
+        """
         store = self.deps.store
-        parent = store.get_parent_run(parent_run_id)
-        self._recorded_stack_approval = None
-        if parent.repo.casefold() != self.deps.github.repo.strip().casefold():
-            raise ValueError("Parent run belongs to another repository")
-        with ExitStack() as locks:
-            locks.enter_context(TicketLock(self.deps.state_dir, parent.repo, parent.parent_number))
-            for number in sorted({work.ticket_number for work in store.list_work(parent_run_id)}):
-                if number != parent.parent_number:
-                    locks.enter_context(TicketLock(self.deps.state_dir, parent.repo, number))
-            async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
-                store.set_parent_state(parent_run_id, RunState.RUNNING)
-                try:
-                    layers = await self._stack_layers(parent_run_id)
-                    heads = self._stack_heads(layers)
-                    approval = store.stack_approval(parent_run_id, heads)
-                    if action != "merge":
-                        for layer in layers:
-                            if layer.state.state != "OPEN":
-                                raise _Stop(RunState.BLOCKED, ["Every stack layer must be open"])
-                            if action == "request":
-                                outcome = await self.request_approval(layer.run_id)
-                                if outcome.state != RunState.WAITING_FOR_MERGE_APPROVAL:
-                                    raise _Stop(outcome.state, outcome.problems)
-                            else:
-                                await self._merge_guards(
-                                    layer.run_id,
-                                    layer.ticket,
-                                    layer.identity,
-                                    layer.pr,
-                                    require_approval=False,
-                                )
-                        current = await self._stack_layers(parent_run_id)
-                        if self._stack_heads(current) != heads:
-                            store.stack_approval(parent_run_id, self._stack_heads(current))
-                            raise _Stop(RunState.BLOCKED, ["Stack heads changed during approval"])
-                        if action == "request":
-                            store.request_stack_approval(parent_run_id, heads)
-                        else:
-                            self._recorded_stack_approval = store.record_stack_approval(
-                                parent_run_id, layers[0].run_id, heads, decided_by, reason
-                            )
-                        state = RunState.WAITING_FOR_MERGE_APPROVAL
-                    else:
-                        if approval is None:
-                            raise _Stop(
-                                RunState.BLOCKED, ["Stack approval must match every current head"]
-                            )
-                        operation = store.begin_operation(
-                            layers[0].run_id,
-                            "stack_merge",
-                            approval.head_sha,
-                            {"parent_run_id": parent_run_id, "heads": heads},
-                        )
-                        if not all(layer.state.state == "MERGED" for layer in layers):
-                            if any(layer.state.state != "OPEN" for layer in layers):
-                                raise _Stop(
-                                    RunState.BLOCKED, ["Stack merge has not been confirmed"]
-                                )
-                            for layer in layers:
-                                await self._merge_guards(
-                                    layer.run_id,
-                                    layer.ticket,
-                                    layer.identity,
-                                    layer.pr,
-                                    require_approval=False,
-                                )
-                            stack = self.deps.stack_factory(self.deps.repo_root)
-                            if await stack.tracked_branches(layers[0].identity.branch) != [
-                                layer.identity.branch for layer in layers
-                            ]:
-                                raise _Stop(
-                                    RunState.BLOCKED, ["Tracked stack must match approved works"]
-                                )
-                            current = await self._stack_layers(parent_run_id)
-                            if self._stack_heads(current) != heads:
-                                store.stack_approval(parent_run_id, self._stack_heads(current))
-                                raise _Stop(RunState.BLOCKED, ["Stack heads changed before merge"])
-                            await self._stage(
-                                layers[0].run_id,
-                                Stage.MERGE,
-                                lambda: stack.merge(layers[0].pr.number),
-                            )
-                            started = self.deps.clock()
-                            while True:
-                                layers = await self._stack_layers(parent_run_id)
-                                if self._stack_heads(layers) != heads:
-                                    store.stack_approval(parent_run_id, self._stack_heads(layers))
-                                    raise _Stop(
-                                        RunState.BLOCKED, ["Stack heads changed during merge"]
-                                    )
-                                if all(
-                                    layer.state.state == "MERGED" and layer.state.merge_sha
-                                    for layer in layers
-                                ):
-                                    break
-                                remaining = (
-                                    self.deps.config.limits.ci_timeout_seconds
-                                    - (self.deps.clock() - started).total_seconds()
-                                )
-                                if remaining <= 0 or any(
-                                    layer.state.state == "CLOSED" for layer in layers
-                                ):
-                                    raise _Stop(
-                                        RunState.BLOCKED, ["Stack merge has not been confirmed"]
-                                    )
-                                await self.deps.sleep(
-                                    min(self.deps.config.limits.ci_poll_interval_seconds, remaining)
-                                )
-                        if not all(layer.state.merge_sha for layer in layers):
-                            raise _Stop(RunState.BLOCKED, ["Every stack merge must be confirmed"])
-                        store.complete_operation(operation.id, {"merged": True})
-                        # Reuse closure's live-state checks and durable idempotent steps.
-                        for layer in layers:
-                            outcome = await self._merge_and_close_work(
-                                layer.run_id, approval, layer.state.head_sha
-                            )
-                            if outcome.state != RunState.COMPLETED:
-                                raise _Stop(outcome.state, outcome.problems)
-                        state = RunState.COMPLETED
-                    store.set_parent_state(parent_run_id, state)
-                    return RunOutcome(parent_run_id, state, ci_green=True)
-                except _Stop as stop:
-                    store.set_parent_state(parent_run_id, stop.state)
-                    if action == "record":
-                        raise ValueError("; ".join(stop.problems)) from stop
-                    return RunOutcome(parent_run_id, stop.state, problems=stop.problems)
-                except asyncio.CancelledError:
-                    store.set_parent_state(parent_run_id, RunState.INTERRUPTED)
-                    raise
-                except Exception:
-                    store.set_parent_state(parent_run_id, RunState.BLOCKED)
-                    raise
+        port = self._merge_port()
+        await close_step(
+            store, run_id, "disposition", lambda: port.set_disposition(number, Disposition.MERGED)
+        )
+        await close_step(store, run_id, "status", lambda: port.set_status(number, Status.DONE))
+        await close_comment(
+            store,
+            run_id,
+            "merged_comment",
+            port,
+            number,
+            f"Merged into `{feature}` as {merge_sha} by pull request #{pr.number}. "
+            "It reaches the base branch with the feature pull request.",
+        )
+        if isinstance(port, IssueClosePort):
+            await close_step(store, run_id, "issue_closed", lambda: port.close_issue(number))
+
+    async def _close_ticket(
+        self, run_id: int, ticket: Ticket, identity: Identity, head: str, body: str
+    ) -> list[str]:
+        """Set Disposition and Status, comment once, then clean up; each step resumes."""
+        store = self.deps.store
+        port = self._merge_port()
+        await close_step(
+            store,
+            run_id,
+            "disposition",
+            lambda: port.set_disposition(ticket.number, Disposition.MERGED),
+        )
+        await close_step(
+            store, run_id, "status", lambda: port.set_status(ticket.number, Status.DONE)
+        )
+        await close_comment(store, run_id, "comment", port, ticket.number, body)
+        return await self._clean_up(run_id, identity, head)
+
+    async def _clean_up(self, run_id: int, identity: Identity, head: str) -> list[str]:
+        """Remove the worktree, the merged local branch and the remote branch once."""
+        store = self.deps.store
+        port = self._merge_port()
+        notes: list[str] = []
+
+        async def remove() -> None:
+            if identity.path.exists():
+                await Git(self.deps.repo_root).remove_worktree(identity.path)
+
+        await close_step(store, run_id, "worktree", remove)
+        operation = store.begin_operation(
+            run_id,
+            "closure",
+            "local_branch",
+            {"branch": identity.branch, "merged_head": head},
+        )
+        warning: str | None = None
+        if operation.status != "done":
+            deleted = False
+            reason: str | None = None
+            try:
+                if not isinstance(port, _BranchCleanupGitHubPort):
+                    reason = "Cannot check open pull requests targeting the branch"
+                elif await port._paginated(
+                    f"repos/{port.repo}/pulls?state=open"
+                    f"&base={quote(identity.branch, safe='')}&per_page=100"
+                ):
+                    reason = "Branch is the base of another open pull request"
+                else:
+                    deleted, reason = await Git(self.deps.repo_root).delete_local_branch(
+                        identity.branch, merged_head=head
+                    )
+            except (GitError, GitHubError, OSError) as error:
+                reason = str(error)
+            if not deleted and reason != "Branch is already absent":
+                warning = f"Warning: local branch {identity.branch!r} kept: {reason}"
+            store.complete_operation(
+                operation.id, {"deleted": deleted, "reason": reason, "warning": warning}
+            )
+        elif operation.result_json is not None:
+            warning = json.loads(operation.result_json).get("warning")
+        if warning:
+            notes.append(warning)
+            self._report(warning)
+        await close_step(
+            store,
+            run_id,
+            "remote_branch",
+            lambda: port.delete_remote_branch(identity.branch, self.deps.repo_root),
+        )
+        return notes
 
     async def run_to_pr(self, ticket_number: int) -> RunOutcome:
         return await self._run(ticket_number, until_green=False)
@@ -948,11 +896,44 @@ class Engine:
             store.set_run_state(run_id, RunState.INTERRUPTED)
             raise
         except _Stop as stop:
-            store.set_run_state(run_id, stop.state)
-            return RunOutcome(run_id, stop.state, problems=stop.problems)
+            return await self._stopped(run_id, stop)
         except Exception:
             store.set_run_state(run_id, RunState.BLOCKED)
             raise
+
+    async def _stopped(self, run_id: int, stop: _Stop) -> RunOutcome:
+        """The outcome of a stopped run; a scoped ticket that outgrew its scope is re-sized."""
+        self.deps.store.set_run_state(run_id, stop.state)
+        problems = stop.problems
+        if stop.state == RunState.BLOCKED and any(
+            signal in problem for problem in problems for signal in _RESIZE_SIGNALS
+        ):
+            note = await self._resize_scoped(run_id)
+            if note is not None:
+                problems = (*problems, note)
+        return RunOutcome(run_id, stop.state, problems=problems)
+
+    def _record_resize(self, run_id: int, ticket: Ticket, reason: str) -> None:
+        """Record that the ticket was re-sized, so reports can count it."""
+        operation = self.deps.store.begin_operation(
+            run_id, RESIZE, "resize", {"from": str(ticket.size), "to": "M", "reason": reason}
+        )
+        self.deps.store.complete_operation(operation.id, {"done": True})
+
+    async def _resize_scoped(self, run_id: int) -> str | None:
+        """Re-size an S ticket to M after the run needed more than its scope allowed."""
+        github = self.deps.github
+        if not isinstance(github, SizePort):
+            return None
+        number = self.deps.store.get_run(run_id).ticket_number
+        ticket = await github.get_ticket(number)
+        if self.deps.config.policy.size_rules[ticket.size].analysis != AnalysisDepth.SCOPE:
+            return None
+        reason = "the run needed more than its scoped files allow or hit its repair limit"
+        self._record_resize(run_id, ticket, reason)
+        await github.set_size(number, Size.M)
+        await github.comment(number, resize_comment(ticket, reason, by="its run"))
+        return f"Re-sized to M: {reason}"
 
     def _choose_models(self, run_id: int, ticket: Ticket) -> None:
         for role in (Role.IMPLEMENTER, Role.REVIEWER):
@@ -965,13 +946,6 @@ class Engine:
             snapshot = await observe(self.deps, run_id, ticket, scope, identity)
             action = decide(snapshot)
             if isinstance(action, Done):
-                if _ticket_base(self.deps, run_id) != self.deps.base_branch:
-                    assert identity is not None
-                    await self._stage(
-                        run_id,
-                        Stage.DELIVER,
-                        partial(self._open_pr, run_id, ticket, scope, identity),
-                    )
                 self.deps.store.set_run_state(run_id, RunState.WAITING_FOR_CI)
                 return RunOutcome(
                     run_id, RunState.WAITING_FOR_CI, action.pr.number, action.head_sha
@@ -1004,19 +978,14 @@ class Engine:
                 run_id, Stage.DELIVER, lambda: self._commit(run_id, ticket, scope, identity)
             )
         elif isinstance(action, Push):
-            if _ticket_base(self.deps, run_id) != self.deps.base_branch:
-                await self._stage(
-                    run_id, Stage.DELIVER, lambda: self._open_pr(run_id, ticket, scope, identity)
-                )
-            else:
-                await self._stage(run_id, Stage.DELIVER, lambda: self._push(run_id, identity))
+            await self._stage(run_id, Stage.DELIVER, lambda: self._push(run_id, identity))
         elif isinstance(action, OpenPr):
             await self._stage(
                 run_id, Stage.DELIVER, lambda: self._open_pr(run_id, ticket, scope, identity)
             )
 
     async def _validate(self, run_id: int, ticket: Ticket) -> str:
-        await self._stack_base(run_id, ticket)
+        await self._base_branch(run_id, ticket)
         url = scope_url(ticket)
         problems: list[str] = []
         text: str | None = None
@@ -1034,10 +1003,15 @@ class Engine:
             ready_for_implementation(
                 ticket,
                 self.deps.config.policy,
-                has_scope_attachment=text is not None,
                 selected_solution=selected_solution(ticket),
             )
         )
+        if problems:
+            raise _Stop(RunState.BLOCKED, problems)
+        if text is None and self._scoping(ticket):
+            text = await self._stage(
+                run_id, Stage.SCOPE, lambda: self._derive_scope(run_id, ticket)
+            )
         if text is None:
             problems.append("A scope attachment is required")
         elif not allowed_files(text):
@@ -1047,28 +1021,82 @@ class Engine:
         self._artifact(run_id, "scope", text, ".md")
         return text
 
-    async def _stack_base(self, run_id: int, ticket: Ticket) -> str:
-        saved = _operation_by_key(self.deps.store, run_id, "stack_base", "base")
-        branch: str | None
-        if saved is not None and saved[4] is not None:
-            branch = str(json.loads(saved[4])["branch"])
-        elif ticket.blocked_by:
-            branch = await lower_branch(ticket, self.deps.github)
-            if branch is None:
-                raise _Stop(RunState.BLOCKED, ["Open blockers require a sole lower open PR"])
+    def _scoping(self, ticket: Ticket) -> bool:
+        rule = self.deps.config.policy.size_rules[ticket.size]
+        return rule.analysis == AnalysisDepth.SCOPE
+
+    async def _scoping_context(self, ticket: Ticket) -> str:
+        """What the parent Question decided, as data for scoping; empty when unavailable."""
+        from fugue.analysis.stage import parent_decision
+
+        return await parent_decision(self.deps.github, ticket)
+
+    async def _derive_scope(self, run_id: int, ticket: Ticket) -> str:
+        """Scope an S ticket from the current code; re-size it to M when it does not fit."""
+        saved = self.deps.artifacts.open_ref(run_id, "scoping.json")
+        if saved is None:
+            context = await self._scoping_context(ticket)
+            role = self.deps.config.roles[Role.ANALYST]
+            adapter = role_adapter(self.deps, run_id, Role.ANALYST, role)
+            choice = model_choice(self.deps, run_id, Role.ANALYST, ticket.size)
+            result = await adapter.run(
+                AgentRequest(
+                    role=Role.ANALYST,
+                    prompt=scoping_prompt(ticket, context),
+                    cwd=self.deps.effective_code_root,
+                    access=AccessMode.READ_ONLY,
+                    output_schema=scoping_schema(),
+                    timeout_seconds=self.deps.config.limits.agent_timeout_seconds,
+                    model=choice.models.get(role.provider),
+                    models=choice.models,
+                )
+            )
+            if result.usage is not None:
+                self.deps.store.record_usage(
+                    run_id,
+                    Role.ANALYST,
+                    result.provider,
+                    result.authentication_mode,
+                    **asdict(result.usage),
+                    **usage_choice(choice, result.provider),
+                )
+            if not result.ok or result.cancelled or result.timed_out or result.provider_limited:
+                state = RunState.PROVIDER_LIMITED if result.provider_limited else RunState.BLOCKED
+                raise _Stop(state, [result.error or "Scoping did not complete successfully"])
+            scoping = ScopingResult.model_validate(result.structured_output)
+            ref = self.deps.artifacts.write(run_id, "scoping.json", scoping.model_dump_json())
+            self.deps.store.register_artifact(
+                run_id, ref.name, str(ref.path), ref.sha256, ref.size_bytes
+            )
         else:
-            return self.deps.base_branch
-        probe = await self.deps.stack_factory(self.deps.repo_root).probe(self.deps.github.repo)
-        if not probe.available:
-            raise _Stop(RunState.BLOCKED, [f"gh stack unavailable: {probe.reason}"])
-        operation = self.deps.store.begin_operation(run_id, "stack_base", "base", {})
-        self.deps.store.complete_operation(operation.id, {"branch": branch})
-        return branch
+            scoping = ScopingResult.model_validate_json(self.deps.artifacts.read_text(saved))
+        if not scoping.fits or scoping.scope is None:
+            self._record_resize(run_id, ticket, scoping.resize_reason)
+            if isinstance(self.deps.github, SizePort):
+                await self.deps.github.set_size(ticket.number, Size.M)
+            await self.deps.github.comment(
+                ticket.number, resize_comment(ticket, scoping.resize_reason)
+            )
+            raise _Stop(RunState.BLOCKED, [f"Re-sized to M by scoping: {scoping.resize_reason}"])
+        return render_scope_text(f"{ticket.number} scope", scoping.scope)
+
+    async def _base_branch(self, run_id: int, ticket: Ticket) -> str:
+        """The branch this run starts from and targets; open blockers must merge first."""
+        saved = _operation_by_key(self.deps.store, run_id, "base", "base")
+        if saved is not None and saved[4] is not None:
+            return str(json.loads(saved[4])["branch"])
+        if ticket.blocked_by:
+            blockers = ", ".join(f"#{number}" for number in ticket.blocked_by)
+            raise _Stop(
+                RunState.BLOCKED,
+                [f"Open blockers must merge first: {blockers}; or run their parent"],
+            )
+        return self.deps.base_branch
 
     async def _prepare(
         self, run_id: int, ticket: Ticket, scope: str, identity: Identity | None
     ) -> None:
-        base = await self._stack_base(run_id, ticket)
+        base = await self._base_branch(run_id, ticket)
         identity = identity or self._new_identity(run_id, ticket, scope)
         if not await _is_worktree(self.deps, identity):
             git = Git(self.deps.repo_root)
@@ -1082,20 +1110,18 @@ class Engine:
                     if base == self.deps.base_branch:
                         await git.fast_forward(base)
                         await git.create_worktree(identity.path, identity.branch, base)
+                        return
+                    # Reuse a branch left by an interrupted worktree operation.
+                    branches = await git._run(
+                        "for-each-ref", "--format=%(refname)", f"refs/heads/{identity.branch}"
+                    )
+                    if f"refs/heads/{identity.branch}" in branches.splitlines():
+                        await git._run("worktree", "add", "--", str(identity.path), identity.branch)
                     else:
-                        await self._check_lower_branch(git, base)
-                        # Reuse a branch left by an interrupted worktree operation.
-                        branches = await git._run(
-                            "for-each-ref", "--format=%(refname)", f"refs/heads/{identity.branch}"
+                        # Start from the current remote head of the feature branch.
+                        await git.create_worktree(
+                            identity.path, identity.branch, _base_ref(self.deps, run_id)
                         )
-                        if f"refs/heads/{identity.branch}" in branches.splitlines():
-                            await git._run(
-                                "worktree", "add", "--", str(identity.path), identity.branch
-                            )
-                        else:
-                            await git.create_worktree(
-                                identity.path, identity.branch, _base_ref(self.deps, run_id)
-                            )
 
             await self._operation(run_id, "worktree", {"branch": identity.branch}, create)
         if ticket.status != Status.IN_IMPLEMENTATION:
@@ -1118,7 +1144,7 @@ class Engine:
         if not await git.status_porcelain() and int(commits) == 0:
             raise _Stop(RunState.BLOCKED, ["Implementer made no changes"])
 
-    async def _agent(self, run_id: int, identity: Identity, prompt: str, scope: str) -> None:
+    async def _agent(self, run_id: int, identity: Identity, prompt: str, scope: str) -> str:
         role_config = self.deps.config.roles[Role.IMPLEMENTER]
         adapter = role_adapter(self.deps, run_id, Role.IMPLEMENTER, role_config)
         # Each chain member resumes only its own session; none is passed between providers.
@@ -1184,6 +1210,7 @@ class Engine:
             self._artifact(run_id, "agent-error", error)
             state = RunState.PROVIDER_LIMITED if result.provider_limited else RunState.FAILED
             raise _Stop(state, [error])
+        return result.final_text
 
     async def _gate(self, run_id: int, path: Path) -> GateResult:
         result = await self.deps.gate_runner(
@@ -1200,11 +1227,27 @@ class Engine:
             self._artifact(run_id, "gate-failure", format_failure(result) + "\n\n" + logs)
         return result
 
+    async def _autofix(self, run_id: int, identity: Identity, result: GateResult) -> bool:
+        """Run the mechanical fix for the failed gate command; True when it changed files."""
+        step = result.failed_step
+        fix = (
+            None if step is None else self.deps.config.policy.fix_commands.get(" ".join(step.argv))
+        )
+        if not fix:
+            return False
+        before = await self._tree_fingerprint(identity)
+        await run_command(
+            fix, cwd=identity.path, timeout=self.deps.config.limits.agent_timeout_seconds
+        )
+        return await self._tree_fingerprint(identity) != before
+
     async def _verify(self, run_id: int, identity: Identity, scope: str) -> bool:
         """Run the gate; on failure store the evidence and repair. True when the gate passed."""
         result = await self._stage(run_id, Stage.VERIFY, lambda: self._gate(run_id, identity.path))
         if result.passed:
             return True
+        if await self._autofix(run_id, identity, result):
+            return False  # A tool fixed it; verify again before any agent is asked.
         failure = format_failure(result)
         # The limit is checked before an attempt is allocated.
         if _repairs_used(self.deps.store, run_id) >= self.deps.config.limits.max_repair_attempts:
@@ -1229,14 +1272,14 @@ class Engine:
         if not paths:
             return
         message = self._message(ticket, scope, self._changes(run_id, paths))
-        allowed = allowed_files(scope)
-        self._require_allowed(paths, allowed)
+        message = replace(message, test_change=self._test_change_reason(run_id, scope))
+        self._require_unprotected(paths, allowed_files(scope))
         for path in paths:
             try:
                 await git.stage([path])
             except (ValueError, GitError) as error:
                 raise _Stop(RunState.BLOCKED, [f"Cannot stage path {path!r}: {error}"]) from error
-        self._require_allowed(await git.staged_files(), allowed)
+        self._require_unprotected(await git.staged_files(), allowed_files(scope))
         await self._operation(
             run_id,
             "commit",
@@ -1245,16 +1288,64 @@ class Engine:
         )
 
     @staticmethod
-    def _require_allowed(paths: Sequence[str], allowed: Sequence[str]) -> None:
-        violations = validate_staging(paths, allowed)
+    def _require_unprotected(paths: Sequence[str], allowed: Sequence[str] = ()) -> None:
+        violations = protected_paths(paths, allowed)
         if violations:
-            raise _Stop(RunState.BLOCKED, [f"Outside allowed files: {p}" for p in violations])
+            raise _Stop(RunState.BLOCKED, [f"Protected path changed: {p}" for p in violations])
+
+    def _agent_messages(self, run_id: int) -> list[str]:
+        """The agent's final messages from the latest implement attempt on, oldest first."""
+        implements = self.deps.store.stage_attempts(run_id, Stage.IMPLEMENT)
+        latest = implements[-1].id if implements else 0
+        found: list[tuple[int, str]] = []
+        for artifact in self.deps.store.list_artifacts(run_id):
+            if not artifact.name.startswith("agent-") or artifact.name.startswith("agent-error-"):
+                continue
+            attempt_id = artifact.name.split("-", 2)[1]
+            if not attempt_id.isdecimal() or int(attempt_id) < latest:
+                continue
+            try:
+                found.append((int(attempt_id), Path(artifact.path).read_text(encoding="utf-8")))
+            except (OSError, UnicodeError):
+                continue
+        return [text for _, text in sorted(found)]
+
+    def _test_change_reason(self, run_id: int, scope: str) -> str | None:
+        """The `Test-change:` reason the agent gave, else the scope's, else none."""
+        for text in reversed(self._agent_messages(run_id)):
+            match = _AGENT_TEST_CHANGE_RE.search(text)
+            if match is not None:
+                return str(match[1])
+        return read_test_change_reason(scope)
+
+    async def _commit_trailer(
+        self, run_id: int, ticket: Ticket, scope: str, identity: Identity, reason: str
+    ) -> None:
+        git = Git(identity.path)
+        changes = ["Record the intended test change: the check asks for a reason on the commit"]
+        message = replace(self._message(ticket, scope, changes), test_change=reason)
+        await self._operation(
+            run_id,
+            "commit",
+            {"subject": message.render().splitlines()[0]},
+            lambda: git.commit(message, allow_empty=True),
+        )
+
+    @staticmethod
+    async def _tree_fingerprint(identity: Identity) -> tuple[str, str, tuple[str, ...]]:
+        """Head, the content of tracked changes, and the untracked paths of the worktree."""
+        git = Git(identity.path)
+        diff = await git._run("diff", "HEAD", "--")
+        status = tuple(await git.status_porcelain())
+        return await git.head_sha(), hashlib.sha256(diff.encode()).hexdigest(), status
+
+    @staticmethod
+    def _no_change_stop(what: str, answer: str) -> _Stop:
+        lines = [line.strip() for line in answer.strip().splitlines() if line.strip()]
+        reason = " ".join(lines[-3:])[:400] or "the agent gave no explanation"
+        return _Stop(RunState.BLOCKED, [f"The {what} made no changes: {reason}"])
 
     async def _push(self, run_id: int, identity: Identity) -> None:
-        if _ticket_base(self.deps, run_id) != self.deps.base_branch:
-            # Native submit owns publication of stack branches.
-            await self._submit_stack(run_id, identity)
-            return
         git = Git(identity.path)
         await self._require_remote_not_ahead(git, identity)
         await self._operation(
@@ -1272,16 +1363,6 @@ class Engine:
         async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
             await git.fetch()
         await self._check_remote_ancestry(git, remote_sha, head)
-
-    async def _require_remote_not_ahead_unlocked(self, git: Git, identity: Identity) -> None:
-        remote = await git._run("ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}")
-        if not remote.strip():
-            return
-        head = await git.head_sha()
-        if remote.split()[0] == head:
-            return
-        await git.fetch()
-        await self._check_remote_ancestry(git, remote.split()[0], head)
 
     async def _check_remote_ancestry(self, git: Git, remote_sha: str, head: str) -> None:
         if await self._is_ancestor(git, remote_sha, head):
@@ -1304,108 +1385,39 @@ class Engine:
             raise
         return True
 
-    async def _check_lower_branch(self, git: Git, branch: str) -> None:
-        local = await git._run("for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}")
-        remote = (await git._run("rev-parse", "--verify", f"refs/remotes/origin/{branch}")).strip()
-        if not local.strip():
-            await git._validate_branch(branch)
-            await git._run("branch", "--", branch, remote)
-        elif local.strip() != remote:
-            raise _Stop(
-                RunState.BLOCKED,
-                ["The lower local and remote stack branches differ; resolve before submitting"],
-            )
-
-    async def _submit_stack(self, run_id: int, identity: Identity) -> None:
-        ticket = await self.deps.github.get_ticket(self.deps.store.get_run(run_id).ticket_number)
-        lower = await self._stack_base(run_id, ticket)
-        stack = self.deps.stack_factory(identity.path)
-        async with self.deps.repo_lock or RepoLock(self.deps.state_dir, self.deps.repo_root):
-            git = Git(identity.path)
-            await git.fetch()
-            await self._check_lower_branch(git, lower)
-            await self._require_remote_not_ahead_unlocked(git, identity)
-            head = await Git(identity.path).head_sha()
-
-            async def submit() -> None:
-                remote = await Git(identity.path)._run(
-                    "ls-remote", "--heads", "origin", f"refs/heads/{identity.branch}"
-                )
-
-                async def initialize() -> None:
-                    view = await stack.view()
-                    if view is None or identity.branch not in view.split():
-                        existing = await stack.find_stack(lower)
-                        if existing is None:
-                            await stack.init(self.deps.base_branch, [lower, identity.branch])
-                        else:
-                            await stack.link(existing, identity.branch)
-                            await stack.track(lower, identity.branch)
-
-                await self._operation(run_id, "stack_init", {"branch": identity.branch}, initialize)
-                if (
-                    remote.split()[:1] == [head]
-                    and await self.deps.github.find_pr(identity.branch) is not None
-                ):
-                    return
-                await stack.submit()
-
-            await self._operation(
-                run_id, "stack_submit", {"branch": identity.branch, "head": head}, submit
-            )
-
     async def _open_pr(self, run_id: int, ticket: Ticket, scope: str, identity: Identity) -> None:
-        stacked = _ticket_base(self.deps, run_id) != self.deps.base_branch
-        if stacked:
-            await self._stack_base(run_id, ticket)
-        elif await self.deps.github.find_pr(identity.branch) is not None:
+        if await self.deps.github.find_pr(identity.branch) is not None:
             return
         git = Git(identity.path)
         base = _base_ref(self.deps, run_id)
         merge_base = (await git._run("merge-base", base, "HEAD")).strip()
         diff = await git._run("diff", "--name-only", "--no-renames", "-z", merge_base, "HEAD", "--")
         paths = [path for path in diff.split("\0") if path]
-        if stacked:
-            self._require_allowed(paths, allowed_files(scope))
         message = self._message(ticket, scope, self._changes(run_id, paths))
         verification = "\n".join(
             f"- {' '.join(command)}: passed" for command in self.deps.config.policy.gate_commands
         )
         body = pr_body(ticket, message.summary, message.changes, verification)
-        if stacked:
-            lower = _ticket_base(self.deps, run_id)
-            pr = await self.deps.github.find_pr(lower)
-            body += f"\n\nStack position: above {pr.url if pr else lower} (branch `{lower}`)."
-            await self._submit_stack(run_id, identity)
-            await self._operation(
-                run_id,
-                "stack_metadata",
-                {"branch": identity.branch, "head": await git.head_sha()},
-                lambda: self.deps.stack_factory(identity.path).edit_pr(
-                    self.deps.github.repo,
-                    identity.branch,
-                    message.render().splitlines()[0],
-                    body,
-                    ",".join(ticket.assignees) or "Bojan-Ivanovski",
-                    ticket.milestone or "0.1.0",
-                ),
+        listed = allowed_files(scope)
+        outside = [p for p in paths if listed and validate_staging([p], listed)]
+        if outside:
+            body += "\n\nFiles changed outside the scope:\n" + "\n".join(
+                f"- `{path}`" for path in outside
             )
-            await self._operation(
-                run_id,
-                "stack_ready",
-                {"branch": identity.branch, "head": await git.head_sha()},
-                lambda: self.deps.stack_factory(identity.path).ready_pr(
-                    self.deps.github.repo, identity.branch
-                ),
+        target = _ticket_base(self.deps, run_id)
+        parent = feature_parent(self.deps.store, run_id)
+        if parent is not None:
+            body += (
+                f"\n\nTargets the feature branch `{target}` of #{parent}. The ticket closes "
+                "when the feature pull request merges into the base branch."
             )
-            return
         await self._operation(
             run_id,
             "pr",
             {"branch": identity.branch},
             lambda: self.deps.github.create_pr(
                 identity.branch,
-                _ticket_base(self.deps, run_id),
+                target,
                 message.render().splitlines()[0],
                 body,
                 ",".join(ticket.assignees) or "Bojan-Ivanovski",
@@ -1429,16 +1441,33 @@ class Engine:
         if identity is None or pr is None:
             raise _Stop(RunState.BLOCKED, ["No pull request to monitor"])
         started = self.deps.clock()
+        empty_polls = 0
+        restarted: set[str] = set()
         while True:
             store.set_run_state(run_id, RunState.WAITING_FOR_CI)
-            summary = summarize_checks(await read_checks(partial(port.checks, pr)))
+            summary = summarize_checks(
+                without_ignored(await read_checks(partial(port.checks, pr)), limits.ignored_checks)
+            )
+            empty_polls = (
+                0 if summary.green or summary.failed or summary.pending else empty_polls + 1
+            )
+            if empty_polls >= EMPTY_POLLS_BEFORE_RESTART and isinstance(port, CheckRestartPort):
+                # GitHub sometimes starts no workflows for a push; reopening the pull request
+                # starts them. This happens once per head, so a broken workflow cannot loop.
+                head = await Git(identity.path).head_sha()
+                if head not in restarted:
+                    restarted.add(head)
+                    await port.restart_checks(pr)
+                empty_polls = 0
             if summary.is_green:
                 head = await Git(identity.path).head_sha()
                 store.set_run_state(run_id, RunState.RUNNING)
                 return RunOutcome(run_id, RunState.RUNNING, pr.number, head, ci_green=True)
-            if summary.failed and await self._handle_failures(
-                run_id, ticket, scope, identity, port, summary.failed
-            ):
+            # GitHub serves a run's logs only once the whole run has finished, so a failure
+            # whose run still has pending checks waits for the next poll.
+            running = {check.link for check in summary.pending}
+            ready = [check for check in summary.failed if check.link not in running]
+            if ready and await self._handle_failures(run_id, ticket, scope, identity, port, ready):
                 # A new commit starts new checks, so the wait begins again.
                 started = self.deps.clock()
             remaining = limits.ci_timeout_seconds - (self.deps.clock() - started).total_seconds()
@@ -1467,13 +1496,25 @@ class Engine:
         reruns: dict[str, tuple[Operation, str]] = {}
         for link, link_names in names.items():
             label = ", ".join(link_names)
+            # A cancelled check never ran or was superseded; it has no log and no code fault.
+            cancelled = all(
+                check.bucket.strip().casefold() == "cancel"
+                for check in failed
+                if check.link == link
+            )
             try:
                 excerpt = await port.failed_log_tail(link)
             except (ValueError, GitHubError) as error:
-                raise _Stop(
-                    RunState.BLOCKED, [f"Cannot read the failure log for {label}: {error}"]
-                ) from error
-            kind = classify_failure(excerpt, self.deps.config.limits.infrastructure_markers)
+                if not cancelled:
+                    raise _Stop(
+                        RunState.BLOCKED, [f"Cannot read the failure log for {label}: {error}"]
+                    ) from error
+                excerpt = ""
+            kind = (
+                FailureKind.INFRASTRUCTURE
+                if cancelled
+                else classify_failure(excerpt, self.deps.config.limits.infrastructure_markers)
+            )
             # A rerun acts on the whole run, so it is keyed by run id and happens at most once.
             key = actions_run_key(link)
             operation = store.begin_operation(run_id, "ci_rerun", key, {"checks": link_names})
@@ -1505,14 +1546,32 @@ class Engine:
         """Repair, re-run the gate, then add a new commit and push it."""
         store = self.deps.store
         prompt = ci_repair_prompt(failures)
-        self._artifact(run_id, "ci-failure", prompt)
         if _repairs_used(store, run_id) >= self.deps.config.limits.max_repair_attempts:
             raise _Stop(RunState.BLOCKED, ["CI repair limit reached"])
         store.set_run_state(run_id, RunState.REPAIRING)
-        await self._stage(
-            run_id, Stage.REPAIR, lambda: self._agent(run_id, identity, prompt, scope)
-        )
-        store.set_run_state(run_id, RunState.RUNNING)
+
+        async def repair() -> str:
+            # Artifacts belong to a stage attempt, so the failure is recorded inside it.
+            self._artifact(run_id, "ci-failure", prompt)
+            return await self._agent(run_id, identity, prompt, scope)
+
+        if await Git(identity.path).status_porcelain():
+            # An earlier repair is already in the worktree but was not delivered (the run was
+            # interrupted). Verify and deliver it; asking the agent again repeats the work.
+            store.set_run_state(run_id, RunState.RUNNING)
+        else:
+            before = await self._tree_fingerprint(identity)
+            answer = await self._stage(run_id, Stage.REPAIR, repair)
+            if await self._tree_fingerprint(identity) == before:
+                reason = _AGENT_TEST_CHANGE_RE.search(answer)
+                if reason is None:
+                    raise self._no_change_stop("CI repair", answer)
+                # The check only wants the trailer: record it on a commit of its own.
+                store.set_run_state(run_id, RunState.RUNNING)
+                await self._commit_trailer(run_id, ticket, scope, identity, str(reason[1]))
+                await self._execute(Push(), run_id, ticket, scope, identity)
+                return
+            store.set_run_state(run_id, RunState.RUNNING)
         while not await self._verify(run_id, identity, scope):
             pass
         await self._execute(Commit(), run_id, ticket, scope, identity)
@@ -1535,8 +1594,7 @@ class Engine:
             store.set_run_state(run_id, RunState.INTERRUPTED)
             raise
         except _Stop as stop:
-            store.set_run_state(run_id, stop.state)
-            return RunOutcome(run_id, stop.state, problems=stop.problems)
+            return await self._stopped(run_id, stop)
         except Exception:
             store.set_run_state(run_id, RunState.BLOCKED)
             raise
@@ -1870,9 +1928,15 @@ class Engine:
                 raise _Stop(RunState.BLOCKED, ["Repair limit reached"])
             store.set_run_state(run_id, RunState.REPAIRING)
             prompt = review_repair_prompt(accepted)
+            before = await self._tree_fingerprint(identity)
             await self._stage(
                 run_id, Stage.REPAIR, lambda: self._agent(run_id, identity, prompt, scope)
             )
+            if await self._tree_fingerprint(identity) == before:
+                # Leave the repair open so the next call asks the agent again.
+                raise _Stop(
+                    RunState.BLOCKED, ["The implementer made no changes for the accepted findings"]
+                )
             store.complete_operation(repair.id, {"done": True})
             store.set_run_state(run_id, RunState.RUNNING)
         if await git.status_porcelain():

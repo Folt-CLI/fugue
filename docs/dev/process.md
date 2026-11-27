@@ -30,8 +30,9 @@ the durable work record.
 
 Work items contain exactly Summary, Scope, Analysis, Solution and Details.
 Fill Summary and Scope at creation. The orchestrator investigates and attaches
-findings and separate proposals; the developer selects the solution before
-implementation where analysis applies; see the working templates.
+findings; options stay inline and only the selected option's scope is attached.
+The developer selects the solution when a trigger fires, otherwise the policy
+selects it; see the working templates.
 Details contains the findings attachment and two to four key points. Do not add
 Acceptance criteria, Implementation plan or Closeout sections. Record delivery
 and performed verification in the PR.

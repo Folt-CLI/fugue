@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from fugue.github import PullRequest
-from fugue.gitops import validate_staging
+from fugue.gitops import protected_paths
 from fugue.models import Status
 
 
@@ -72,9 +72,9 @@ def decide(snapshot: Snapshot) -> NextAction:
     """Pure decision: the first matching rule wins."""
     if snapshot.pr is not None:
         return Done(snapshot.pr, snapshot.head_sha)
-    outside = validate_staging([*snapshot.dirty, *snapshot.changed], snapshot.allowed)
+    outside = protected_paths([*snapshot.dirty, *snapshot.changed], snapshot.allowed)
     if outside:
-        return Block(tuple(f"Outside allowed files: {path}" for path in dict.fromkeys(outside)))
+        return Block(tuple(f"Protected path changed: {path}" for path in dict.fromkeys(outside)))
     if not snapshot.worktree or snapshot.status != Status.IN_IMPLEMENTATION:
         return Prepare()
     scope_replaced = (

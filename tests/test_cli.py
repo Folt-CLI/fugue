@@ -785,23 +785,18 @@ def test_run_selects_parent_driver_and_holds_parent_lock(
         assert until_green
         assert authorise_merge == authorise
         assert by == identity
-        assert parent_locked == (not authorise)
-        if authorise:
-            # Stack actions acquire their own locks after preparing the children.
-            with TicketLock(engines[0].deps.state_dir, "o/r", 36):
-                pass
-        else:
-            from fugue.engine.locks import TicketLocked
+        assert parent_locked
+        from fugue.engine.locks import TicketLocked
 
-            with pytest.raises(TicketLocked), TicketLock(engines[0].deps.state_dir, "o/r", 36):
-                pass
+        with pytest.raises(TicketLocked), TicketLock(engines[0].deps.state_dir, "o/r", 36):
+            pass
         return ParentOutcome(1, RunState.WAITING_FOR_DECISION, next_step="fugue question 5")
 
     monkeypatch.setattr(cli_app, "engine_factory", factory)
     monkeypatch.setattr(cli_app, "run_parent", parent)
     options = ["--to-green"]
     if authorise:
-        options.append("--authorise-merge")
+        options.append("--authorise")
     if identity is not None:
         options.extend(["--by", identity])
     result = run_command(tmp_path, *options)
@@ -838,9 +833,9 @@ def test_run_without_children_uses_single_ticket_engine(
 @pytest.mark.parametrize(
     "options,message",
     [
-        (["--by", "person"], "--by requires --authorise-merge"),
-        (["--authorise-merge", "--by", " "], "Approval requires --by to be non-empty"),
-        (["37", "--authorise-merge"], "--authorise-merge requires one parent ticket"),
+        (["--by", "person"], "--by requires --authorise"),
+        (["--authorise", "--by", " "], "Approval requires --by to be non-empty"),
+        (["37", "--authorise"], "--authorise requires one parent ticket"),
     ],
 )
 def test_run_rejects_invalid_authorisation(
@@ -857,8 +852,8 @@ def test_run_authorisation_requires_a_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     engines = install_engine(monkeypatch, RunOutcome(1, RunState.COMPLETED))
-    result = run_command(tmp_path, "--authorise-merge")
+    result = run_command(tmp_path, "--authorise")
     assert result.exit_code != 0
-    assert "--authorise-merge requires a parent ticket with children" in result.output
+    assert "--authorise requires a parent ticket with children" in result.output
     assert engines[0].tickets == []
     assert engines[0].closed

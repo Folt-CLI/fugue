@@ -3,7 +3,9 @@
 import re
 from collections.abc import Mapping, Sequence
 
-from fugue.analysis.schema import Handoff, Option
+from fugue.analysis.schema import TRIGGER_LABELS, Handoff, Scope
+
+ORCHESTRATOR_NOTES_HEADING = "Notes for the orchestrator (not for the implementation agent)"
 
 
 def _bullets(items: Sequence[str]) -> str:
@@ -39,7 +41,6 @@ def render_analysis(number: int, handoff: Handoff, links: Mapping[str, str]) -> 
         rows.extend([row.label, *row.values] for row in handoff.comparison)
         parts.append("\n".join("| " + " | ".join(map(_cell, row)) + " |" for row in rows))
     for index, option in enumerate(handoff.options, 1):
-        name = f"{number}-solution-{index}.md"
         parts.extend(
             [
                 f"### Option {index}: {option.name}",
@@ -49,16 +50,27 @@ def render_analysis(number: int, handoff: Handoff, links: Mapping[str, str]) -> 
                 _bullets(option.changes),
                 "**Watch out**",
                 _bullets(option.watch_out),
-                f"**Implementation scope:** [{name}]({links[name]})",
             ]
         )
+        if index == handoff.recommendation:
+            name = scope_name(number, index)
+            parts.append(f"**Implementation scope:** [{name}]({links[name]})")
+    trigger_rows = ["| Trigger | Fired | Evidence |", "| --- | --- | --- |"]
+    trigger_rows.extend(
+        f"| {TRIGGER_LABELS[check.name]} | {'yes' if check.fired else 'no'} | "
+        f"{_cell(check.evidence)} |"
+        for check in handoff.triggers
+    )
     parts.extend(
         [
             "### Recommendation",
             f"Option {handoff.recommendation}: {handoff.reason}",
-            "> [!TIP]\n> Reply with the option number to select its implementation scope.",
+            "### Trigger check",
+            "\n".join(trigger_rows),
         ]
     )
+    if handoff.fired:
+        parts.append("> [!TIP]\n> Reply with the option number to select its implementation scope.")
     return "\n\n".join(parts) + "\n"
 
 
@@ -80,30 +92,40 @@ def render_details(
     )
 
 
-def render_scope(number: int, index: int, option: Option) -> str:
-    scope = option.scope
+def render_scope_text(title: str, scope: Scope) -> str:
+    """The implementation scope: allowed files first, then only what the agent needs."""
+    files = _bullets([_path(item) for item in scope.allowed_files])
     sections = [
-        ("Standing rules", scope.standing_rules),
-        ("Source of truth", scope.source_of_truth),
-        ("File-by-file changes", scope.file_changes),
-        ("In-scope scenarios", scope.in_scope),
-        ("Out-of-scope scenarios", scope.out_of_scope),
-        ("Do not change", scope.do_not_change),
-        ("Verification", scope.verification),
-        ("Final message", scope.final_message),
-        ("Notes for the orchestrator (not for the implementation agent)", scope.orchestrator_notes),
+        ("Allowed files", f"- You may touch only these files (create them if new):\n{files}"),
+        ("Source of truth", _bullets(scope.source_of_truth)),
+        ("Changes", _bullets(scope.file_changes)),
+        (
+            "In-scope scenarios",
+            "\n".join(f"{i}. {_scenario(item)}" for i, item in enumerate(scope.in_scope, 1)),
+        ),
+        (
+            "Out-of-scope scenarios",
+            "\n".join(f"{i}. {_scenario(item)}" for i, item in enumerate(scope.out_of_scope, 1)),
+        ),
+        ("Do not change", _bullets(scope.do_not_change)),
+        ("Verification", _bullets(scope.verification)),
+        ("Final message", _bullets(scope.final_message)),
+        (ORCHESTRATOR_NOTES_HEADING, _bullets(scope.orchestrator_notes)),
     ]
-    parts = [f"# {number} solution {index}: {option.name}"]
-    for heading, items in sections:
-        if heading.endswith("scenarios"):
-            content = "\n".join(f"{i}. {_scenario(item)}" for i, item in enumerate(items, 1))
-        else:
-            content = _bullets(items)
-        if heading == "Standing rules":
-            files = _bullets([_path(item) for item in scope.allowed_files])
-            content += f"\n- You may touch only these files (create them if new):\n{files}"
-        parts.extend([f"## {heading}", content])
+    parts = [f"# {title}"]
+    for heading, content in sections:
+        if content:
+            parts.extend([f"## {heading}", content])
     return "\n\n".join(parts) + "\n"
+
+
+def scope_name(number: int, index: int) -> str:
+    """The attachment name of option `index`'s implementation scope."""
+    return f"{number}-solution-{index}.md"
+
+
+def render_scope(number: int, index: int, name: str, scope: Scope) -> str:
+    return render_scope_text(f"{number} solution {index}: {name}", scope)
 
 
 def render_attachments(
@@ -112,10 +134,12 @@ def render_attachments(
     return {
         **({f"{number}-conversation.md": conversation} if conversation is not None else {}),
         f"{number}-code-findings.md": handoff.findings.rstrip() + "\n",
-        **{
-            f"{number}-solution-{index}.md": render_scope(number, index, option)
-            for index, option in enumerate(handoff.options, 1)
-        },
+        scope_name(number, handoff.recommendation): render_scope(
+            number,
+            handoff.recommendation,
+            handoff.options[handoff.recommendation - 1].name,
+            handoff.scope,
+        ),
     }
 
 

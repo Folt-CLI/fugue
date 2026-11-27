@@ -29,12 +29,7 @@ def child(**updates: Any) -> ChildSpec:
         "components": ["Source Code"],
         "summary": "Expected result",
         "scope": "**In scope**\n\n- Feature\n\n**Out of scope**\n\n- Other",
-        "decision": "Implement the decision",
         "agreed": ["Selected feature"],
-        "you_get": ["A feature"],
-        "changes": ["Implement it"],
-        "not_changed": ["Other work"],
-        "watch_out": ["Requires configuration"],
     }
     return ChildSpec.model_validate({**values, **updates})
 
@@ -135,7 +130,6 @@ class FakeGitHub(GitHubClient):
 @pytest.mark.parametrize(
     ("updates", "message"),
     [
-        ({"size": "S"}, "scope attachment"),
         ({"components": []}, "assigned Components"),
         ({"components": ["Build", "Tests"]}, "at most 1"),
         ({"size": "M", "components": ["Build", "Tests", "Source Code"]}, "at most 2"),

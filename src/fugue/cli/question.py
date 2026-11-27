@@ -25,6 +25,7 @@ from fugue.agents import (
     register_codex,
     resolve_models,
 )
+from fugue.analysis.option_scope import scope_option
 from fugue.children import apply
 from fugue.children.propose import ProposalStore, add, build_request, remove, set_field, validate
 from fugue.cli import terminal, wiring
@@ -36,7 +37,12 @@ from fugue.github import GitHubClient
 from fugue.github.parse import parse_body_sections
 from fugue.interview.store import InterviewStore
 from fugue.models import IssueType, Role, Size, Status, Ticket
-from fugue.questions.decision import QuestionClient, QuestionGitHubClient, record_decision
+from fugue.questions.decision import (
+    QuestionClient,
+    QuestionGitHubClient,
+    ScopeProvider,
+    record_decision,
+)
 from fugue.questions.parse import Option, parse_analysis
 from fugue.store import Store
 
@@ -87,6 +93,26 @@ class QuestionWalkthrough:
             terminal.print_markdown(text, console=self._console)
         else:
             self.print(text)
+
+    def _scope_option(self, number: int) -> ScopeProvider:
+        """Scope a selected option that was not recommended, so it has an implementation scope."""
+
+        async def provide(body: str, option: Option) -> tuple[str, Option]:
+            if self.adapter is None:
+                raise ValueError("No analyst adapter configured")
+            ticket = await self.client.get_ticket(number)
+            self.print(f"Scoping option {option.number}: {option.name}")
+            return await scope_option(
+                cast(QuestionGitHubClient, self.client),
+                self.adapter,
+                self.config,
+                self.repo_root,
+                ticket,
+                body,
+                option,
+            )
+
+        return provide
 
     async def _selected(self, number: int, option: int, is_question: bool) -> None:
         self.print(f"Selected option {option}.")
@@ -246,7 +272,7 @@ class QuestionWalkthrough:
                                     "e "
                                     + key
                                     + " "
-                                    + self.prompt("Field (scope_text to view/replace): ").strip()
+                                    + self.prompt("Field: ").strip()
                                     + " "
                                     + self.prompt(
                                         "Text (empty scope_text to view, @PATH to replace): "
@@ -386,7 +412,13 @@ class QuestionWalkthrough:
             self._markdown(f"### Recommendation\n\n{analysis.recommendation or 'Not provided.'}")
         if select is not None:
             await record_decision(
-                self.client, number, body, analysis.option(select), reason=reason, by=by
+                self.client,
+                number,
+                body,
+                analysis.option(select),
+                reason=reason,
+                by=by,
+                scope_provider=self._scope_option(number),
             )
             self.print(f"Selected option {select}.")
             if is_question:
@@ -436,7 +468,13 @@ class QuestionWalkthrough:
                         if selected_reason is None:
                             selected_reason = self.prompt("Reason (optional): ").strip() or None
                         await record_decision(
-                            self.client, number, body, selected, reason=selected_reason, by=by
+                            self.client,
+                            number,
+                            body,
+                            selected,
+                            reason=selected_reason,
+                            by=by,
+                            scope_provider=self._scope_option(number),
                         )
                         await self._selected(number, selected.number, is_question)
                         return
@@ -524,7 +562,15 @@ class QuestionWalkthrough:
                 except ValueError:
                     self.print("Select an available option using s N.")
                     continue
-                await record_decision(self.client, number, body, selected, reason=reason, by=by)
+                await record_decision(
+                    self.client,
+                    number,
+                    body,
+                    selected,
+                    reason=reason,
+                    by=by,
+                    scope_provider=self._scope_option(number),
+                )
                 await self._selected(number, selected.number, is_question)
                 return
             else:

@@ -16,6 +16,7 @@ from typer import _click
 from typer.core import TyperGroup
 
 from fugue import __version__
+from fugue.analysis.batch import needs_analysis
 from fugue.analysis.stage import AnalysisGitHubClient, analyse
 from fugue.cli import render, terminal, wiring
 from fugue.cli.protection import check_protection
@@ -24,15 +25,17 @@ from fugue.engine import Engine, EngineDeps, RunOutcome
 from fugue.engine.facts import selected_solution
 from fugue.engine.locks import TicketLock, TicketLocked, format_elapsed
 from fugue.engine.parent import ParentOutcome, run_parent
+from fugue.engine.pipeline import feature_parent
 from fugue.engine.review import Decision
 from fugue.engine.scheduler import run_many
 from fugue.github import GitHubClient
 from fugue.github.parse import parse_body_sections
-from fugue.github.stack import StackClient, lower_branch
 from fugue.gitops import Git
-from fugue.models import IssueType, ModelTier, Role, Size, Status, Ticket
+from fugue.models import IssueType, ModelTier, Role, Ticket
+from fugue.questions.automatic import answer_question, is_automatic
 from fugue.store import Run, Store, StoreError
 from fugue.store.records import Approval
+from fugue.store.sizes import size_records
 from fugue.workflow import RunState
 
 EXIT_USAGE = 2
@@ -160,13 +163,11 @@ class RunEngine(Protocol):
 
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome: ...
 
-    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome: ...
+    async def request_approval(self, run_id: int) -> RunOutcome: ...
 
-    def approve(
-        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
-    ) -> Approval: ...
+    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval: ...
 
-    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome: ...
+    async def merge_and_close(self, run_id: int) -> RunOutcome: ...
 
     async def resume(self, run_id: int) -> RunOutcome: ...
 
@@ -213,8 +214,11 @@ class _StoreClosingEngine:
         self, ticket_number: int, run_id: int | None = None
     ) -> RunOutcome | None:
         ticket = await self._engine.deps.github.get_ticket(ticket_number)
-        if ticket.size in {Size.M, Size.L} and ticket.status in {Status.TO_DO, Status.IN_ANALYSIS}:
-            return await analyse(self._engine.deps, ticket, run_id=run_id)
+        # A lone S or XS ticket is an analysis batch of one: the single-ticket analysis.
+        if needs_analysis(ticket, self._engine.deps.config.policy):
+            outcome = await analyse(self._engine.deps, ticket, run_id=run_id)
+            # A selection made by policy needs no developer: the run goes on to implement.
+            return None if outcome.state == RunState.RUNNING else outcome
         return None
 
     async def run_review(self, run_id: int) -> RunOutcome:
@@ -223,28 +227,14 @@ class _StoreClosingEngine:
     async def decide(self, run_id: int, decisions: Mapping[int, Decision]) -> RunOutcome:
         return await self._engine.decide(run_id, decisions)
 
-    async def request_approval(self, run_id: int, *, parent: bool = False) -> RunOutcome:
-        return (
-            await self._engine.request_approval(run_id, parent=True)
-            if parent
-            else await self._engine.request_approval(run_id)
-        )
+    async def request_approval(self, run_id: int) -> RunOutcome:
+        return await self._engine.request_approval(run_id)
 
-    def approve(
-        self, run_id: int, decided_by: str, reason: str, *, parent: bool = False
-    ) -> Approval:
-        return (
-            self._engine.approve(run_id, decided_by, reason, parent=True)
-            if parent
-            else self._engine.approve(run_id, decided_by, reason)
-        )
+    def approve(self, run_id: int, decided_by: str, reason: str) -> Approval:
+        return self._engine.approve(run_id, decided_by, reason)
 
-    async def merge_and_close(self, run_id: int, *, parent: bool = False) -> RunOutcome:
-        return (
-            await self._engine.merge_and_close(run_id, parent=True)
-            if parent
-            else await self._engine.merge_and_close(run_id)
-        )
+    async def merge_and_close(self, run_id: int) -> RunOutcome:
+        return await self._engine.merge_and_close(run_id)
 
     async def resume(self, run_id: int) -> RunOutcome:
         """Continue durable progress without supplying a decision or approval."""
@@ -267,6 +257,17 @@ class _StoreClosingEngine:
             )
         if run.state == RunState.COMPLETED:
             return RunOutcome(run_id, RunState.COMPLETED)
+        parent = feature_parent(store, run_id)
+        if parent is not None:
+            # Children and the feature pull request continue only through their parent.
+            return RunOutcome(
+                run_id,
+                RunState.BLOCKED,
+                problems=(
+                    f"Run {run_id} belongs to the feature branch of #{parent}; "
+                    f"continue with fugue run {parent}",
+                ),
+            )
         if (
             store._connection.execute(
                 "SELECT 1 FROM stage_attempts WHERE run_id = ? AND stage = 'analyse' LIMIT 1",
@@ -493,6 +494,25 @@ def _parse_overrides(
     return all_tier, role_tiers, role_models
 
 
+async def _answer_automatically(engine: RunEngine, number: int) -> RunOutcome | None:
+    """Answer an M Question by policy and create its children; None when it is not one.
+
+    The outcome is returned only when the Question stopped, for example on a fired trigger;
+    otherwise the run goes on with the children that now exist.
+    """
+    reader = getattr(engine, "get_ticket", None) or getattr(engine.deps.github, "get_ticket", None)
+    config = getattr(engine.deps, "config", None)
+    if reader is None or config is None:
+        return None
+    found: Ticket = await reader(number)
+    if not isinstance(found, Ticket) or not is_automatic(found, config.policy):
+        return None
+    outcome = await answer_question(engine.deps, found)
+    for note in outcome.notes:
+        _print(f"note: {note}")
+    return None if outcome.state == RunState.RUNNING else outcome
+
+
 def _run_single(
     loaded: FugueConfig,
     engine: RunEngine,
@@ -505,11 +525,7 @@ def _run_single(
 ) -> typer.Exit:
     wait = loaded.limits.database_wait_seconds
     try:
-        with (
-            nullcontext()
-            if authorise_merge
-            else TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket)
-        ) as lock:
+        with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket) as lock:
             if lock is not None and lock.recovered is not None:
                 _print(
                     f"note: recovered stale lock left by process {lock.recovered.pid} "
@@ -517,6 +533,9 @@ def _run_single(
                 )
 
             async def go() -> RunOutcome | ParentOutcome:
+                answered = await _answer_automatically(engine, ticket)
+                if answered is not None:
+                    return answered
                 children_reader = getattr(engine.deps.github, "children", None)
                 if children_reader is not None:
                     children = await children_reader(ticket)
@@ -526,12 +545,12 @@ def _run_single(
                             ticket,
                             children,
                             until_green=to_green,
-                            parent_locked=not authorise_merge,
+                            parent_locked=True,
                             authorise_merge=authorise_merge,
                             by=by,
                         )
                 if authorise_merge:
-                    raise ValueError("--authorise-merge requires a parent ticket with children")
+                    raise ValueError("--authorise requires a parent ticket with children")
                 # The tier depends on the ticket Size, so the table waits for the ticket.
                 # A bare Engine has no get_ticket; read through its GitHub port instead. An
                 # engine with neither shows the policy table, which needs no Size.
@@ -558,6 +577,8 @@ def _run_single(
     if isinstance(outcome, ParentOutcome):
         for number, result in outcome.outcomes:
             _print(f"ticket #{number}\n{render.render_outcome(result)}")
+        if outcome.summary is not None:
+            _print(outcome.summary)
         _print(f"parent run {outcome.parent_run_id}: {outcome.state}")
         for problem in outcome.problems:
             _print(f"problem: {problem}")
@@ -574,7 +595,6 @@ def _run_batch(
     wait = loaded.limits.database_wait_seconds
     rows: dict[int, render.BatchRow] = {}
     engines: dict[int, RunEngine] = {}
-    stack_reasons: dict[int, str] = {}
 
     def labelled(number: int) -> Callable[[str], None]:
         return lambda line: _print(f"[#{number}] {line}")
@@ -588,8 +608,6 @@ def _run_batch(
         number = ticket.number
         if result is None:
             message = render.render_skip(number, ticket.blocked_by)
-            if number in stack_reasons:
-                message += f"; gh stack unavailable: {stack_reasons[number]}"
             rows[number] = render.BatchRow(number, _BATCH_SKIPPED, None, message)
             _print(f"ticket #{number}\n{message}")
         elif isinstance(result, TicketLocked):
@@ -617,15 +635,6 @@ def _run_batch(
             for number in numbers:
                 try:
                     found = await probe.get_ticket(number)
-                    if (
-                        len(found.blocked_by) == 1
-                        and await lower_branch(found, probe.deps.github) is not None
-                    ):
-                        result = await StackClient(root_path).probe(probe.deps.github.repo)
-                        if result.available:
-                            found = found.model_copy(update={"blocked_by": []})
-                        else:
-                            stack_reasons[number] = str(result.reason)
                     tickets.append(found)
                     _print(f"ticket #{number}\n{render.render_roles(loaded, found.size)}")
                 except Exception as error:
@@ -665,7 +674,10 @@ def run(
     to_green: Annotated[bool, typer.Option("--to-green", help="Wait for green CI.")] = False,
     authorise_merge: Annotated[
         bool,
-        typer.Option("--authorise-merge", help="Authorise this run's exact stack heads and merge."),
+        typer.Option(
+            "--authorise",
+            help="Merge each child into the feature branch at its green, reviewed head.",
+        ),
     ] = False,
     by: Annotated[
         str | None, typer.Option("--by", help="Authorising identity (default: OS user).")
@@ -688,9 +700,9 @@ def run(
     if any(number <= 0 for number in tickets):
         raise _fail("Ticket numbers must be positive")
     if authorise_merge and len(tickets) != 1:
-        raise _fail("--authorise-merge requires one parent ticket")
+        raise _fail("--authorise requires one parent ticket")
     if by is not None and not authorise_merge:
-        raise _fail("--by requires --authorise-merge")
+        raise _fail("--by requires --authorise")
     if authorise_merge and by is not None and not by.strip():
         raise _fail("Approval requires --by to be non-empty")
     all_tier, role_tiers, role_models = _parse_overrides(tier or [], model or [])
@@ -768,6 +780,24 @@ def usage(
     store = _open_store(loaded)
     try:
         _print(render.render_usage(store.usage_by(by, ticket_number=ticket, repo=repo), by))
+    finally:
+        store.close()
+
+
+@report_app.command("sizes")
+def sizes(
+    ticket: Annotated[
+        int | None, typer.Option("--ticket", help="Only runs for this ticket.")
+    ] = None,
+    repo: RepoFilterOption = None,
+    config: ConfigOption = None,
+    repo_root: RepoRootOption = None,
+) -> None:
+    """Show how each run's Size held up: re-sizes, selection, repairs and review rounds."""
+    loaded = _load(config, _lenient_root(repo_root))
+    store = _open_store(loaded)
+    try:
+        _print(render.render_sizes(size_records(store, ticket_number=ticket, repo=repo)))
     finally:
         store.close()
 
@@ -869,20 +899,9 @@ def request_approval(
     run_id: int,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
-    parent: Annotated[
-        bool, typer.Option("--parent", help="Approve every layer of a parent run.")
-    ] = False,
 ) -> None:
     """Check the gate and request approval for the exact head SHA."""
-    _execute(
-        lambda engine: asyncio.run(
-            engine.request_approval(run_id, parent=True)
-            if parent
-            else engine.request_approval(run_id)
-        ),
-        config,
-        repo_root,
-    )
+    _execute(lambda engine: asyncio.run(engine.request_approval(run_id)), config, repo_root)
 
 
 @_deprecated_command("approve", "approval record")
@@ -893,9 +912,6 @@ def approve(
     by: Annotated[
         str | None, typer.Option("--by", help="Decision maker (default: OS user).")
     ] = None,
-    parent: Annotated[
-        bool, typer.Option("--parent", help="Approve every layer of a parent run.")
-    ] = False,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
 ) -> None:
@@ -903,15 +919,7 @@ def approve(
     decided_by = getpass.getuser() if by is None else by
     if not decided_by.strip() or not reason.strip():
         raise _fail("Approval requires --by and --reason to be non-empty")
-    _execute(
-        lambda engine: (
-            engine.approve(run_id, decided_by, reason, parent=True)
-            if parent
-            else engine.approve(run_id, decided_by, reason)
-        ),
-        config,
-        repo_root,
-    )
+    _execute(lambda engine: engine.approve(run_id, decided_by, reason), config, repo_root)
 
 
 @app.command()
@@ -919,20 +927,9 @@ def merge(
     run_id: int,
     config: ConfigOption = None,
     repo_root: RepoRootOption = None,
-    parent: Annotated[
-        bool, typer.Option("--parent", help="Merge every layer of a parent run.")
-    ] = False,
 ) -> None:
     """Merge the approved head and close the ticket."""
-    _execute(
-        lambda engine: asyncio.run(
-            engine.merge_and_close(run_id, parent=True)
-            if parent
-            else engine.merge_and_close(run_id)
-        ),
-        config,
-        repo_root,
-    )
+    _execute(lambda engine: asyncio.run(engine.merge_and_close(run_id)), config, repo_root)
 
 
 @app.command()
@@ -975,6 +972,29 @@ def question(
             pending = analysis_pending(current, body)
             if automatic and not pending:
                 raise ValueError("--automatic requires a Question with pending Analysis")
+            if (
+                select is None
+                and not automatic
+                and is_automatic(current, loaded.policy)
+                and (
+                    pending
+                    or selected_solution(
+                        current.model_copy(update={"body_sections": parse_body_sections(body)})
+                    )
+                )
+            ):
+                # An M Question needs no interview: it answers itself and creates its children.
+                engine = engine_factory(loaded, root_path, _print)
+                try:
+                    with TicketLock(engine.deps.state_dir, engine.deps.github.repo, ticket):
+                        live = await engine.get_ticket(ticket)
+                        answered = await answer_question(engine.deps, live)
+                finally:
+                    engine.close()
+                _print(render.render_outcome(answered))
+                if answered.state != RunState.RUNNING:
+                    raise typer.Exit(_STATE_EXIT_CODES.get(answered.state, 4))
+                return
             if pending and select is None:
                 engine = engine_factory(loaded, root_path, _print)
                 try:

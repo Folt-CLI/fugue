@@ -2,7 +2,7 @@
 
 For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](../process.md#autonomous-development-campaign-exceptions) for the campaign.
 
-Use S for straightforward work with its solution already decided. The ticket asks no questions.
+Use S for straightforward work whose decision is already made. The ticket asks no questions.
 
 ## The ticket must contain
 
@@ -11,30 +11,21 @@ Set the milestone, Priority, Size, Status and ownership from the [shared steps](
 
 ## Analysis and review
 
-S needs review but no analysis. Use a read-only [review](../review.md).
+S gets a [full analysis](README.md#analysis-depths), shared with other ready XS and S tickets in an analysis batch, and needs no review. The analysis is complete, never abbreviated, because no review follows it; the gate and CI are its other checks.
 
-## Solution
+## Outcome
 
-Write Solution at creation, short and readable for the developer, in the style
-of Analysis. It comes from the enabling Question, with no solution selection;
-the Question's answer does not replace a missing Solution or scope.
+Write the outcome in Summary and two to five numbered scenarios in Scope. Add
+**Agreed in #N** with the decisions the parent Question made, as constraints the
+work must respect, and rough file hints that do not bind. S is created with no scope attachment.
 
-Use a `> [!IMPORTANT]` decision line, **Agreed in #N** (what the parent Question
-decided), **You get**, **Changes**, **Not changed** and **Watch out**, then
-**Implementation scope** linking the complete `<N>-solution-1.md` scope attachment.
-
-Attach with gh-attach and verify at creation by downloading and comparing.
-
-S always has this scope file. Follow the
-[S and XS Solution layout](../issue-format.md#s-and-xs-solution-layout) and the
-applicable [type row](README.md#by-issue-type).
+When the ticket is ready, its analysis publishes Analysis, the findings and the scope of the recommended option, and checks the four triggers. When no trigger fired the policy selects the recommendation; a fired trigger parks only this ticket for the developer. The implementation agent receives the selected scope, as for an M. If the analysis finds the ticket leaves a design question open, re-size to M; see [Re-sizing](README.md#analysis-triggers-and-re-sizing). The `scope` analysis depth, [scoping](README.md#analysis-depths), stays available in configuration but is not the default.
 
 ## Statuses
 
-The ticket is ready when its Solution and scope exist at creation.
-Do not start the implementation agent or move the ticket to S3 or S4 before these requirements are met.
+The ticket is ready to analyse when its outcome, scenarios and constraints exist and it has no open blocker. It is analysed only then, never on code that does not exist yet.
 
-Status path: `S0: To Do` -> `S4: In Implementation` -> `S5: Done`.
+Status path: `S0: To Do` -> `S1: In Analysis` -> `S3: Ready For Implementation` -> `S4: In Implementation` -> `S5: Done`. An S that already carries its scope attachment goes `S0: To Do` -> `S4: In Implementation` -> `S5: Done`.
 Project workflows set Done on close and on merge.
 
 ## Who does what

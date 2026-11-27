@@ -11,6 +11,21 @@ class Size(StrEnum):
     XL = "XL"
 
 
+class AnalysisDepth(StrEnum):
+    """How much analysis a Size gets before implementation."""
+
+    NONE = "none"
+    SCOPE = "scope"
+    FULL = "full"
+
+
+class Selection(StrEnum):
+    """Who records the solution selection when no trigger fired."""
+
+    DEVELOPER = "developer"
+    POLICY = "policy"
+
+
 class Status(StrEnum):
     TO_DO = "S0: To Do"
     IN_ANALYSIS = "S1: In Analysis"

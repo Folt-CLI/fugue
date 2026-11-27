@@ -276,5 +276,6 @@ def register_claude(registry: AdapterRegistry) -> None:
         lambda config: ClaudeAdapter(
             authentication_mode=config.authentication_mode,
             spool_dir=Path(".fugue") / "logs" / "claude",
+            bash_allow=tuple(getattr(config, "bash_allow", ())),
         ),
     )

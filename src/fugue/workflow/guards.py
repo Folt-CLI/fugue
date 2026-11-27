@@ -14,15 +14,15 @@ def components_ok(size: Size, components: Sequence[Component], policy: RepoPolic
     return []
 
 
-def review_required(size: Size, policy: RepoPolicy) -> bool:
-    return policy.size_rules[size].review
+def review_required(size: Size, policy: RepoPolicy, *, feature: bool = False) -> bool:
+    """The Size rule decides for a ticket; `policy.feature_review` for a feature pull request."""
+    return policy.feature_review if feature else policy.size_rules[size].review
 
 
 def ready_for_implementation(
     ticket: Ticket,
     policy: RepoPolicy,
     *,
-    has_scope_attachment: bool,
     selected_solution: bool,
 ) -> list[str]:
     problems: list[str] = []
@@ -33,10 +33,13 @@ def ready_for_implementation(
     if ticket.size == Size.XL:
         problems.append("Size XL is never implementable")
     elif ticket.size in (Size.XS, Size.S):
-        if ticket.status not in (Status.TO_DO, Status.IN_IMPLEMENTATION):
-            problems.append("Size XS/S requires Status S0 or S4")
-        if ticket.size == Size.S and not has_scope_attachment:
-            problems.append("Size S requires a scope attachment")
+        # S3 follows their full analysis; S0 holds a ticket that already carries its scope.
+        if ticket.status not in (
+            Status.TO_DO,
+            Status.READY_FOR_IMPLEMENTATION,
+            Status.IN_IMPLEMENTATION,
+        ):
+            problems.append("Size XS/S requires Status S0, S3 or S4")
     else:
         if not selected_solution:
             problems.append("Size M/L requires a selected solution")

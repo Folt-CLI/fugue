@@ -2,15 +2,24 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fugue.models.enums import Component, IssueType, Priority, Size, Status
+from fugue.models.enums import (
+    AnalysisDepth,
+    Component,
+    IssueType,
+    Priority,
+    Selection,
+    Size,
+    Status,
+)
 
 
 class SizeRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    analysis: bool
+    analysis: AnalysisDepth
     review: bool
     max_components: int | None = Field(ge=0)
+    selection: Selection = Selection.DEVELOPER
 
 
 class Ticket(BaseModel):

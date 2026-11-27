@@ -11,6 +11,7 @@ from fugue.cli.protection import BranchStatus
 from fugue.config import FugueConfig
 from fugue.engine import RunOutcome
 from fugue.engine.locks import format_elapsed
+from fugue.engine.parent import ChildState
 from fugue.engine.review import Finding
 from fugue.models import AuthenticationMode, Role, Size, Status
 from fugue.overview import Overview, SummaryResult
@@ -18,6 +19,7 @@ from fugue.overview.collect import WAITING_RUN_STATES
 from fugue.store import Run
 from fugue.store.db import RepoStageDuration, RepoUsageTotals
 from fugue.store.records import Approval
+from fugue.store.sizes import SizeRecord
 from fugue.workflow import RunState
 
 
@@ -185,24 +187,40 @@ def next_step(outcome: RunOutcome) -> str | None:
     return next_step_for(outcome.state, outcome.run_id, 0)
 
 
-def render_parent_summary(layers: Sequence[tuple[int, RunOutcome]]) -> str:
-    """Render the bottom-up phase 1 handoff without performing any approval or merge."""
-    lines = [
-        "In phase 1, approve and merge each layer with the existing commands, bottom layer first."
-    ]
-    for number, outcome in layers:
-        pr = f"#{outcome.pr_number}" if outcome.pr_number is not None else "-"
-        lines.extend(
-            [
-                "",
-                f"ticket #{number}",
-                f"pull request: {pr}",
-                f"run {outcome.run_id}: {outcome.state}",
-                f"next: fugue approval request {outcome.run_id}",
-                f"then fugue approval record {outcome.run_id} --reason 'reason text'",
-                f"then fugue merge {outcome.run_id}",
-            ]
-        )
+def render_parent_summary(
+    feature_branch: str,
+    children: Sequence[ChildState],
+    feature_run_id: int | None,
+    feature_pr: int | None,
+    feature_state: str | None,
+) -> str:
+    """Render every child's state on the feature branch and the feature pull request."""
+    lines = [f"feature branch: {feature_branch}"]
+    for child in children:
+        detail = [
+            *([f"pull request #{child.pr_number}"] if child.pr_number is not None else []),
+            *([f"run {child.run_id}"] if child.run_id is not None else []),
+        ]
+        suffix = f" ({', '.join(detail)})" if detail else ""
+        if child.state == "merged":
+            text = "merged into the feature branch"
+        elif child.state == "answered":
+            text = "answered"
+        elif child.state == "not_started":
+            text = "not started"
+            if child.waits_for:
+                text += "; waits for " + ", ".join(f"#{n}" for n in child.waits_for)
+        else:
+            text = child.state
+        lines.append(f"ticket #{child.number}: {text}{suffix}")
+        lines.extend(f"  problem: {problem}" for problem in child.problems)
+        if child.next_step is not None:
+            lines.append(f"  next: {child.next_step}")
+    if feature_state is None:
+        lines.append("feature pull request: opens when every child is merged")
+    else:
+        pr = f"#{feature_pr}" if feature_pr is not None else "-"
+        lines.append(f"feature pull request {pr} (run {feature_run_id}): {feature_state}")
     return "\n".join(lines)
 
 
@@ -357,6 +375,27 @@ def render_usage(totals: Sequence[RepoUsageTotals], group_by: str) -> str:
     ]
     note = "Cost is an estimate from reported usage, not a bill; n/a means not reported."
     return "\n".join([*_table(header, rows), "", note])
+
+
+def render_sizes(records: Sequence[SizeRecord]) -> str:
+    """Render each run's original Size, re-size, selection, repairs and review rounds."""
+    if not records:
+        return "No runs."
+    rows = [
+        [
+            str(r.run_id),
+            f"#{r.ticket}",
+            r.original_size or "n/a",
+            r.resized_to or "-",
+            r.selection,
+            str(r.repairs),
+            str(r.review_rounds),
+            r.state,
+        ]
+        for r in records
+    ]
+    header = ["run", "ticket", "size", "re-sized to", "selection", "repairs", "reviews", "state"]
+    return "\n".join(_table(header, rows))
 
 
 def render_timing(durations: Sequence[RepoStageDuration]) -> str:

@@ -489,6 +489,6 @@ def review_repair_prompt(accepted: Sequence[Finding]) -> str:
             item += f"\n  Suggested replacement:\n```\n{finding.suggestion}\n```"
         items.append(item)
     return (
-        "Fix the accepted review findings within the allowed scope. No git commit, push or gh.\n\n"
-        + "\n".join(items)
+        "Fix the accepted review findings. Change any file the fix needs. "
+        "No git commit, push or gh.\n\n" + "\n".join(items)
     )

@@ -48,6 +48,15 @@ class CheckSummary:
         return bool(self.green) and not self.failed and not self.pending
 
 
+def without_ignored(checks: Sequence[CheckResult], ignored: Sequence[str]) -> list[CheckResult]:
+    """Drop checks whose name contains an ignored fragment (case-insensitive)."""
+    return [
+        check
+        for check in checks
+        if not any(fragment in check.name.casefold() for fragment in ignored)
+    ]
+
+
 def summarize_checks(checks: Sequence[CheckResult]) -> CheckSummary:
     """Split checks by bucket; any bucket not known to be green or failed is still pending."""
     green: list[CheckResult] = []
@@ -76,5 +85,8 @@ def ci_repair_prompt(failures: Sequence[tuple[str, str]]) -> str:
     """Render a repair prompt from (check name, log excerpt) pairs."""
     sections = "\n\n".join(f"Check: {name}\n{excerpt}" for name, excerpt in failures)
     return (
-        "Repair the CI failure within the allowed scope. No git commit, push or gh.\n\n" + sections
+        "Repair the CI failure. Change any file the repair needs. No git commit, push or gh. "
+        "A check that asks for a `Test-change` trailer is satisfied by ending your final "
+        "message with one line `Test-change: <why the assertion changes>`; the orchestrator "
+        "writes the trailer.\n\n" + sections
     )

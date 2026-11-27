@@ -7,7 +7,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.parse import urlparse
 
 from fugue.github.parse import flatten_pages, parse_ticket, project_items
@@ -112,6 +112,8 @@ class EmptyJSONReply(GitHubError):
     def __init__(self, argv: Sequence[str]) -> None:
         super().__init__(argv, "Empty JSON reply")
 
+
+MergeMethod = Literal["squash", "merge"]
 
 REVIEW_EVENTS = frozenset({"COMMENT", "APPROVE", "REQUEST_CHANGES"})
 _PERMISSION_MARKERS = ("resource not accessible", "permission", "forbidden", "403")
@@ -544,16 +546,22 @@ class GitHubClient:
 
     async def checks(self, pr: PullRequest) -> list[CheckResult]:
         # gh returns 1 for failed checks and 8 for pending checks with valid JSON.
-        items = await self._json(
-            "pr",
-            "checks",
-            str(pr.number),
-            "--repo",
-            self.repo,
-            "--json",
-            "name,bucket,link",
-            allowed_codes=(0, 1, 8),
-        )
+        try:
+            items = await self._json(
+                "pr",
+                "checks",
+                str(pr.number),
+                "--repo",
+                self.repo,
+                "--json",
+                "name,bucket,link",
+                allowed_codes=(0, 1, 8),
+            )
+        except GitHubError as error:
+            # A push that has not started its workflows yet is pending, not a failure.
+            if "no checks reported" in str(error).casefold():
+                return []
+            raise
         return [CheckResult(**item) for item in items]
 
     def _actions_run_id(self, run_link: str) -> str:
@@ -570,6 +578,14 @@ class GitHubClient:
         ):
             raise ValueError("Expected an Actions run link for the configured repository")
         return path[4]
+
+    async def restart_checks(self, pr: PullRequest) -> None:
+        """Close and reopen a pull request whose workflows never started, to start them."""
+        await self._run("pr", "close", str(pr.number), "--repo", self.repo)
+        await self._run("pr", "reopen", str(pr.number), "--repo", self.repo)
+
+    async def close_issue(self, number: int) -> None:
+        await self._run("issue", "close", str(number), "--repo", self.repo)
 
     async def rerun_failed(self, run_link: str) -> None:
         run_id = self._actions_run_id(run_link)
@@ -695,7 +711,12 @@ class GitHubClient:
                 raise ResolvePermissionError(error.argv, error.stderr_tail) from error
             raise
 
-    async def merge(self, pr: PullRequest, expected_head_sha: str) -> None:
+    async def merge(
+        self, pr: PullRequest, expected_head_sha: str, method: MergeMethod = "squash"
+    ) -> None:
+        """Merge at the expected head; `merge` keeps the reviewed commits in a merge commit."""
+        if method not in ("squash", "merge"):
+            raise ValueError(f"Unsupported merge method: {method!r}")
         actual = await self.pr_head_sha(pr)
         if actual != expected_head_sha:
             raise HeadChanged(expected_head_sha, actual)
@@ -705,7 +726,7 @@ class GitHubClient:
             str(pr.number),
             "--repo",
             self.repo,
-            "--squash",
+            f"--{method}",
             "--match-head-commit",
             expected_head_sha,
         )

@@ -29,6 +29,27 @@ def _object(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def strict_schema(schema: Any) -> Any:
+    """Return a copy of a JSON schema in the strict form Codex accepts.
+
+    Codex validates an output schema as a strict response format: every object must list
+    all of its properties as required and forbid additional ones. A schema generated from
+    fields that have defaults lists only some properties, and Codex then rejects the whole
+    request with no output. The values still validate against the original model, which
+    accepts any value the strict form produces.
+    """
+    if isinstance(schema, dict):
+        strict = {key: strict_schema(value) for key, value in schema.items()}
+        properties = strict.get("properties")
+        if isinstance(properties, dict):
+            strict["required"] = list(properties)
+            strict["additionalProperties"] = False
+        return strict
+    if isinstance(schema, list):
+        return [strict_schema(item) for item in schema]
+    return schema
+
+
 def _tokens(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -136,7 +157,9 @@ class CodexAdapter:
                 argv += ["-m", request.model]
             if request.output_schema is not None:
                 schema_file = Path(directory) / "schema.json"
-                schema_file.write_text(json.dumps(dict(request.output_schema)), encoding="utf-8")
+                schema_file.write_text(
+                    json.dumps(strict_schema(dict(request.output_schema))), encoding="utf-8"
+                )
                 argv += ["--output-schema", str(schema_file)]
             if request.session_id is not None:
                 argv.append(request.session_id)

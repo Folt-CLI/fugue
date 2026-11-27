@@ -351,9 +351,7 @@ def test_prepare_mutations_are_serialised_while_agents_overlap(
                 await self._agent(run.id, identity, "prompt", "scope")
                 return await success(ticket_number)
 
-            async def _agent(
-                self, run_id: int, identity: Identity, prompt: str, scope: str
-            ) -> None:
+            async def _agent(self, run_id: int, identity: Identity, prompt: str, scope: str) -> str:
                 nonlocal agents, maximum_agents
                 agents += 1
                 maximum_agents = max(maximum_agents, agents)
@@ -363,6 +361,7 @@ def test_prepare_mutations_are_serialised_while_agents_overlap(
                     await agents_started.wait()
                 finally:
                     agents -= 1
+                return ""
 
         monkeypatch.setattr("fugue.engine.pipeline.Git", FakeGit)
         with Store(":memory:") as store:

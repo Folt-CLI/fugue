@@ -282,6 +282,14 @@ def test_commit_failure(repo: Path) -> None:
     assert asyncio.run(Git(repo).head_sha()) == before
 
 
+def test_an_empty_commit_is_made_only_when_allowed(repo: Path) -> None:
+    before = asyncio.run(Git(repo).head_sha())
+    with pytest.raises(GitError):
+        asyncio.run(Git(repo).commit(message()))
+    after = asyncio.run(Git(repo).commit(message(), allow_empty=True))
+    assert after != before
+
+
 def test_push_does_not_force(repo: Path) -> None:
     git_command(repo, "push", "origin", "develop:refs/heads/unrelated")
     git_command(repo, "checkout", "--orphan", "unrelated")
@@ -760,3 +768,41 @@ def test_stage_rejects_symlinked_parent_outside_repository(repo: Path, absolute:
     with pytest.raises(ValueError, match="explicit path"):
         asyncio.run(Git(repo).stage(["new.txt", path]))
     assert asyncio.run(Git(repo).staged_files()) == []
+
+
+def test_commit_message_carries_test_change_trailer() -> None:
+    plain = message().render()
+    assert "Test-change:" not in plain
+    marked = replace(message(), test_change="RulesError moves; pattern paths only").render()
+    assert marked.endswith("\n\nTest-change: RulesError moves; pattern paths only")
+    assert marked.startswith(plain)
+
+
+def test_protected_paths_are_workflows_integrity_checks_state_and_secrets() -> None:
+    from fugue.gitops import protected_paths
+
+    assert protected_paths(["src/a.rs", "tests/b.rs", "docs/x.md"]) == []
+    assert protected_paths(
+        [
+            ".github/workflows/ci.yml",
+            "scripts/test-integrity.sh",
+            "scripts/test-integrity-test.sh",
+            ".fugue/logs/x",
+            "app/.env",
+            "src/a.rs",
+        ]
+    ) == [
+        ".github/workflows/ci.yml",
+        "scripts/test-integrity.sh",
+        "scripts/test-integrity-test.sh",
+        ".fugue/logs/x",
+        "app/.env",
+    ]
+
+
+def test_a_protected_path_the_scope_names_is_not_blocked() -> None:
+    from fugue.gitops import protected_paths
+
+    changed = [".github/workflows/ci.yml", "scripts/test-integrity.sh", "src/a.rs"]
+    assert protected_paths(changed, [".github/workflows/ci.yml"]) == ["scripts/test-integrity.sh"]
+    assert protected_paths(changed) == [".github/workflows/ci.yml", "scripts/test-integrity.sh"]

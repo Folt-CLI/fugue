@@ -23,24 +23,23 @@ def _bullets(items: list[str]) -> str:
 
 
 def render_body(child: ChildSpec, question: int, scope_link: str = "") -> str:
-    """Render the five work-item sections and the S/XS Solution layout."""
+    """Render the five work-item sections.
+
+    XS and S carry their outcome, numbered scenarios and the constraints the Question decided in
+    Scope; they have no Solution, because S is scoped when its run starts.
+    """
     if child.size in (Size.XS, Size.S):
-        solution = (
-            f"> [!IMPORTANT]\n> {child.decision}\n\n"
-            f"**Agreed in #{question}**\n\n{_bullets(child.agreed)}\n\n"
-            f"**You get**\n\n{_bullets(child.you_get)}\n\n"
-            f"**Changes**\n\n{_bullets(child.changes)}\n\n"
-            f"**Not changed**\n\n{_bullets(child.not_changed)}\n\n"
-            f"**Watch out**\n\n{_bullets(child.watch_out)}"
-        )
+        scope = f"{child.scope}\n\n**Agreed in #{question}**\n\n{_bullets(child.agreed)}"
+        analysis = "_Not applicable._"
+        solution = "_Not applicable._"
         if scope_link:
             solution += f"\n\n**Implementation scope:** {scope_link}"
-        analysis = f"No analysis needed. Solution decided in #{question}."
     else:
+        scope = child.scope
         analysis = "_Pending._"
         solution = "_Pending._"
     return (
-        f"## Summary\n\n{child.summary}\n\n## Scope\n\n{child.scope}\n\n"
+        f"## Summary\n\n{child.summary}\n\n## Scope\n\n{scope}\n\n"
         f"## Analysis\n\n{analysis}\n\n## Solution\n\n{solution}\n\n"
         f"## Details\n\nDerived from the decision in #{question}.\n"
     )
@@ -87,11 +86,10 @@ def plan(spec: ChildrenSpec, question: Ticket, policy: RepoPolicy) -> ChildrenPl
                         body_sections={
                             "Summary": child.summary,
                             "Scope": child.scope,
-                            "Solution": child.decision,
+                            "Solution": "_Not applicable._",
                         },
                     ),
                     policy,
-                    has_scope_attachment=child.scope_file is not None,
                     selected_solution=True,
                 )
             )

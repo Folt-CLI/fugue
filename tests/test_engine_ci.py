@@ -65,6 +65,7 @@ class FakeCiGitHub:
         self.logs: dict[str, str] = {}
         self.log_error: Exception | None = None
         self.reruns: list[str] = []
+        self.restarts: list[int] = []
         self.rerun_error: Exception | None = None
 
     async def get_ticket(self, number: int) -> Ticket:
@@ -105,6 +106,9 @@ class FakeCiGitHub:
         if self.log_error is not None:
             raise self.log_error
         return self.logs.get(run_link, "")
+
+    async def restart_checks(self, pr: PullRequest) -> None:
+        self.restarts.append(pr.number)
 
     async def rerun_failed(self, run_link: str) -> None:
         if self.rerun_error is not None:
@@ -286,6 +290,26 @@ def test_no_checks_yet_keeps_polling(harness: Harness) -> None:
     assert harness.clock.sleeps == [20]
 
 
+def test_ignored_checks_do_not_hold_up_a_green_pull_request(harness: Harness) -> None:
+    harness.deps.config.limits.ignored_checks = ["macos", "msrv"]
+    harness.github.script = [
+        [
+            check("pass", name="Verify (ubuntu-latest)"),
+            check("pending", name="Verify (macos-latest)"),
+        ]
+    ]
+    outcome = harness.run()
+    assert outcome.ci_green
+    assert harness.github.polls == 1
+
+
+def test_checks_that_never_start_restart_the_pull_request_once(harness: Harness) -> None:
+    harness.github.script = [[], [], [], [], [], [], [check("pass")]]
+    outcome = harness.run()
+    assert outcome.ci_green
+    assert len(harness.github.restarts) == 1
+
+
 # Scenario 3
 def test_infrastructure_failure_is_rerun_once_then_green(harness: Harness) -> None:
     harness.github.script = [[check("fail")], [check("pending")], [check("pass")]]
@@ -392,6 +416,27 @@ def test_timeout_blocks(harness: Harness) -> None:
     assert outcome.problems == ("CI did not finish within 100 seconds",)
     assert harness.clock.sleeps == [30, 30, 30, 10]
     assert harness.deps.store.list_runs(38)[0].state == RunState.BLOCKED
+
+
+def test_cancelled_check_is_rerun_even_without_a_log(harness: Harness) -> None:
+    harness.github.script = [[check("cancel")], [check("pending")], [check("pass")]]
+    harness.github.log_error = ValueError("log not found")
+    outcome = harness.run()
+    assert outcome.ci_green
+    assert harness.github.reruns == [LINK]
+    # No repair ran: only the first implementation used tokens.
+    assert harness.deps.store.usage_summary(outcome.run_id)["input_tokens"] == 10
+
+
+def test_failure_waits_until_the_rest_of_its_run_has_finished(harness: Harness) -> None:
+    adapter = implement_then_repair()
+    harness.use(adapter)
+    harness.github.script = [[check("fail"), check("pending")], [check("pass")]]
+    harness.github.log_error = ValueError("run is still in progress")
+    outcome = harness.run()
+    assert outcome.ci_green
+    assert harness.github.reruns == []
+    assert len(adapter.requests) == 1
 
 
 # Scenario 6
@@ -513,6 +558,10 @@ def test_summary_is_green_requires_checks() -> None:
 def test_classify_failure() -> None:
     markers = Limits().infrastructure_markers
     assert classify_failure("Error: Runner Lost contact", markers) == FailureKind.INFRASTRUCTURE
+    assert (
+        classify_failure("The job was not acquired by Runner of type hosted", markers)
+        == FailureKind.INFRASTRUCTURE
+    )
     assert classify_failure("assert 1 == 2", markers) == FailureKind.SUBSTANTIVE
     assert classify_failure("", markers) == FailureKind.SUBSTANTIVE
     assert classify_failure("anything", []) == FailureKind.SUBSTANTIVE

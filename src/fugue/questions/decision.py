@@ -2,11 +2,15 @@
 
 import getpass
 import re
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from fugue.github import GitHubClient
 from fugue.models import Status, Ticket
 from fugue.questions.parse import SCOPE_LINK, Option, parse_analysis, prose_only
+
+POLICY = "policy"
+"""The `by` of a selection recorded by the Size rule when no trigger fired."""
 
 
 class QuestionClient(Protocol):
@@ -105,11 +109,16 @@ def mark_selected(
     raise ValueError("Question has no Solution section")
 
 
-def decision_comment(option: Option) -> str:
+def decision_comment(option: Option, by: str | None = None) -> str:
+    who = " by policy: no trigger fired" if by == POLICY else ""
     return (
-        f"Selected option {option.number}: {option.name}.\n\n"
+        f"Selected option {option.number}: {option.name}{who}.\n\n"
         f"Implementation scope: [{option.scope_name}]({option.scope_url})"
     )
+
+
+ScopeProvider = Callable[[str, Option], Awaitable[tuple[str, Option]]]
+"""Writes the scope of a selected option that has none, returning the new body and option."""
 
 
 async def record_decision(
@@ -120,8 +129,11 @@ async def record_decision(
     *,
     reason: str | None = None,
     by: str | None = None,
+    scope_provider: ScopeProvider | None = None,
 ) -> None:
+    if not option.scope_url and scope_provider is not None:
+        body, option = await scope_provider(body, option)
     updated = mark_selected(body, option, reason=reason, by=by)
     await client.edit_body(number, updated)
-    await client.comment(number, decision_comment(option))
+    await client.comment(number, decision_comment(option, by))
     await client.set_status(number, Status.READY_FOR_IMPLEMENTATION)

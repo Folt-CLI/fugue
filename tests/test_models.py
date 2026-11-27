@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from fugue.config import RepoPolicy
 from fugue.models import (
+    AnalysisDepth,
     AuthenticationMode,
     Component,
     Disposition,
@@ -150,16 +151,17 @@ def test_ticket_collection_defaults_are_independent() -> None:
 def test_default_size_rules() -> None:
     rules = RepoPolicy().size_rules
     assert {
-        size: (rule.analysis, rule.review, rule.max_components) for size, rule in rules.items()
+        size: (rule.analysis, rule.review, rule.max_components, rule.selection)
+        for size, rule in rules.items()
     } == {
-        Size.XS: (False, False, 1),
-        Size.S: (False, True, 1),
-        Size.M: (True, True, 2),
-        Size.L: (True, True, None),
-        Size.XL: (False, False, 0),
+        Size.XS: ("full", False, 1, "policy"),
+        Size.S: ("full", False, 1, "policy"),
+        Size.M: ("full", True, 2, "policy"),
+        Size.L: ("full", False, None, "developer"),
+        Size.XL: ("none", False, 0, "developer"),
     }
 
 
 def test_size_rule_rejects_negative_component_limit() -> None:
     with pytest.raises(ValidationError, match="max_components"):
-        SizeRule(analysis=False, review=False, max_components=-1)
+        SizeRule(analysis=AnalysisDepth.NONE, review=False, max_components=-1)

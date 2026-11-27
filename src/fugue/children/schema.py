@@ -20,12 +20,7 @@ class ChildSpec(BaseModel):
     components: list[Component]
     summary: str = Field(min_length=1)
     scope: str = Field(min_length=1)
-    decision: str = Field(min_length=1)
     agreed: list[str] = Field(min_length=1)
-    you_get: list[str] = Field(min_length=1)
-    changes: list[str] = Field(min_length=1)
-    not_changed: list[str] = Field(min_length=1)
-    watch_out: list[str] = Field(min_length=1)
     scope_file: Path | None = None
     blocked_by: list[str | int] = Field(default_factory=list)
 
@@ -35,9 +30,8 @@ class ChildSpec(BaseModel):
             raise ValueError("Children must have Size XS, S or M")
         if len(set(self.components)) != len(self.components):
             raise ValueError("Components must be distinct")
-        for name in ("agreed", "you_get", "changes", "not_changed", "watch_out"):
-            if any(not item.strip() for item in getattr(self, name)):
-                raise ValueError(f"{name} must contain non-empty text")
+        if any(not item.strip() for item in self.agreed):
+            raise ValueError("agreed must contain non-empty text")
         for blocker in self.blocked_by:
             if isinstance(blocker, bool) or (isinstance(blocker, int) and blocker <= 0):
                 raise ValueError("blocked_by issue numbers must be positive")

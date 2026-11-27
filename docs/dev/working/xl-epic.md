@@ -15,7 +15,8 @@ XL needs no analysis and no review. Follow each child's size for its analysis an
 
 ## Solution
 
-Keep detailed work in child tickets; the Epic only groups it.
+Keep detailed work in child tickets; the Epic only groups it. A child may be an
+M Question for a small question or feature.
 
 ## Statuses
 

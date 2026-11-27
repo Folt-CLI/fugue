@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Included in this release
+
+#### Features
+
+- [#TBD] : S and XS tickets now get a full analysis, as an M does, and are selected by policy when no trigger fired; they are no longer scoped by default and still have no review. In a parent run, the ready S and XS children are analysed together in analysis batches of up to `limits.analysis_batch_size` (default 5), by Priority then ticket number, each with its own complete analysis, trigger check and selection; a child whose analysis is missing or invalid is analysed again alone, and a fired trigger parks only that child. M and L are analysed one agent per ticket. Nothing is analysed before its blockers are merged: a blocked child or M Question waits for them.
+
+- [#TBD] : A parent run starts its ready children by Priority, most urgent first, then by ticket number; a child still waits for its open blockers whatever its Priority.
+
+- [#TBD] : Sizes now set how deep analysis goes. An S ticket is scoped when its run starts instead of carrying a scope attachment, and is re-sized to M when it does not fit; S is no longer reviewed. M and L analyses check four triggers, and an M with none fired is selected by policy and goes on to implement. `policy.size_rules` takes `analysis = "none"`, `"scope"` or `"full"` and `selection = "developer"` or `"policy"`. Child tickets carry their outcome, scenarios and agreed constraints instead of a solution, and implementation scopes no longer carry standing rules or orchestrator notes for the agent. An Analysis publishes one scope, for the recommended option; selecting another option scopes it first. A Question whose Size selects by policy (M by default) answers itself in `fugue run` or `fugue question`: analysis, selection by policy, then its children are created without a prompt; a fired trigger stops it for you. Its children join the parent run's work on the same feature branch. An S run blocked outside its scoped files or at its repair limit is re-sized to M. `fugue report sizes` shows each run's original Size, re-size, selection, repairs and review rounds.
+
+- [#TBD] : `fugue run` on a Question or Epic works the children on one feature branch: each child starts from its current head, merges into it with a merge commit once green and reviewed, and up to `limits.parallel_children` children run at once. One feature pull request then delivers the feature branch to `develop` after your approval of its exact head. `--authorise` covers the merges into the feature branch only. Stacked pull requests are no longer used, and a single ticket with an open blocker now stops until the blocker merges.
+
 ## 0.2.0
 
 ### Overview

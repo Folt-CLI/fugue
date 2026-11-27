@@ -4,12 +4,13 @@ from collections.abc import Mapping
 from enum import StrEnum
 
 from fugue.config import RepoPolicy
-from fugue.models import Size
+from fugue.models import AnalysisDepth, Size
 
 
 class Stage(StrEnum):
     LOAD = "load"
     VALIDATE = "validate"
+    SCOPE = "scope"
     ANALYSE = "analyse"
     SELECT = "select"
     PREPARE = "prepare"
@@ -41,7 +42,8 @@ class RunState(StrEnum):
 TRANSITIONS: Mapping[Stage, frozenset[Stage]] = {
     Stage.LOAD: frozenset({Stage.VALIDATE}),
     # XL follows load -> validate -> close without implementation.
-    Stage.VALIDATE: frozenset({Stage.ANALYSE, Stage.PREPARE, Stage.CLOSE}),
+    Stage.VALIDATE: frozenset({Stage.SCOPE, Stage.ANALYSE, Stage.PREPARE, Stage.CLOSE}),
+    Stage.SCOPE: frozenset({Stage.PREPARE}),
     Stage.ANALYSE: frozenset({Stage.SELECT}),
     Stage.SELECT: frozenset({Stage.PREPARE}),
     Stage.PREPARE: frozenset({Stage.IMPLEMENT}),
@@ -67,8 +69,10 @@ def stages_for(size: Size, policy: RepoPolicy) -> tuple[Stage, ...]:
         return (Stage.LOAD, Stage.VALIDATE, Stage.CLOSE)
     stages = [Stage.LOAD, Stage.VALIDATE]
     rule = policy.size_rules[size]
-    if rule.analysis:
+    if rule.analysis == AnalysisDepth.FULL:
         stages.extend((Stage.ANALYSE, Stage.SELECT))
+    elif rule.analysis == AnalysisDepth.SCOPE:
+        stages.append(Stage.SCOPE)
     stages.extend((Stage.PREPARE, Stage.IMPLEMENT, Stage.VERIFY, Stage.DELIVER, Stage.MONITOR))
     if rule.review:
         stages.append(Stage.REVIEW)

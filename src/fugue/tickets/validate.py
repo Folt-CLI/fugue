@@ -79,9 +79,7 @@ def problems(
             )
             found.extend(
                 item
-                for item in ready_for_implementation(
-                    ticket, policy, has_scope_attachment=True, selected_solution=True
-                )
+                for item in ready_for_implementation(ticket, policy, selected_solution=True)
                 if not item.startswith(("Summary", "Scope"))
             )
         if draft.size == Size.S and not draft.allowed_files:

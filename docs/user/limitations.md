@@ -30,21 +30,28 @@ GitHub Projects or repository process metadata. See
   their own configured gate. Passing a local gate does not establish green CI.
 - Default policy keeps solution selection and merge approval with the developer.
   A waiting state is not consent. Any new head commit invalidates approval.
-  A stack approval covers each layer only at its recorded head SHA, and
-  `fugue run --authorise` grants it for that invocation only. The earlier review,
+  For a Question or Epic, `fugue run --authorise` lets the run approve and
+  merge each child into the feature branch at its exact head SHA, for that
+  invocation only; the feature pull request to `develop` always waits for your
+  approval. The earlier review,
   decision, approval and merge commands are deprecated aliases until 0.4.0; the
   run covers them.
 - In single-account GitHub use, reviews use COMMENT because the author cannot
   approve their own pull request. A clean required review and Fugue approval
   still have distinct purposes. See [reviewer identity setup](reviewer-identity.md)
   for the separate identity setting.
-- Stacks require native `gh stack`, gh >= 2.90.0, Git >= 2.36, the
-  `github/gh-stack` extension and repository enablement. An unavailable stack
-  probe stops dependent runs before worktree or PR creation and reports
-  `gh_too_old`, `git_too_old`, `extension_missing` or `feature_disabled`.
-  Fugue does not emulate stacks with chained plain PR bases. A dependent run
-  requires a sole open blocker with an open PR. Divergence stops submission;
-  stack merging still requires a developer instruction for that stack and head.
+- A Question or Epic is delivered through one feature branch and one feature
+  pull request; Fugue does not use `gh stack`. The feature branch starts at the
+  head of `develop` when it is created and is never updated from `develop`
+  afterwards: if `develop` moves on and the feature pull request then conflicts
+  or fails CI, the run stops at `blocked` and you resolve it on the feature
+  branch. A CI failure on the feature pull request is not repaired by the
+  implementer, because it has no scope of its own. Children stay open until
+  the feature pull request merges; run a child only through its parent, since
+  `fugue run N` of a child on its own does not target the feature branch.
+- A single ticket with an open blocker stops at `blocked` with
+  `Open blockers must merge first`. Merge the blocker first, or run the parent
+  of both.
 - Posting reviews as a reviewer app requires registration, installation for the
   repository, a saved local private key, OpenSSL and
   `github.reviewer_identity_separate = true`; see
@@ -73,8 +80,10 @@ GitHub Projects or repository process metadata. See
   `limits.max_concurrent_runs` at once, labels progress lines `[#N]` and prints
   a summary. A ticket with an open blocker is skipped. Skipped and
   lock-conflicted tickets exit with code 3. A run of a Question or Epic works
-  its children as one stack; a Question child without an answer is a stop point
-  that exits with code 7 until you answer it with `fugue question` and run again.
+  its children on one feature branch, at most `limits.parallel_children` at
+  once; a Question child without an answer stops only the children that depend
+  on it, and the run exits with code 7 until you answer it with
+  `fugue question` and run again.
 - Shared Git steps in the primary checkout are serialised across processes by a
   repository lock; agent work is not.
 - Concurrent runs in one process share the provider cool-down, so one run's

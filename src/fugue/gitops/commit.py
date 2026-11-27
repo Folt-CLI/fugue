@@ -13,6 +13,7 @@ class CommitMessage:
     explanation: str
     summary: str
     changes: tuple[str, ...] = ()
+    test_change: str | None = None
 
     def render(self) -> str:
         message = (
@@ -20,6 +21,8 @@ class CommitMessage:
         )
         if self.changes:
             message += "\n\n**Changes**\n" + "\n".join(f"- {change}" for change in self.changes)
+        if self.test_change:
+            message += f"\n\nTest-change: {self.test_change}"
         return message
 
 
@@ -42,6 +45,29 @@ def validate_message(
         if re.search(r"(?i)co-authored-by|generated with|signed-off-by", line):
             problems.append(f"Attribution is not allowed: {line}")
     return problems
+
+
+PROTECTED_PATHS = (
+    ".github/workflows/",
+    ".fugue/",
+    "scripts/test-integrity",
+    ".env",
+    "credentials",
+)
+
+
+def protected_paths(paths: Sequence[str], allowed: Sequence[str] = ()) -> list[str]:
+    """Return the protected paths that were changed: workflows, integrity checks, state, secrets.
+
+    A protected path the scope names explicitly in `allowed` is not returned: a ticket that
+    exists to change a workflow says so in its scope.
+    """
+    return [
+        path
+        for path in paths
+        if any(path.startswith(prefix) or path.endswith(prefix) for prefix in PROTECTED_PATHS)
+        and path not in allowed
+    ]
 
 
 def validate_staging(staged: Sequence[str], allowed: Sequence[str]) -> list[str]:

@@ -43,8 +43,18 @@ def allowed_files(scope_text: str) -> list[str]:
     for line in lines:
         if not re.match(r"^\s*[-*+]\s+", line):
             break
-        paths.extend(re.findall(r"`([^`]+)`", line))
+        for found in re.findall(r"`([^`]+)`", line):
+            paths.append(re.sub(r"\s+\([^()]*\)$", "", found))
     return paths
+
+
+TEST_CHANGE_RE = re.compile(r"^\s*[-*+]\s+Test-change trailer:\s*(\S.*?)\s*$", re.MULTILINE)
+
+
+def read_test_change_reason(scope_text: str) -> str | None:
+    """The reason for a commit trailer `Test-change:`, from the scope's orchestrator notes."""
+    match = TEST_CHANGE_RE.search(scope_text)
+    return match[1] if match else None
 
 
 def slug(title: str) -> str:
@@ -54,6 +64,11 @@ def slug(title: str) -> str:
 
 def branch_name(ticket: Ticket) -> str:
     return f"{ticket.issue_type.lower()}/{ticket.number}-{slug(ticket.title)}"
+
+
+def feature_branch_name(parent: Ticket) -> str:
+    """The branch that collects a parent's children before it merges into the base branch."""
+    return f"feature/{parent.number}-{slug(parent.title)}"
 
 
 def worktree_path(root: Path, ticket: Ticket) -> Path:

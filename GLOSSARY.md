@@ -6,6 +6,7 @@ remain unresolved until a Question defines them; do not infer them from proposal
 ## A-Z index
 
 - [adapter](#provider-adapter)
+- [analysis batch](#analysis-batch)
 - [approval](#approval)
 - [artifact](#artifact)
 - [authentication mode](#authentication-mode)
@@ -24,9 +25,12 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [cool-down](#cool-down)
 - [Disposition](#disposition)
 - [Epic](#epic)
+- [feature branch](#feature-branch)
+- [feature pull request](#feature-pull-request)
 - [gate](#gate)
 - [handoff](#handoff)
 - [incident](#incident)
+- [integration merge](#integration-merge)
 - [interaction request](#interaction-request)
 - [interview](#interview)
 - [interview record](#interview-record)
@@ -58,7 +62,6 @@ remain unresolved until a Question defines them; do not infer them from proposal
 - [session](#session)
 - [Size](#size)
 - [stack](#stack)
-- [stack probe](#stack-probe)
 - [stage](#stage)
 - [stand-in](#stand-in)
 - [Status](#status)
@@ -171,6 +174,24 @@ A numbered situation with an expected outcome that a scope lists as in scope or 
 
 Status: decided.
 
+### scoping
+
+The short analysis of a ticket whose Size rule has the `scope` analysis depth, when its run starts. It is not a default: S and XS are analysed in full. It decides nothing: it derives the allowed files, scenarios and verification from the ticket, what its parent decided and the current code, and re-sizes the ticket to M when it does not fit.
+
+Status: decided.
+
+### trigger
+
+One of four observable reasons to ask the developer during full analysis: materially ambiguous requirements, meaningfully different user-visible behaviour, a significant architectural commitment, or a destructive or hard-to-reverse change. The analysis records for each whether it fired and why.
+
+Status: decided.
+
+### policy selection
+
+The recording of the recommendation as the selected solution by the Size rule, when its `selection` is `policy` and no trigger fired. It is made by the rule, never by an agent.
+
+Status: decided.
+
 ### scope
 
 The explicit boundaries of a ticket or selected implementation attachment, including allowed files, intended changes, exclusions and verification.
@@ -179,7 +200,7 @@ Status: decided.
 
 ### Size
 
-The scope category XS, S, M, L or XL. XS needs neither analysis nor review; S has a decided solution and needs review; M needs analysis and review; L is a Question split into children; XL is a release Epic.
+The scope category XS, S, M, L or XL. XS and S have full analysis, shared in an analysis batch, and no review; M has full analysis, by its own agent, and review; L is a Question split into children, analysed with the developer and without review of its own; XL is a release Epic.
 
 Status: decided.
 
@@ -189,15 +210,9 @@ A chain of pull requests in one repository, with the bottom targeting develop an
 
 Status: decided.
 
-### stack probe
-
-A read-only check of native stack availability: gh >= 2.90.0, Git >= 2.36, the installed github/gh-stack extension and repository enablement. Its result is available or an unavailable reason: gh_too_old, git_too_old, extension_missing or feature_disabled. Unexpected command failures stop the check.
-
-Status: decided.
-
 ### Status
 
-The planning field with S0: To Do, S1: In Analysis, S3: Ready For Implementation, S4: In Implementation and S5: Done. XS/S/XL use S0 -> S4 -> S5; M/L use S0 -> S1 -> S3 -> S4 -> S5. XL enters S4 when its first child does and never uses S1 or S3.
+The planning field with S0: To Do, S1: In Analysis, S3: Ready For Implementation, S4: In Implementation and S5: Done. XS/S/M/L use S0 -> S1 -> S3 -> S4 -> S5, and an XS or S that already carries its scope goes S0 -> S4 -> S5; XL uses S0 -> S4 -> S5. XL enters S4 when its first child does and never uses S1 or S3.
 
 Status: decided.
 
@@ -230,6 +245,12 @@ Status: decided.
 ### authentication mode
 
 how a provider call is authenticated and billed; one of `subscription_login` (the user's own sign-in to the unmodified provider CLI) or `api_key` (explicitly configured, metered).
+
+Status: decided.
+
+### analysis batch
+
+one analyst call that analyses up to `limits.analysis_batch_size` ready S and XS tickets of a parent run together. Each ticket gets its own complete handoff, of the same shape and depth as an M's, validated on its own; a ticket whose handoff is missing or invalid is analysed again alone. Distinct from a batch.
 
 Status: decided.
 
@@ -281,9 +302,27 @@ the interval after an unavailable result during which a later call tries other p
 
 Status: unresolved.
 
+### feature branch
+
+the branch `feature/<N>-<slug>` that a `fugue run` of a parent (Question or Epic) #N creates once from the current head of the base branch and pushes. Every child starts from its current head, targets it with its pull request and is merged into it by an integration merge.
+
+Status: decided.
+
+### feature pull request
+
+the single pull request from a parent's feature branch to the base branch, opened when every child is merged into the feature branch. Its merge always waits for the developer's approval of its exact head SHA and is never authorised by the run; after it merges, the children are closed.
+
+Status: decided.
+
 ### handoff
 
 the schema-validated structured input or output passed between roles at a stage boundary.
+
+Status: decided.
+
+### integration merge
+
+the merge of a child's pull request into its parent's feature branch with a merge commit, at the exact head that passed the gate, CI and its required review. It does not close the child's issue.
 
 Status: decided.
 
@@ -357,7 +396,7 @@ Status: unresolved.
 
 ### ready to start
 
-an open ticket with no readiness problems, Status S0 (XS/S) or S3 (M/L), not a Question or XL, and no open blockers.
+an open ticket with no readiness problems, Status S0 or S3 (XS/S) or S3 (M/L), not a Question or XL, and no open blockers.
 
 Status: decided.
 

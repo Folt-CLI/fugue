@@ -5,8 +5,14 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from fugue.github import CheckResult, PullRequest
-from fugue.github.client import PostedReview, PrState, ReviewComment, ReviewThread
-from fugue.models import Disposition, Status, Ticket
+from fugue.github.client import (
+    MergeMethod,
+    PostedReview,
+    PrState,
+    ReviewComment,
+    ReviewThread,
+)
+from fugue.models import Disposition, Size, Status, Ticket
 
 
 class GitHubPort(Protocol):
@@ -46,6 +52,25 @@ class CiGitHubPort(GitHubPort, Protocol):
 
 
 @runtime_checkable
+class SizePort(Protocol):
+    async def set_size(self, number: int, size: Size) -> None: ...
+
+
+@runtime_checkable
+class IssueClosePort(Protocol):
+    """Optional: close a ticket whose work has merged."""
+
+    async def close_issue(self, number: int) -> None: ...
+
+
+@runtime_checkable
+class CheckRestartPort(Protocol):
+    """Optional: start workflows that GitHub did not start for a pull request."""
+
+    async def restart_checks(self, pr: PullRequest) -> None: ...
+
+
+@runtime_checkable
 class ReviewGitHubPort(CiGitHubPort, Protocol):
     """The GitHub operations needed to post reviews and answer their threads."""
 
@@ -81,7 +106,9 @@ class MergeGitHubPort(CiGitHubPort, Protocol):
 
     async def unresolved_thread_count(self, pr: PullRequest) -> int: ...
 
-    async def merge(self, pr: PullRequest, expected_head_sha: str) -> None: ...
+    async def merge(
+        self, pr: PullRequest, expected_head_sha: str, method: MergeMethod = "squash"
+    ) -> None: ...
 
     async def set_disposition(self, number: int, disposition: Disposition) -> None: ...
 

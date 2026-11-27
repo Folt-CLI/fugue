@@ -14,23 +14,25 @@ comments.
 Terms are defined in [GLOSSARY.md](../../GLOSSARY.md).
 
 Sizes decide which stages apply; see [working templates](working/README.md).
-XS skips analysis and review, S skips analysis, M and L need both, and XL needs
-neither. XS and S tickets go straight to implementation with their solution
-already in the ticket. An [XL Epic](working/xl-epic.md) only groups work and has
+XS and S run full analysis, shared in an analysis batch, then implementation, with no
+review. M runs full analysis by its own agent, implementation and review. L is an interactive
+Question with no implementation of its own, and XL needs neither. An [XL Epic](working/xl-epic.md) only groups work and has
 no implementation.
 
 1. **Propose.** Create a work item or epic from its issue form. Agree on the
    outcome and scope before implementation starts.
-2. **Analyse and discuss.** For M and L, the orchestrator inspects the code
-   and records factual findings, constraints, and compatibility concerns. Each
-   possible solution is a complete implementation scope attachment. The orchestrator
-   writes Analysis inline as if the developer had already asked for context,
-   comparison and the next step, following
-   [Issue format](issue-format.md#analysis-and-solution-selection). The
-   orchestrator explains the trade-offs and may recommend an option; the
-   developer chooses. Leave the Solution section pending until that choice is
-   made. Then mark the chosen attachment **[Selected Solution]** and fill
-   Solution with the changes, affected areas, and reason for choosing it. Split
+2. **Analyse and discuss.** For XS, S, M and Questions, once the ticket has no open blocker, the orchestrator inspects the
+   code and records the factual findings that bear on the decision. The options
+   stay inline. The orchestrator writes Analysis as if the developer had already
+   asked for context, comparison and the next step, following
+   [Issue format](issue-format.md#analysis-and-solution-selection), recommends an
+   option and checks the
+   [triggers](working/README.md#analysis-triggers-and-re-sizing). With no trigger
+   fired the policy selects the recommendation; otherwise the ticket parks and
+   the developer chooses. Leave the Solution section pending until the selection
+   is made. Then write the selected option's implementation scope, mark its
+   attachment **[Selected Solution]** and fill Solution with the changes,
+   affected areas, and reason. Split
    work that cannot be reviewed as one bounded change into linked issues.
 3. **Implement.** All agents implement in a dedicated Git worktree for the
    issue branch, never in the primary checkout. Use one worktree per ticket and

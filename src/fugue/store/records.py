@@ -25,6 +25,7 @@ class ParentRun:
     parent_number: int
     state: str
     created_at: datetime
+    feature_run_id: int | None = None
 
 
 @dataclass(frozen=True)

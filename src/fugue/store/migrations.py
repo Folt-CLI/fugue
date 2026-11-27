@@ -73,6 +73,11 @@ MIGRATIONS: list[str] = [
         heads_json TEXT NOT NULL
     );
     """,
+    """
+    ALTER TABLE parent_runs ADD COLUMN feature_run_id INTEGER REFERENCES runs(id);
+    DROP TABLE stack_approvals;
+    DROP TABLE stack_approval_requests;
+    """,
 ]
 
 

@@ -15,7 +15,15 @@ from pydantic import (
     model_validator,
 )
 
-from fugue.models import AuthenticationMode, ModelTier, Role, Size, SizeRule
+from fugue.models import (
+    AnalysisDepth,
+    AuthenticationMode,
+    ModelTier,
+    Role,
+    Selection,
+    Size,
+    SizeRule,
+)
 
 
 class Limits(BaseModel):
@@ -26,6 +34,8 @@ class Limits(BaseModel):
     interview_automatic_max_seconds: int = Field(default=1800, gt=0)
     max_repair_attempts: int = Field(default=3, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
+    parallel_children: int = Field(default=1, gt=0)
+    analysis_batch_size: int = Field(default=5, gt=0)
     database_wait_seconds: int = Field(default=30, gt=0)
     agent_timeout_seconds: int = Field(default=3600, gt=0)
     max_output_bytes: int = Field(default=65536, gt=0)
@@ -42,8 +52,21 @@ class Limits(BaseModel):
             "temporary failure in name resolution",
             "503 service unavailable",
             "no space left on device",
+            "was not acquired by runner",
+            "_result: abandoned",
+            "capacity constraints",
         ]
     )
+
+    ignored_checks: list[str] = Field(default_factory=list)
+
+    @field_validator("ignored_checks")
+    @classmethod
+    def normalize_ignored_checks(cls, value: list[str]) -> list[str]:
+        names = [item.strip().casefold() for item in value]
+        if any(not item for item in names):
+            raise ValueError("ignored checks must not be empty")
+        return names
 
     @field_validator("infrastructure_markers")
     @classmethod
@@ -118,6 +141,8 @@ class RoleConfig(BaseModel):
     tier: ModelTier | None = None
     authentication_mode: AuthenticationMode = AuthenticationMode.SUBSCRIPTION_LOGIN
     fallback: list[ProviderEntry] = Field(default_factory=list)
+    # Shell command patterns a Claude role may run, such as "cargo:*"; Codex ignores them.
+    bash_allow: list[str] = Field(default_factory=list)
 
     @field_validator("model")
     @classmethod
@@ -145,11 +170,26 @@ class RoleConfig(BaseModel):
 
 def _default_size_rules() -> dict[Size, SizeRule]:
     return {
-        Size.XS: SizeRule(analysis=False, review=False, max_components=1),
-        Size.S: SizeRule(analysis=False, review=True, max_components=1),
-        Size.M: SizeRule(analysis=True, review=True, max_components=2),
-        Size.L: SizeRule(analysis=True, review=True, max_components=None),
-        Size.XL: SizeRule(analysis=False, review=False, max_components=0),
+        Size.XS: SizeRule(
+            analysis=AnalysisDepth.FULL,
+            review=False,
+            max_components=1,
+            selection=Selection.POLICY,
+        ),
+        Size.S: SizeRule(
+            analysis=AnalysisDepth.FULL,
+            review=False,
+            max_components=1,
+            selection=Selection.POLICY,
+        ),
+        Size.M: SizeRule(
+            analysis=AnalysisDepth.FULL,
+            review=True,
+            max_components=2,
+            selection=Selection.POLICY,
+        ),
+        Size.L: SizeRule(analysis=AnalysisDepth.FULL, review=False, max_components=None),
+        Size.XL: SizeRule(analysis=AnalysisDepth.NONE, review=False, max_components=0),
     }
 
 
@@ -164,10 +204,15 @@ def _default_gate_commands() -> list[list[str]]:
 
 
 def _default_tier_rules() -> dict[Role, dict[Size, ModelTier]]:
-    # XS and XL analyst rows and every XL row are absent: those Sizes run no such role.
+    # Absent rows run no such role: XL runs none, and XS has no review.
     return {
         Role.STAND_IN: {Size.L: ModelTier.MEDIUM},
-        Role.ANALYST: {Size.M: ModelTier.MEDIUM, Size.L: ModelTier.LARGE},
+        Role.ANALYST: {
+            Size.XS: ModelTier.SMALL,
+            Size.S: ModelTier.SMALL,
+            Size.M: ModelTier.MEDIUM,
+            Size.L: ModelTier.LARGE,
+        },
         Role.IMPLEMENTER: {
             Size.XS: ModelTier.SMALL,
             Size.S: ModelTier.SMALL,
@@ -188,7 +233,12 @@ class RepoPolicy(BaseModel):
     size_rules: dict[Size, SizeRule] = Field(default_factory=_default_size_rules)
     commit_subject_max: int = Field(default=72, gt=0)
     gate_commands: list[list[str]] = Field(default_factory=_default_gate_commands)
+    # A failing gate command that a tool fixes mechanically (a formatter), keyed by the
+    # failing command line; Fugue runs the fix itself before any agent is asked.
+    fix_commands: dict[str, list[str]] = Field(default_factory=dict)
     autonomy_profile: Literal["human", "campaign"] = "human"
+    # Review the feature pull request at its exact head before its merge approval is requested.
+    feature_review: bool = True
     tier_rules: dict[Role, dict[Size, ModelTier]] = Field(default_factory=_default_tier_rules)
 
     @field_validator("tier_rules", mode="before")

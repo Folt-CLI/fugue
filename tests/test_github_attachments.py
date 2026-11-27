@@ -56,9 +56,10 @@ def test_download(fake: Fake, tmp_path: Path) -> None:
     source.write_bytes(b"\x00\xffbinary\r\n")
     dest = tmp_path / "download.bin"
     client, calls = fake([(["attach", "download", URL], {"download_file": str(source)})])
+    dest.write_bytes(b"left by an earlier run")
     assert asyncio.run(client.download_attachment(URL, dest)) == dest
     assert dest.read_bytes() == source.read_bytes()
-    assert calls()[0]["argv"] == ["attach", "download", URL, "--output", str(dest)]
+    assert calls()[0]["argv"] == ["attach", "download", URL, "--clobber", "--output", str(dest)]
 
 
 @pytest.mark.parametrize(

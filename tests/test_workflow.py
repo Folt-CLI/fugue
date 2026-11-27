@@ -3,7 +3,16 @@ from itertools import pairwise, product
 import pytest
 
 from fugue.config import RepoPolicy
-from fugue.models import Component, IssueType, Priority, Size, SizeRule, Status, Ticket
+from fugue.models import (
+    AnalysisDepth,
+    Component,
+    IssueType,
+    Priority,
+    Size,
+    SizeRule,
+    Status,
+    Ticket,
+)
 from fugue.workflow import (
     TRANSITIONS,
     RunState,
@@ -34,7 +43,9 @@ def make_ticket(size: Size = Size.S, status: Status = Status.TO_DO) -> Ticket:
 
 EDGES = {
     ("load", "validate"),
+    ("validate", "scope"),
     ("validate", "analyse"),
+    ("scope", "prepare"),
     ("validate", "prepare"),
     ("validate", "close"),
     ("analyse", "select"),
@@ -65,6 +76,7 @@ def test_transition_table_and_enum_values() -> None:
     assert [stage.value for stage in Stage] == [
         "load",
         "validate",
+        "scope",
         "analyse",
         "select",
         "prepare",
@@ -96,8 +108,14 @@ def test_transition_table_and_enum_values() -> None:
 @pytest.mark.parametrize(
     ("size", "expected"),
     [
-        (Size.XS, "load validate prepare implement verify deliver monitor merge close"),
-        (Size.S, "load validate prepare implement verify deliver monitor review merge close"),
+        (
+            Size.XS,
+            "load validate analyse select prepare implement verify deliver monitor merge close",
+        ),
+        (
+            Size.S,
+            "load validate analyse select prepare implement verify deliver monitor merge close",
+        ),
         (
             Size.M,
             "load validate analyse select prepare implement verify deliver "
@@ -105,8 +123,7 @@ def test_transition_table_and_enum_values() -> None:
         ),
         (
             Size.L,
-            "load validate analyse select prepare implement verify deliver "
-            "monitor review merge close",
+            "load validate analyse select prepare implement verify deliver monitor merge close",
         ),
         (Size.XL, "load validate close"),
     ],
@@ -123,12 +140,12 @@ def test_happy_path_transitions_are_permitted(size: Size) -> None:
 
 @pytest.mark.parametrize("size", list(Size))
 def test_review_required(size: Size) -> None:
-    assert review_required(size, RepoPolicy()) == (size in (Size.S, Size.M, Size.L))
+    assert review_required(size, RepoPolicy()) == (size == Size.M)
 
 
 def test_configured_size_rules() -> None:
     policy = RepoPolicy(
-        size_rules={Size.XS: SizeRule(analysis=True, review=True, max_components=2)}
+        size_rules={Size.XS: SizeRule(analysis=AnalysisDepth.FULL, review=True, max_components=2)}
     )
     assert stages_for(Size.XS, policy) == stages_for(Size.M, RepoPolicy())
     assert review_required(Size.XS, policy)
@@ -145,7 +162,6 @@ def test_ready_sizes(size: Size, in_implementation: bool) -> None:
         ready_for_implementation(
             make_ticket(size, status),
             RepoPolicy(),
-            has_scope_attachment=True,
             selected_solution=True,
         )
         == []
@@ -160,9 +176,7 @@ def test_missing_or_empty_sections(section: str, text: str | None) -> None:
         del ticket.body_sections[section]
     else:
         ticket.body_sections[section] = text
-    problems = ready_for_implementation(
-        ticket, RepoPolicy(), has_scope_attachment=True, selected_solution=True
-    )
+    problems = ready_for_implementation(ticket, RepoPolicy(), selected_solution=True)
     assert len(problems) == 1
     assert section in problems[0]
 
@@ -171,21 +185,19 @@ def test_missing_or_empty_sections(section: str, text: str | None) -> None:
 def test_pending_solution(text: str) -> None:
     ticket = make_ticket()
     ticket.body_sections["Solution"] = text
-    assert ready_for_implementation(
-        ticket, RepoPolicy(), has_scope_attachment=True, selected_solution=True
-    ) == ["Solution must be non-empty and ready"]
+    assert ready_for_implementation(ticket, RepoPolicy(), selected_solution=True) == [
+        "Solution must be non-empty and ready"
+    ]
 
 
 @pytest.mark.parametrize("size", [Size.XS, Size.S, Size.M, Size.L])
 def test_scope_and_selection_requirements(size: Size) -> None:
     status = Status.TO_DO if size in (Size.XS, Size.S) else Status.READY_FOR_IMPLEMENTATION
     problems = ready_for_implementation(
-        make_ticket(size, status), RepoPolicy(), has_scope_attachment=False, selected_solution=False
+        make_ticket(size, status), RepoPolicy(), selected_solution=False
     )
-    assert bool(problems) == (size != Size.XS)
-    if size == Size.S:
-        assert problems == ["Size S requires a scope attachment"]
-    elif size in (Size.M, Size.L):
+    assert bool(problems) == (size in (Size.M, Size.L))
+    if size in (Size.M, Size.L):
         assert problems == ["Size M/L requires a selected solution"]
 
 
@@ -194,12 +206,12 @@ def test_scope_and_selection_requirements(size: Size) -> None:
 )
 def test_status_requirements(size: Size, status: Status) -> None:
     allowed = (
-        (Status.TO_DO, Status.IN_IMPLEMENTATION)
+        (Status.TO_DO, Status.READY_FOR_IMPLEMENTATION, Status.IN_IMPLEMENTATION)
         if size in (Size.XS, Size.S)
         else (Status.READY_FOR_IMPLEMENTATION, Status.IN_IMPLEMENTATION)
     )
     problems = ready_for_implementation(
-        make_ticket(size, status), RepoPolicy(), has_scope_attachment=True, selected_solution=True
+        make_ticket(size, status), RepoPolicy(), selected_solution=True
     )
     assert bool(problems) == (status not in allowed)
 
@@ -213,9 +225,7 @@ def test_component_limits(size: Size, count: int) -> None:
     assert bool(problems) == (count > maximum)
     ticket = make_ticket(size, Status.IN_IMPLEMENTATION)
     ticket.components = components
-    readiness = ready_for_implementation(
-        ticket, RepoPolicy(), has_scope_attachment=True, selected_solution=True
-    )
+    readiness = ready_for_implementation(ticket, RepoPolicy(), selected_solution=True)
     assert bool(readiness) == (size == Size.XL or count == 0 or count > maximum)
 
 
@@ -224,12 +234,7 @@ def test_components_may_be_unset_before_s4(size: Size) -> None:
     status = Status.TO_DO if size in (Size.XS, Size.S) else Status.READY_FOR_IMPLEMENTATION
     ticket = make_ticket(size, status)
     ticket.components = []
-    assert (
-        ready_for_implementation(
-            ticket, RepoPolicy(), has_scope_attachment=True, selected_solution=True
-        )
-        == []
-    )
+    assert ready_for_implementation(ticket, RepoPolicy(), selected_solution=True) == []
 
 
 @pytest.mark.parametrize("status", list(Status))
@@ -237,7 +242,7 @@ def test_xl_never_implementable(status: Status) -> None:
     ticket = make_ticket(Size.XL, status)
     ticket.components = []
     assert "Size XL is never implementable" in ready_for_implementation(
-        ticket, RepoPolicy(), has_scope_attachment=True, selected_solution=True
+        ticket, RepoPolicy(), selected_solution=True
     )
 
 

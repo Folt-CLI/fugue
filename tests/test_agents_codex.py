@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ from fugue.agents import (
     Unavailable,
     register_codex,
 )
+from fugue.agents.codex import strict_schema
+from fugue.analysis.schema import handoff_schema, scoping_schema
 from fugue.config import RoleConfig
 from fugue.models import AuthenticationMode, Role
 from fugue.process import run_command
@@ -83,7 +86,11 @@ def test_arguments_and_stdin(
     if options:
         schema_file = argv[argv.index("--output-schema") + 1]
         expected += ["-m", "chosen-model", "--output-schema", schema_file]
-        assert received["schema"] == schema
+        assert received["schema"] == {
+            **schema,
+            "required": ["answer"],
+            "additionalProperties": False,
+        }
         assert result.structured_output == {"answer": 42}
     if resume:
         expected.append("existing-thread")
@@ -488,3 +495,54 @@ def test_spawn_failure_is_unreachable(
     result = asyncio.run(CodexAdapter(spool_dir=tmp_path / "logs").run(request_data))
     assert not result.ok and result.unavailable == Unavailable.UNREACHABLE
     assert not result.provider_limited
+
+
+def objects(node: Any) -> list[dict[str, Any]]:
+    """Every schema node that declares properties, at any depth."""
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("properties"), dict):
+            found.append(node)
+        for value in node.values():
+            found.extend(objects(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(objects(value))
+    return found
+
+
+def test_strict_schema_requires_every_property_at_every_depth() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "fits": {"type": "boolean"},
+            "reason": {"type": "string", "default": ""},
+            "scope": {"anyOf": [{"$ref": "#/$defs/Scope"}, {"type": "null"}], "default": None},
+        },
+        "required": ["fits"],
+        "$defs": {
+            "Scope": {
+                "type": "object",
+                "properties": {"files": {"type": "array", "items": {"type": "string"}}},
+            }
+        },
+    }
+    original = json.loads(json.dumps(schema))
+    strict = strict_schema(schema)
+    assert schema == original
+    assert strict["required"] == ["fits", "reason", "scope"]
+    assert strict["additionalProperties"] is False
+    assert strict["$defs"]["Scope"]["required"] == ["files"]
+    assert strict["$defs"]["Scope"]["additionalProperties"] is False
+    assert strict_schema({"type": "object"}) == {"type": "object"}
+
+
+@pytest.mark.parametrize("make", [scoping_schema, handoff_schema])
+def test_strict_analysis_schemas_list_all_properties_as_required(
+    make: Callable[[], dict[str, Any]],
+) -> None:
+    nodes = objects(strict_schema(make()))
+    assert nodes
+    for node in nodes:
+        assert node["required"] == list(node["properties"])
+        assert node["additionalProperties"] is False

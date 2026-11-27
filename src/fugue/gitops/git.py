@@ -234,11 +234,31 @@ class Git:
             "--",
         )
 
-    async def commit(self, message: CommitMessage) -> str:
-        await self._run("commit", "--cleanup=verbatim", "-F", "-", stdin=message.render())
+    async def commit(self, message: CommitMessage, *, allow_empty: bool = False) -> str:
+        args = ["commit", "--cleanup=verbatim", *(["--allow-empty"] if allow_empty else [])]
+        await self._run(*args, "-F", "-", stdin=message.render())
         return await self.head_sha()
 
     async def push(self, branch: str, remote: str = "origin") -> None:
         await self._validate_branch(branch)
         await self._validate_remote(remote)
         await self._run("push", "--", remote, f"refs/heads/{branch}:refs/heads/{branch}")
+
+    async def merge_ref(self, ref: str, message: str) -> None:
+        """Merge a fully qualified ref with a merge commit; a conflict leaves the merge open."""
+        if not ref.startswith("refs/"):
+            raise ValueError("ref must be a fully qualified reference")
+        await self._run("merge", "--no-ff", "--no-edit", "-m", message, ref)
+
+    async def abort_merge(self) -> None:
+        await self._run("merge", "--abort")
+
+    async def conflicted_files(self) -> list[str]:
+        """The paths still unmerged in an open merge, relative to the repository root."""
+        output = await self._run("diff", "--name-only", "--diff-filter=U", "-z")
+        return [path for path in output.split("\0") if path]
+
+    async def conclude_merge(self) -> str:
+        """Commit an open merge whose conflicts were resolved and staged, keeping its message."""
+        await self._run("commit", "--no-edit")
+        return await self.head_sha()
