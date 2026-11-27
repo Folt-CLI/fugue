@@ -4,6 +4,7 @@ version = "0.4.0"
 requires-python = ">=3.12"
 dependencies = [
     "githubkit>=0.17.1,<0.18",
+    "pygit2>=1.21.0,<1.22",
     "typer>=0.29.3",
 ]
 
