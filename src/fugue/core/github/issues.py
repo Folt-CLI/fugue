@@ -117,6 +117,7 @@ class Issues(Area):
             body=issue.body or "",
             state="open" if issue.state == "open" else "closed",
             labels=tuple(label for label in labels if label),
+            issue_type=getattr(getattr(issue, "type", None), "name", "") or "",
             author=issue.user.login if issue.user else "",
             comments=issue.comments,
             updated_at=issue.updated_at,

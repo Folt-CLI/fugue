@@ -8,6 +8,7 @@ from fugue.core.reporting.events import (
     StepFinished,
     StepStarted,
     TicketRead,
+    WorktreeReady,
 )
 from fugue.core.reporting.questions import Question
 from fugue.core.reporting.reporter import Reporter, SilentReporter
@@ -23,4 +24,5 @@ __all__ = [
     "StepFinished",
     "StepStarted",
     "TicketRead",
+    "WorktreeReady",
 ]

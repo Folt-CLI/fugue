@@ -4,7 +4,7 @@ import typer
 from rich.console import Console
 from rich.status import Status
 
-from fugue.cli.views import TicketView
+from fugue.cli.views import TicketView, WorkView
 from fugue.core.reporting import (
     Event,
     Message,
@@ -15,6 +15,7 @@ from fugue.core.reporting import (
     StepFinished,
     StepStarted,
     TicketRead,
+    WorktreeReady,
 )
 
 
@@ -25,6 +26,7 @@ class RichReporter(Reporter):
     def __init__(self, console: Console | None = None, *, quiet: bool = False) -> None:
         self._console = console or Console()
         self._tickets = TicketView(self._console)
+        self._work = WorkView(self._console)
         self._quiet = quiet
         self._spinner: Status | None = None
 
@@ -49,6 +51,15 @@ class RichReporter(Reporter):
                 self._tickets.show(ticket, repository)
             case StatusMoved():
                 pass
+            case WorktreeReady() as ready:
+                self._stop()
+                self._work.worktree(
+                    ready.path,
+                    ready.branch,
+                    ready.base,
+                    new_branch=ready.new_branch,
+                    reused=ready.reused,
+                )
             case Message(text=text, level=level):
                 self._stop()
                 style = "yellow" if level == "warning" else "dim"

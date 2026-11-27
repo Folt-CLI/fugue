@@ -14,6 +14,7 @@ class Ticket(BaseModel):
     body: str = ""
     state: Literal["open", "closed"]
     labels: tuple[str, ...] = Field(default_factory=tuple)
+    issue_type: str = ""
     author: str = ""
     comments: int = 0
     updated_at: datetime

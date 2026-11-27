@@ -45,3 +45,12 @@ class StatusMoved(Event):
     kind: Literal["status_moved"] = "status_moved"
     repository: str
     change: FieldChange
+
+
+class WorktreeReady(Event):
+    kind: Literal["worktree_ready"] = "worktree_ready"
+    path: str
+    branch: str
+    base: str
+    new_branch: bool
+    reused: bool

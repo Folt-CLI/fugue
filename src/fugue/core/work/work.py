@@ -5,10 +5,11 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict
 
 from fugue.core.github import Github
+from fugue.core.gitops import Worktree
 from fugue.core.reporting import Reporter, StepFailed, StepFinished, StepStarted
 from fugue.core.work.config import WorkConfig
 from fugue.core.work.run import Run
-from fugue.core.work.steps import MoveStatus, ReadTicket, Step
+from fugue.core.work.steps import MoveStatus, PrepareBranch, ReadTicket, Step
 from fugue.errors import FugueError, WorkError
 from fugue.models import Ticket
 
@@ -21,6 +22,7 @@ class WorkResult(BaseModel):
     repository: str
     ticket: Ticket
     status: str | None = None
+    worktree: Worktree | None = None
 
 
 class Work:
@@ -32,7 +34,7 @@ class Work:
     def __init__(self, github: Github | None = None, config: WorkConfig | None = None) -> None:
         self.github = github or Github()
         self.config = config or WorkConfig.load()
-        self.steps: Sequence[Step] = (ReadTicket(), MoveStatus())
+        self.steps: Sequence[Step] = (ReadTicket(), MoveStatus(), PrepareBranch())
 
     async def run(self, number: int, reporter: Reporter) -> WorkResult:
         run = Run(number, self.github, self.config, reporter)
@@ -48,4 +50,9 @@ class Work:
                 await reporter.report(StepFailed(step=step.name, message=message))
                 raise WorkError(message) from error
             await reporter.report(StepFinished(step=step.name, detail=detail))
-        return WorkResult(repository=self.github.slug, ticket=run.read_ticket, status=run.status)
+        return WorkResult(
+            repository=self.github.slug,
+            ticket=run.read_ticket,
+            status=run.status,
+            worktree=run.worktree,
+        )

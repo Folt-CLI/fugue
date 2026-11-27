@@ -1,6 +1,7 @@
 """The state of one work run, shared by its steps."""
 
 from fugue.core.github import Github
+from fugue.core.gitops import Worktree
 from fugue.core.reporting import Reporter
 from fugue.core.work.config import WorkConfig
 from fugue.models import Ticket
@@ -16,6 +17,7 @@ class Run:
         self.reporter = reporter
         self.ticket: Ticket | None = None
         self.status: str | None = None
+        self.worktree: Worktree | None = None
 
     @property
     def read_ticket(self) -> Ticket:
