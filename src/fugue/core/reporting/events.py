@@ -9,7 +9,13 @@ from fugue.models import FieldChange, Ticket
 
 
 class Event(BaseModel):
+    """Something that happened. `run_id` and `flow` say which run it belongs to; the flow's
+    reporter fills them in, so a step never has to know them."""
+
     model_config = ConfigDict(frozen=True)
+
+    run_id: str = ""
+    flow: str = ""
 
 
 class StepStarted(Event):
@@ -54,3 +60,23 @@ class WorktreeReady(Event):
     base: str
     new_branch: bool
     reused: bool
+
+
+class RunStarted(Event):
+    kind: Literal["run_started"] = "run_started"
+    subject: str
+
+
+class RunFinished(Event):
+    kind: Literal["run_finished"] = "run_finished"
+
+
+class RunFailed(Event):
+    kind: Literal["run_failed"] = "run_failed"
+    message: str
+
+
+class Answered(Event):
+    kind: Literal["answered"] = "answered"
+    question: str
+    answer: str
