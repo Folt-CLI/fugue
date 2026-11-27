@@ -85,8 +85,11 @@ class WorkApp(App[None]):
         self.query_one(ChecklistWindow).toggle()
 
     async def action_show_page(self, key: str) -> None:
-        """Bring the page with this key to the front."""
+        """Bring the page with this key to the front and focus it, so the arrow keys scroll it."""
         self.query_one(TabbedContent).active = f"page-{key}"
+        for page in PAGES:
+            if page.key == key:
+                self.call_after_refresh(self.query_one(page).focus)
 
     @staticmethod
     def _pane(page: type[Window]) -> str:
