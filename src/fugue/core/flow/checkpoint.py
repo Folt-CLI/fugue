@@ -1,6 +1,6 @@
 """The stop between steps."""
 
-from fugue.core.reporting import Ask, Reporter
+from fugue.core.reporting import PERMISSION, Ask, Reporter
 from fugue.errors import FlowStopped
 
 
@@ -11,19 +11,18 @@ class Checkpoint:
     ends the run cleanly. When `enabled` is false it never asks, for runs nobody is watching.
     """
 
-    def __init__(self, reporter: Reporter, *, enabled: bool = True) -> None:
+    def __init__(self, reporter: Reporter) -> None:
         self._reporter = reporter
-        self._enabled = enabled
         self._passed = 0
 
     async def pass_(self, step: str) -> None:
         """Called by a step before it starts."""
         first = self._passed == 0
         self._passed += 1
-        if first or not self._enabled:
+        if first:
             return
         answer = await self._reporter.ask(
-            Ask(text=f"Continue with \u201c{step}\u201d?", default="yes")
+            Ask(text=f"Continue with \u201c{step}\u201d?", default="yes", tags=(PERMISSION,))
         )
         if answer.value != "yes":
             raise FlowStopped(f"Stopped before \u201c{step}\u201d.")

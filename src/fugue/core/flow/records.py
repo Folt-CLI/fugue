@@ -2,19 +2,23 @@
 
 from pathlib import Path
 
-from fugue.core.reporting import Answer, Answered, Event, Question, Reporter
+from fugue.core.reporting import Answer, Answered, Event, Message, Question, Reporter
 
 
 class RunReporter(Reporter):
     """Wraps the reporter of whoever starts a flow.
 
     Every event is stamped with the run id and the flow, appended to the run's record when
-    there is one, and then passed on. A question is passed on too, and its answer is recorded.
+    there is one, and then passed on. A question is passed on too, and its answer is recorded;
+    with `auto`, a question tagged as a permission is answered with its default instead.
     The steps of a flow only ever see this reporter, so they never handle ids or files.
     """
 
-    def __init__(self, inner: Reporter, *, run_id: str, flow: str, record: Path | None) -> None:
+    def __init__(
+        self, inner: Reporter, *, run_id: str, flow: str, record: Path | None, auto: bool = False
+    ) -> None:
         self._inner = inner
+        self._auto = auto
         self._run_id = run_id
         self._flow = flow
         self._record = record
@@ -30,7 +34,12 @@ class RunReporter(Reporter):
         await self._inner.report(stamped)
 
     async def ask(self, question: Question) -> Answer:
-        answer = await self._inner.ask(question)
+        auto = self._auto and question.is_permission
+        if auto:
+            answer = question.default_answer()
+            await self.report(Message(text=f"{question.text} {answer.text} (automatic)"))
+        else:
+            answer = await self._inner.ask(question)
         self._write(
             Answered(
                 run_id=self._run_id,
@@ -38,6 +47,7 @@ class RunReporter(Reporter):
                 question=question.text,
                 answer=answer.text,
                 other=answer.other,
+                auto=auto,
             )
         )
         return answer

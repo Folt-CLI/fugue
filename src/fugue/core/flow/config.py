@@ -10,9 +10,10 @@ class FlowConfig(Config):
 
     `record_runs`: write every event of a run to `<runs_dir>/<run id>.jsonl`.
     `runs_dir`: where those files go; default `.fugue/runs` in the repository.
-    `confirm_steps`: ask for a yes before each step except the first.
+    `auto`: answer the questions that only ask leave to go on (the yes before each step) by
+    themselves, so the run goes through without stopping.
     """
 
-    confirm_steps: bool = True
+    auto: bool = False
     record_runs: bool = True
     runs_dir: Path | None = None

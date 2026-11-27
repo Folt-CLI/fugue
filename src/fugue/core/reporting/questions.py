@@ -16,6 +16,10 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict
 
+PERMISSION = "permission"
+"""The tag of a question that only asks leave to go on. A run started with `auto` answers it
+by itself, with the question's default answer, so such a question must default to yes."""
+
 
 class Answer(BaseModel):
     """What the person answered. `values` holds the chosen options, or the written text;
@@ -42,13 +46,20 @@ class Answer(BaseModel):
 
 
 class Question(BaseModel, ABC):
-    """What every question has: the `text` that asks it and a `body` in Markdown to read before
-    answering (a plan, a summary)."""
+    """What every question has: the `text` that asks it, a `body` in Markdown to read before
+    answering (a plan, a summary), and `tags` that say what kind of question it is.
+
+    A question tagged `PERMISSION` only asks leave to go on, and an automatic run skips it."""
 
     model_config = ConfigDict(frozen=True)
 
     text: str
     body: str = ""
+    tags: tuple[str, ...] = ()
+
+    @property
+    def is_permission(self) -> bool:
+        return PERMISSION in self.tags
 
     @abstractmethod
     def default_answer(self) -> Answer:

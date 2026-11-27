@@ -22,9 +22,13 @@ def work(
             help="Run without the full screen: print progress as lines.",
         ),
     ] = False,
-    yes: Annotated[
+    auto: Annotated[
         bool,
-        typer.Option("--yes", "-y", help="Do not ask before each step; go straight through."),
+        typer.Option(
+            "--auto",
+            envvar="FUGUE_WORK_AUTO",
+            help="Answer the permission questions (continue with each step) by itself.",
+        ),
     ] = False,
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Show no progress, only the final line.")
@@ -34,8 +38,8 @@ def work(
     messages = Messages()
     with messages.guard():
         config = WorkConfig.load()
-        if yes:
-            config = config.model_copy(update={"confirm_steps": False})
+        if auto:
+            config = config.model_copy(update={"auto": True})
         flow = Work(config=config)
         if headless or quiet or not (sys.stdin.isatty() and sys.stdout.isatty()):
             result = asyncio.run(flow.run(ticket, RichReporter(quiet=quiet)))

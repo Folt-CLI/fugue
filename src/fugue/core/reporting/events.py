@@ -112,3 +112,4 @@ class Answered(Event):
     question: str
     answer: str
     other: bool = False
+    auto: bool = False

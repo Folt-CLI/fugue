@@ -18,10 +18,11 @@ from fugue.core.reporting.events import (
     TicketRead,
     WorktreeReady,
 )
-from fugue.core.reporting.questions import Answer, Ask, Chat, Form, Question, Select
+from fugue.core.reporting.questions import PERMISSION, Answer, Ask, Chat, Form, Question, Select
 from fugue.core.reporting.reporter import Reporter, SilentReporter
 
 __all__ = [
+    "PERMISSION",
     "AgentFinished",
     "AgentStarted",
     "Answer",

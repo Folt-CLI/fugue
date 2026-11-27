@@ -53,12 +53,18 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
     async def execute(self, state: StateT, reporter: Reporter, subject: str) -> ResultT:
         """Run the flow from its first step. `subject` says what it is about, for the record."""
         run_id = self._new_run_id()
-        scoped = RunReporter(reporter, run_id=run_id, flow=self.name, record=self._record(run_id))
+        scoped = RunReporter(
+            reporter,
+            run_id=run_id,
+            flow=self.name,
+            record=self._record(run_id),
+            auto=self.config.auto,
+        )
         deps = FlowDeps(
             github=self.github,
             config=self.config,
             reporter=scoped,
-            checkpoint=Checkpoint(scoped, enabled=self.config.confirm_steps),
+            checkpoint=Checkpoint(scoped),
         )
         await scoped.report(RunStarted(subject=subject))
         try:
