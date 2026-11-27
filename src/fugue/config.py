@@ -19,14 +19,13 @@ class FileSource(PydanticBaseSettingsSource):
     """Reads one section from the settings files, the strongest scope winning.
 
     A secret is never read from a file, whatever it holds, and a setting that is local to a
-    repository (`local_only`) is not read from the global file. `keys` renames older keys.
+    repository (`local_only`) is not read from the global file.
     """
 
     def __init__(
         self,
         settings_cls: type[BaseSettings],
         section: str,
-        keys: dict[str, str],
         local_only: frozenset[str],
     ) -> None:
         super().__init__(settings_cls)
@@ -34,7 +33,6 @@ class FileSource(PydanticBaseSettingsSource):
         merged: dict[str, Any] = {}
         for scope in Scope.order():
             for name, value in files.read(scope, section).items():
-                name = keys.get(name, name)
                 if scope is Scope.GLOBAL and name in local_only:
                     continue
                 merged[name] = value
@@ -64,7 +62,6 @@ class Config(BaseSettings):
     model_config = SettingsConfigDict(frozen=True, extra="ignore", env_ignore_empty=True)
 
     section: ClassVar[str | None] = None
-    file_keys: ClassVar[dict[str, str]] = {}
     local_only: ClassVar[frozenset[str]] = frozenset()
 
     @classmethod
@@ -79,7 +76,7 @@ class Config(BaseSettings):
         sources = (init_settings, env_settings)
         if cls.section is None:
             return sources
-        return (*sources, FileSource(settings_cls, cls.section, cls.file_keys, cls.local_only))
+        return (*sources, FileSource(settings_cls, cls.section, cls.local_only))
 
     @classmethod
     def load(cls) -> Self:
@@ -105,7 +102,6 @@ class GithubConfig(Config):
     model_config = SettingsConfigDict(env_prefix="GITHUB_")
 
     section = "github"
-    file_keys = {"project_number": "project"}
     local_only = frozenset({"project"})
 
     token: SecretStr

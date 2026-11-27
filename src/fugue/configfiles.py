@@ -15,7 +15,6 @@ class Scope(StrEnum):
     """Where a setting lives. From the weakest to the strongest:
 
     - `global`: `~/.config/fugue/config.toml`, for every repository on this machine
-    - `legacy`: the older `fugue.toml` in the repository, still read so it keeps working
     - `local`: `.fugue/config.toml` in the repository, meant to be committed and shared
     - `private`: `.fugue/config.local.toml` in the repository, yours alone and git-ignored
 
@@ -23,14 +22,13 @@ class Scope(StrEnum):
     """
 
     GLOBAL = "global"
-    LEGACY = "legacy"
     LOCAL = "local"
     PRIVATE = "private"
 
     @classmethod
     def order(cls) -> list["Scope"]:
         """Weakest first: a later scope overrides the ones before it."""
-        return [cls.GLOBAL, cls.LEGACY, cls.LOCAL, cls.PRIVATE]
+        return [cls.GLOBAL, cls.LOCAL, cls.PRIVATE]
 
 
 class ConfigFiles:
@@ -54,7 +52,6 @@ class ConfigFiles:
         if self.root is None:
             return None
         return {
-            Scope.LEGACY: self.root / "fugue.toml",
             Scope.LOCAL: self.root / ".fugue" / "config.toml",
             Scope.PRIVATE: self.root / ".fugue" / "config.local.toml",
         }[scope]

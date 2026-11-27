@@ -112,8 +112,6 @@ class Settings:
 
     @staticmethod
     def _check_scope(key: str, cls: type[Config], name: str, scope: Scope) -> None:
-        if scope is Scope.LEGACY:
-            raise ConfigError("fugue.toml is only read; write to --local, --private or --global")
         if scope is Scope.GLOBAL and name in cls.local_only:
             raise ConfigError(
                 f"{key} belongs to one repository, so it cannot be global. "
@@ -136,9 +134,7 @@ class Settings:
             for scope in reversed(Scope.order()):
                 if scope is Scope.GLOBAL and local_only:
                     continue
-                data = {
-                    cls.file_keys.get(k, k): v for k, v in self.files.read(scope, section).items()
-                }
+                data = self.files.read(scope, section)
                 if name in data:
                     path = self.files.path(scope)
                     raw, source = data[name], f"{scope} ({self.short(path)})"
