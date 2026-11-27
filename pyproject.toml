@@ -3,7 +3,9 @@ name = "fugue"
 version = "0.4.0"
 requires-python = ">=3.12"
 dependencies = [
+    "claude-agent-sdk>=0.2.189,<0.3",
     "githubkit>=0.17.1,<0.18",
+    "openai-codex>=0.172.0,<0.173",
     "pygit2>=1.21.0,<1.22",
     "typer>=0.29.3",
 ]
