@@ -34,6 +34,19 @@ class View:
         body: str,
         url: str,
     ) -> None:
+        """Print an issue or pull request as a panel."""
+        self.console.print(self._panel(heading, state, title, meta, labels, body, url))
+
+    def _panel(
+        self,
+        heading: str,
+        state: str,
+        title: str,
+        meta: str,
+        labels: Sequence[str],
+        body: str,
+        url: str,
+    ) -> Panel:
         """An issue or pull request as a panel."""
         style = self.STATE_STYLE.get(state, "yellow" if state == "draft" else "white")
         head = Text()
@@ -44,14 +57,12 @@ class View:
         if labels:
             parts.append(self._labels(labels))
         parts += [Text(), self._body(body)]
-        self.console.print(
-            Panel(
-                Group(*parts),
-                title=f"[bold cyan]{heading}[/]",
-                subtitle=f"[link={url}]{url}[/link]",
-                border_style=style,
-                padding=(1, 2),
-            )
+        return Panel(
+            Group(*parts),
+            title=f"[bold cyan]{heading}[/]",
+            subtitle=f"[link={url}]{url}[/link]",
+            border_style=style,
+            padding=(1, 2),
         )
 
     def _state(self, state: str) -> str:

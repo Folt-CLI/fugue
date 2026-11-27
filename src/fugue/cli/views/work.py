@@ -13,11 +13,24 @@ class WorkView(View):
     def worktree(
         self, path: str, branch: str, base: str, *, new_branch: bool, reused: bool
     ) -> None:
-        """Where the work will happen."""
+        """Print where the work will happen."""
+        first, second = self.worktree_lines(
+            path, branch, base, new_branch=new_branch, reused=reused
+        )
+        self.console.print(first)
+        self.console.print(second, soft_wrap=True)
+
+    @staticmethod
+    def worktree_lines(
+        path: str, branch: str, base: str, *, new_branch: bool, reused: bool
+    ) -> tuple[str, str]:
+        """Where the work will happen, as two lines of Rich markup."""
         how = (
             "reusing the worktree"
             if reused
             else ("new branch" if new_branch else "existing branch")
         )
-        self.console.print(f"[dim]{how}[/]  [cyan]{branch}[/] [dim]from origin/{base}[/]")
-        self.console.print(f"[dim]in[/] {path}", soft_wrap=True)
+        return (
+            f"[dim]{how}[/]  [cyan]{branch}[/] [dim]from origin/{base}[/]",
+            f"[dim]in[/] {path}",
+        )

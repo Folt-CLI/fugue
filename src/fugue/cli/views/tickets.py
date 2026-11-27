@@ -2,17 +2,23 @@
 
 from collections.abc import Sequence
 
+from rich.panel import Panel
+
 from fugue.cli.views.view import View
 from fugue.models import Ticket
 
 
 class TicketView(View):
     def show(self, ticket: Ticket, repository: str) -> None:
+        """Print an issue as a panel."""
+        self.console.print(self.panel(ticket, repository))
+
+    def panel(self, ticket: Ticket, repository: str) -> Panel:
         """An issue as a panel: state, title, who and when, labels, then the body."""
         meta = f"by {ticket.author or 'unknown'} · updated {self._ago(ticket.updated_at)}"
         if ticket.comments:
             meta += f" · {ticket.comments} comment{'s' if ticket.comments != 1 else ''}"
-        self._item(
+        return self._panel(
             f"{repository}#{ticket.number}",
             ticket.state,
             ticket.title,

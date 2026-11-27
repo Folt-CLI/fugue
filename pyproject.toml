@@ -12,6 +12,7 @@ dependencies = [
     "pydantic-settings>=2.16.3,<3",
     "pygit2>=1.21.0,<1.22",
     "rich>=15.0.0,<16",
+    "textual>=8.2.8,<9",
     "typer>=0.29.3",
 ]
 
