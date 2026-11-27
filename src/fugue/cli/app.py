@@ -1,10 +1,11 @@
-"""Command line entry point."""
+"""The Typer application and its command registry."""
 
 from typing import Annotated
 
 import typer
 
 from fugue import __version__
+from fugue.cli.commands import work
 
 app = typer.Typer(
     help="Take GitHub tickets to reviewed pull requests.",
@@ -29,5 +30,4 @@ def root(
     """Fugue."""
 
 
-def main() -> None:
-    app()
+app.command()(work.work)
