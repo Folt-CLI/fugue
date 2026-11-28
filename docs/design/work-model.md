@@ -112,18 +112,19 @@ Rules:
 - **Agreed.** The ticket carries no file paths, symbols or line numbers. A fact about the code goes in the file, with `path:line`, marked verified or unverified. A Question has no file of its own, so its facts stay in its analysis for the children to read.
 - **Agreed.** There is no list of allowed files. The developer: "Anthropic's Allowed files, i rly dont like that, that is extra tokens for no reason. What if the implementation needs extra things the analysis didn't account for, then the run is blocked. Screw that." The plan says where the change is expected, and says so in the template: it is not a limit.
 
-## The size of the plan
+## What the plan carries
 
-**Open.** The developer objected to putting too much in the analysis: "if we say what to change, where to change, what to verify, how to verify, that's A LOT OF TOKENS for nothing, defeats the WHOLE PURPOSE." The M-level document is therefore logic and not a file plan. The unit-level plan is the one that says which files and how, and the developer wants it "more concise" and "doesn't explore". The current plan template still has a Verification table and a Do not change section, which may be more than is wanted. See [open points](status-and-open-points.md#open-points).
+**Agreed.** The unit's file is `plan.md`, and it carries what to change and where. The developer first objected to putting this in the analysis: "if we say what to change, where to change, what to verify, how to verify, that's A LOT OF TOKENS for nothing". They then changed their mind: "We have plan.md which will carry what to change and where". So the split is:
+
+- **The logic** (the M's file) says what the feature or fix does, as flows, rules and cases. It names no files.
+- **The plan** (the unit's file) says where the change is expected and how, and it is the plan agent's job. It stays concise, and it reads the logic and does not explore.
 
 ## Grouping
 
-**Agreed, mechanism open.** The developer's words: "Unblocked XS/S tickets run through the same Analysis agent since it relies on the M ticket."
+**Agreed: not part of `work`.** The developer first said "Unblocked XS/S tickets run through the same Analysis agent since it relies on the M ticket". They then decided it is not for now: it will be a different command, and `fugue work` targets one ticket only.
 
-- All the unblocked S and XS tickets of one M are planned by the same plan-agent run, because they all rely on the same M logic. The agent reads that logic once and plans each unit in turn.
-- A unit that is blocked by another waits, because its plan can depend on code that the blocker adds. It is planned when it is unblocked.
-- **Open.** Where this run happens. `fugue work` is a single-ticket command, so it cannot be the place that plans siblings. Candidates: the end of `fugue work M`, right after it creates the units; or the first `fugue work` on a unit that finds no plan, which then plans its unblocked siblings too. Whichever it is, the plans are kept with the run and `fugue work <unit>` uses the plan that exists, or plans when there is none.
-- Grouping is a cost decision: one cold start for the whole group, not one per unit.
+- Grouping means planning all the unblocked units of one M in a single plan-agent run, so the logic is read once. A unit that is blocked by another would wait, because its plan can depend on code the blocker adds.
+- Until that command exists, each unit is planned by its own `fugue work`.
 
 ## Statuses
 

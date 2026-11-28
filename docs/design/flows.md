@@ -82,7 +82,7 @@ flowchart TD
 7. The developer confirms. Create the units with the M as native parent, blocked-by links, and `Agreed in #<M>: C..`.
 8. Create the M's branch. See [Branches, commits and pull requests](branches-and-commits.md).
 
-**Open.** Whether the preview approval is a permission, so that `--auto` approves it. The pick is a decision and is never automatic. **Open.** Whether the units are planned at this point, as a group. See [Grouping](work-model.md#grouping).
+**Open.** Whether the preview approval is a permission, so that `--auto` approves it. The pick is a decision and is never automatic.
 
 ## The S flow and the XS flow: a unit
 

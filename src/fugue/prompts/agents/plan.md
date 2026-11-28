@@ -31,4 +31,4 @@ Say what you found and stop. Do not write a plan over a missing decision, becaus
 
 ## Return
 
-Return the plan in the solution template, or the promotion with its evidence. The plan goes to the implementation agent and is not published to the ticket.
+Return the plan in the plan template, or the promotion with its evidence. The plan goes to the implementation agent and is not published to the ticket.

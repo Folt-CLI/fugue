@@ -109,12 +109,11 @@ The developer's definition: "a RESPONSE and an ARTIFACT. Response: directly for 
 ### Artifacts
 
 - `artifacts/logic.md`: the specifics of an M's logic. Builds on (optional), Flow (Mermaid), States (optional), Rules (a table), Edge and failure cases (a table), Constraints with ids, Context (optional).
-- `artifacts/solution.md`: the unit's plan. Context (optional), Changes (where it is expected, not a limit), Scenarios (optional, what the ticket does not state), Do not change (optional), Verification (command, expected output, what it proves).
+- `artifacts/plan.md`: the unit's plan. Context (optional), Changes (where it is expected, not a limit), Scenarios (optional, what the ticket does not state), Do not change (optional), Verification (command, expected output, what it proves).
 
-**Open.** The two artifact templates need to be reconciled with the developer's sketch of what the logic is. See [open points](status-and-open-points.md#open-points).
 
 ## Research behind the templates
 
-The structure of the solution, analysis response and Question response was checked against published formats. What informed the choices: OpenAI's execution-plan format (self-contained, observable acceptance, explicit repository context), GitHub Spec Kit and Kiro specs (scenarios with ids that trace to checks), GitHub's study of agent files (commands first, examples over explanations, three-tier boundaries), Anthropic's multi-agent write-up (a brief needs an objective, an output format, tool guidance and boundaries), MADR and Y-statements (a decision stated in one sentence, drivers, consequences), and Google-style design documents (real alternatives, including doing nothing).
+The structure of the plan, the logic response and the Question response was checked against published formats. What informed the choices: OpenAI's execution-plan format (self-contained, observable acceptance, explicit repository context), GitHub Spec Kit and Kiro specs (scenarios with ids that trace to checks), GitHub's study of agent files (commands first, examples over explanations, three-tier boundaries), Anthropic's multi-agent write-up (a brief needs an objective, an output format, tool guidance and boundaries), MADR and Y-statements (a decision stated in one sentence, drivers, consequences), and Google-style design documents (real alternatives, including doing nothing).
 
 The developer rejected one element: the list of allowed files. And added one rule that governs all of it: the ticket and the file must not duplicate each other.

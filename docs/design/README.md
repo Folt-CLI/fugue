@@ -38,7 +38,7 @@ From the repository root, `uv tool install --editable .` puts `fugue` on the pat
 ## Index
 
 1. [Principles and architecture](principles.md): the goal, the rules the developer set, the libraries and why.
-2. [The work model](work-model.md): the hierarchy, types, sizes, pipelines, promotion, grouping, how information passes down.
+2. [The work model](work-model.md): the hierarchy, types, sizes, pipelines, promotion, what the plan carries, how information passes down.
 3. [Agents](agents.md): the five roles, their prompts, the tools they use to ask the developer, the outputs they must write and the templates they follow.
 4. [Flows](flows.md): what `fugue work` does for an L, an M, an S and an XS, step by step.
 5. [Branches, commits and pull requests](branches-and-commits.md): one branch per M, units as commits.

@@ -38,8 +38,9 @@ In the order the developer's decisions suggest building them.
 7. **The M flow.** Gather constraints and earlier logic, versions, the pick, the full logic, the preview, creating units.
 8. **The L flow.** Interview, decisions, the preview, confirming and creating M tickets.
 9. **GitHub additions.** Create with a type and milestone, parent and blocked-by links, search, apply an analysis to a ticket, attach a file, draft pull requests.
-10. **Grouping.** Plan the unblocked units of an M in one plan-agent run.
-11. **Run records read back.** List runs with their state, resume from the step where a run stopped.
+10. **Run records read back.** List runs with their state, resume from the step where a run stopped.
+
+Later, and not part of `fugue work`: a separate command that plans the unblocked units of an M in one run.
 
 ## The decision log
 
@@ -108,8 +109,8 @@ Everything the developer decided, in order. A quotation is the developer's own w
 47. Agents get tools to ask the developer. The analysis for an L is more interactive.
 48. Read the docs of the old Fugue and of `~/Coding/foltivo/folt`, "which holds the most up to date way of working for me".
 49. Scoping is removed. S goes analysis, implementation.
-50. No duplicated information between the ticket and the solution. No allowed-files list.
-51. The solution should not hold what to change, where, what to verify and how: "A LOT OF TOKENS for nothing". The analysis gives the **logic**: a context, scenarios, examples. The developer's example was a messaging app that has no friends list. **See open points.**
+50. No duplicated information between the ticket and the unit's file. No allowed-files list.
+51. The developer first said the solution should not hold what to change, where, what to verify and how: "A LOT OF TOKENS for nothing". **Superseded.** The developer changed their mind: "We have plan.md which will carry what to change and where". The unit's file is `plan.md` and the M's file is the logic.
 52. Three tiers and three analysis agents: L interview (exploratory), M logic (details the logic of a feature or bug fix), S and XS units of work (details about implementation).
 53. S: analysis, implementation, review. XS: analysis, implementation.
 54. `fugue work` is a single ticket. `fugue work M` creates the S and XS tickets, and the work is done with `fugue work S` or `XS`.
@@ -121,11 +122,11 @@ Everything the developer decided, in order. A quotation is the developer's own w
 60. Types by tier: Epic is XL, Question and Incident are L, Feature, Bug and Maintenance are M, Task, Test and Documentation are S and XS. An Incident's M tickets are Bugs. A Bug explains the logic gap and gives example fixes.
 61. Branching: an M creates `feature/5-...`, `bug/5-...` or `maintenance/5-...`. S and XS are commits on that branch, and a Task carries the M's tag.
 62. Non-blocking findings are not handled in the M. They are filed in the backlog and moved under a relevant M when one is created. Logic gaps get their own M-sized Bug ticket.
-63. Unblocked XS and S tickets run through the same analysis agent, because it relies on the M ticket. Written up as grouping.
+63. Unblocked XS and S tickets run through the same analysis agent, because it relies on the M ticket. **Superseded.** The developer decided grouping is not for now: it will be a different command, and `work` only targets one ticket.
 
 ### Unaddressed until this write-up
 
-Two messages arrived while other work was running and were not answered at the time. They are included above: the concern about the size of the solution (item 51), and the grouping note (item 63). The write-up was assembled by reading every user message in the transcript.
+Two messages arrived while other work was running and were not answered at the time. They are included above (items 51 and 63), and the developer has since answered both: the plan carries what to change and where, and grouping is a different, later command. The write-up was assembled by reading every user message in the transcript.
 
 ## Open points
 
@@ -133,33 +134,30 @@ Each is a question that is still to be settled, or a disagreement between the co
 
 ### Disagreements between the code and the decisions
 
-1. **The logic template does not match the sketch.** The developer's sketch of the logic is Context, Scenarios and Examples. The template has flows, states, rules, edge cases and constraints. The diagrams, tables and constraint ids were agreed, but Context, Scenarios and Examples as sections were not added.
-2. **The unit plan may be too heavy.** Its template has Changes, Scenarios, Do not change and a Verification table. The developer objected to spending tokens on what to change, where, what to verify and how. The plan should be "more concise". Whether the Verification table and Do not change stay is not decided.
-3. **The routing is the older one.** It routes by the old types and sizes, refuses Bug, and treats M as an implementation ticket.
-4. **The worktree is per ticket.** It is to be per M.
-5. **The status moves to S4 for every ticket,** right after reading it.
+1. **Confirm the logic template.** The developer's early sketch of the logic was Context, Scenarios and Examples, and later said flows and diagrams are key. The template has flows, states, rules, edge cases and constraints, and no Context, Scenarios or Examples sections. The sketch was set aside when the plan took over what to change and where.
+2. **The routing is the older one.** It routes by the old types and sizes, refuses Bug, and treats M as an implementation ticket.
+3. **The worktree is per ticket.** It is to be per M.
+4. **The status moves to S4 for every ticket,** right after reading it.
 
 ### Decisions still to make
 
-6. **Does an M still promote to an L?** It was agreed in the first design. The new model makes M a logic ticket.
-7. **Is the preview approval a permission,** so `--auto` approves it? Is the confirmation of a list of tickets to create a permission?
-8. **Statuses per tier and step.** And when a unit's ticket, an M and an L are closed, and with what Disposition. The old process said a parent cannot close until all its children are closed.
-9. **Where grouping runs.** At the end of `fugue work M`, or at the first `fugue work` of a unit with no plan.
-10. **How a plan is kept** between the grouped run and the unit's own run.
-11. **When the M's branch is pushed,** and when its pull request is marked ready. Who merges stays the developer.
-12. **Where the lock of an M lives,** and what happens to a stale one.
-13. **The repair limit of the gate,** and whether reaching it re-sizes an S to an M, as the old process said.
-14. **The interview's turn limit.** The old Fugue used 10.
-15. **Grouping of nits.** One XS per review round per file type was proposed and neither confirmed nor rejected.
-16. **How the unit's number goes in a commit** when the unit's ticket is promoted or split mid-run.
-17. **How an attachment is uploaded** without `gh`: the logic file on an M, and the conversation record on an L.
-18. **What Components change.**
-19. **Whether to warn when a worktree outside the configured root is reused.** It was offered and not answered.
-20. **Drift from the base,** and a sync step.
-21. **A force-finish command** for a run. It was said to be for later.
-22. **How a model is chosen per role,** and whether the tier is per ticket.
-23. **A Codex bridge for the question tools,** or Claude only for the roles that ask.
-24. **Triage:** a `fugue triage` that attaches backlog tickets to an M. Not planned.
+5. **Does an M still promote to an L?** It was agreed in the first design. The new model makes M a logic ticket.
+6. **Is the preview approval a permission,** so `--auto` approves it? Is the confirmation of a list of tickets to create a permission?
+7. **Statuses per tier and step.** And when a unit's ticket, an M and an L are closed, and with what Disposition. The old process said a parent cannot close until all its children are closed.
+8. **When the M's branch is pushed,** and when its pull request is marked ready. Who merges stays the developer.
+9. **Where the lock of an M lives,** and what happens to a stale one.
+10. **The repair limit of the gate,** and whether reaching it re-sizes an S to an M, as the old process said.
+11. **The interview's turn limit.** The old Fugue used 10.
+12. **How nit fixes are batched.** One XS per review round per file type was proposed and neither confirmed nor rejected.
+13. **How the unit's number goes in a commit** when the unit's ticket is promoted or split mid-run.
+14. **How an attachment is uploaded** without `gh`: the logic file on an M, and the conversation record on an L.
+15. **What Components change.**
+16. **Whether to warn when a worktree outside the configured root is reused.** It was offered and not answered.
+17. **Drift from the base,** and a sync step.
+18. **A force-finish command** for a run. It was said to be for later.
+19. **How a model is chosen per role,** and whether the tier is per ticket.
+20. **A Codex bridge for the question tools,** or Claude only for the roles that ask.
+21. **Triage:** a `fugue triage` that attaches backlog tickets to an M. Not planned.
 
 ### Facts not yet verified
 

@@ -7,9 +7,9 @@ They are plain Markdown in `fugue/prompts`:
 - `responses/ticket-format/<type>.md`: how a ticket is created, one template per issue type.
 - `responses/logic.md` and `responses/question.md`: the sections the logic agent and the
   interview add to a ticket for the person who decides. The ticket is the overview; the
-  specifics go in the logic file and the solution.
+  specifics go in the logic file and the plan.
 - `artifacts/<name>.md`: a file an agent writes for another agent: the logic of an M ticket
-  and the solution (the plan) of a unit.
+  and the plan of a unit.
 
 An agent's instructions are, in this order: the general rules of writing and communicating
 (`system.md`, the same for every agent), the built-in prompt for its role, and the person's own
@@ -134,7 +134,7 @@ class Prompts:
     prompts = Prompts()
     system = prompts.agent(Role.LOGIC)
     body = prompts.response("Feature")
-    solution = prompts.artifact("solution")
+    plan = prompts.artifact("plan")
     """
 
     def __init__(
@@ -186,7 +186,7 @@ class Prompts:
         )
 
     def artifact(self, name: str) -> Template:
-        """An artifact template, such as `solution`."""
+        """An artifact template: `logic` for an M ticket, `plan` for a unit."""
         path = ROOT / "artifacts" / f"{name}.md"
         if not path.is_file():
             raise ConfigError(f"there is no artifact template {name!r}")
