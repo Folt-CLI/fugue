@@ -11,6 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from fugue.cli.tui.action import ActionWindow
+from fugue.cli.tui.error_screen import ErrorScreen
 from fugue.cli.tui.form_screen import FormScreen
 from fugue.cli.tui.reporter import TuiReporter
 from fugue.cli.tui.status import StatusBar
@@ -193,7 +194,10 @@ class WorkApp(App[None]):
 
     async def _fail(self, error: FugueError) -> None:
         self.error = error
+        self.state = RunState.STOPPED
+        self.query_one(StatusBar).failed(str(error))
         await self._write(StderrWindow, str(error))
+        self.push_screen(ErrorScreen(str(error)))
 
     async def show(self, event: Event) -> None:
         """Show one event from the flow in the window it belongs to."""

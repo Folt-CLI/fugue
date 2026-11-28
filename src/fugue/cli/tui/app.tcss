@@ -301,3 +301,17 @@ AiWindow > Horizontal {
 .agent-line {
     height: auto;
 }
+
+ErrorScreen {
+    align: center middle;
+    background: $background 70%;
+}
+
+#error-window {
+    width: 70%;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    border: round $error;
+    background: $surface;
+}

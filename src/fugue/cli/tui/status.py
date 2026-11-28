@@ -30,5 +30,10 @@ class StatusBar(Static):
             )
         self.update(line)
 
+    def failed(self, message: str) -> None:
+        """The run ended with an error. It cannot be continued from the screen."""
+        first = message.splitlines()[0] if message else ""
+        self.update(Text.assemble(("✗ ", "bold red"), ("Failed", "bold"), (f" · {first}", "dim")))
+
     def finished(self) -> None:
         self.update(Text.assemble(("✓ ", "bold green"), ("Finished", "bold")))
