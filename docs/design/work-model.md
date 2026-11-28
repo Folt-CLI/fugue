@@ -132,9 +132,11 @@ The agreed status values are `S0: To Do`, `S1: In Analysis`, `S2: Ready for Impl
 
 - **Open.** The project on GitHub still has the old values (`S3: Ready For Implementation`, `S4: In Implementation`), so it has to be renamed before a run can move a ticket. The project workflows set Done on close and on merge.
 
-- **Built.** The unit flow moves the unit to `S3: In Implementation` once its worktree is ready. The value is a setting (`work.started_status`), and so is the project field's name (`work.status_field`).
-- **Agreed.** A unit is S3 while it works, S4 while it is reviewed, S5 when merged. An L and an M are S1 while the interview or the logic runs and S2 once the M list or the units exist. An M is S3 on its first unit, S4 when its pull request is ready, S5 when merged.
-- **Open.** Moving the other statuses is built with the flows that need them.
+- **Agreed.** Analysis is the work before implementation, and its kind depends on the tier: the interview for an L, the logic for an M, the plan for a unit. So S1 In Analysis means "the interview, the logic or the plan is being done", and S2 Ready for Implementation means it is done.
+- **Built.** A unit moves S1 while it is planned, S2 once its plan is written, S3 while it is implemented, S4 while it is reviewed (S only), and S5 when it is merged (the project's workflows set that). The checkpoint before each step makes S2 a real stop: the run waits there for a yes, so the plan can be read first. The values are settings (`work.analysis_status`, `work.ready_status`, `work.started_status`, `work.review_status`), and so is the field's name (`work.status_field`).
+- **Built.** `fugue work` starts only on a ticket that is `S0: To Do` (`work.todo_status`). Anything else is refused.
+- **Open.** A better flow based on the status, such as continuing a ticket that is S2, is for later.
+- **Agreed.** An L and an M are S1 while the interview or the logic runs and S2 once the M list or the units exist. An M is S3 on its first unit, S4 when its pull request is ready, S5 when merged. Not built.
 
 ## Parents and the backlog
 

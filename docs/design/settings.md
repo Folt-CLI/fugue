@@ -41,7 +41,11 @@ The old `fugue.toml` is no longer read. The developer: "REMOVE THIS NO NEED TO B
 | `github.token` | `GITHUB_TOKEN` | required | Environment only. Needs the `project` scope for project fields. |
 | `github.api_url` | `GITHUB_API_URL` | `https://api.github.com` | Another API address, such as the local stub. |
 | `github.project` | `GITHUB_PROJECT` | none | The project number for ticket fields and status. Local-only. Also `fugue work --project`. |
-| `work.started_status` | `FUGUE_WORK_STARTED_STATUS` | `S3: In Implementation` | The status a ticket moves to when work starts. |
+| `work.todo_status` | `FUGUE_WORK_TODO_STATUS` | `S0: To Do` | The only status a ticket may have when work starts on it. |
+| `work.analysis_status` | `FUGUE_WORK_ANALYSIS_STATUS` | `S1: In Analysis` | The status while the plan is made. |
+| `work.ready_status` | `FUGUE_WORK_READY_STATUS` | `S2: Ready for Implementation` | The status once the plan is written. |
+| `work.started_status` | `FUGUE_WORK_STARTED_STATUS` | `S3: In Implementation` | The status while the unit is implemented. |
+| `work.review_status` | `FUGUE_WORK_REVIEW_STATUS` | `S4: In Review` | The status while the unit is reviewed. |
 | `work.status_field` | `FUGUE_WORK_STATUS_FIELD` | `Status` | The project field that holds the status. |
 | `work.worktree_root` | `FUGUE_WORK_WORKTREE_ROOT` | `.worktrees` in the repository | One folder per branch under it. |
 | `work.base_branch` | `FUGUE_WORK_BASE_BRANCH` | the repository's default | Local-only. |

@@ -28,7 +28,11 @@ class WorkConfig(FlowConfig):
     section = "work"
     local_only = frozenset({"base_branch"})
 
+    todo_status: str = "S0: To Do"
+    analysis_status: str = "S1: In Analysis"
+    ready_status: str = "S2: Ready for Implementation"
     started_status: str = "S3: In Implementation"
+    review_status: str = "S4: In Review"
     status_field: str = "Status"
     worktree_root: Path | None = None
     base_branch: str | None = None

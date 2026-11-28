@@ -19,13 +19,12 @@ A ticket with no type, or a type with no flow, is refused with a message that sa
 
 The unit flow has these steps:
 
-1. Read the ticket, and the project's fields for it. A closed ticket is refused. Its Size must be XS or S (it is asked when missing).
+1. Read the ticket, and the project's fields for it. A closed ticket is refused, and so is one whose status is not `S0: To Do`. Its Size must be XS or S (it is asked when missing).
 2. Check the parent. A unit must have a parent that is a Feature, Bug or Maintenance, and it must be open. When the M says `Builds on #N` and #N is still open, the run is refused until #N is closed, because the M's code would be missing from the base branch.
 3. Lock the branch. The lock is a file in Git's own folder, so it never shows as a change. A branch worked by a live run is refused. A lock left by a run that is gone is taken over only when the developer says yes.
 4. Prepare the branch and the worktree, for the M: `<type>/<M>-<slug>`. Fugue fetches the branch from origin. When it exists there and the worktree exists, the worktree is reset to it. When the worktree is missing it is created from it. When the branch is not on origin it is created from the base branch. A worktree with uncommitted changes, or a branch with commits origin does not have, is refused, so nothing local is lost.
-5. Move the project status to `work.started_status` (by default `S3: In Implementation`).
-6. The stages: XS plans, implements and runs the gate. S plans, implements, runs the gate and is reviewed. The plan, implementation and review say "no agent set" and go on. The gate runs the configured checks.
-7. Finish, and let go of the lock.
+5. The stages. XS goes through: start the analysis (S1), plan, mark ready (S2), start the implementation (S3), implement, gate. S adds start the review (S4) and review. The plan, implementation and review say "no agent set" and go on. The gate runs the configured checks. Because the run asks before each step, it can be stopped at S2 to read the plan.
+6. Finish, and let go of the lock.
 
 **Agreed.** The L and M flows below, and the agents of the unit flow.
 

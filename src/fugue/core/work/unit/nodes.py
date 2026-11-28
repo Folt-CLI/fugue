@@ -66,10 +66,22 @@ class ReadTicketNode(UnitStep):
             raise FlowError(
                 f"#{state.number} is a {state.ticket.issue_type}, not a Task, Test or Documentation"
             )
+        self._check_status(state, deps)
         state.size = await self._size(state, deps)
         state.pipeline = PIPELINES[state.size]
         await deps.reporter.report(OutlineChanged(steps=outline(deps.config, state.pipeline)))
         return f"#{state.ticket.number} {state.ticket.title}"
+
+    @staticmethod
+    def _check_status(state: UnitState, deps: Deps) -> None:
+        """Work only starts on a ticket that is still to do. A ticket the project does not know
+        has no status to check; moving the status will say so."""
+        status = state.details.get("Status")
+        if status and status != deps.config.todo_status:
+            raise FlowError(
+                f"#{state.number} is {status}: only a ticket that is {deps.config.todo_status} "
+                f"can be started"
+            )
 
     @staticmethod
     async def _size(state: UnitState, deps: Deps) -> Size:
@@ -140,18 +152,19 @@ class PrepareBranchNode(UnitStep):
         )
         return state.worktree.branch
 
-    async def run(self, ctx: Context) -> MoveStatusNode:
+    async def run(self, ctx: Context) -> Next:
         await self.execute(ctx)
-        return MoveStatusNode()
+        return self.after(ctx.state)  # the first stage of the pipeline
 
 
-@dataclass
-class MoveStatusNode(UnitStep):
-    name = "Move the status"
+class StatusStage(UnitStep):
+    """A stage that moves the unit to a status of the project, named by a setting."""
+
+    setting: ClassVar[str] = ""
 
     async def act(self, state: UnitState, deps: Deps) -> str:
         change = await MoveStatus(deps.github, deps.reporter).perform(
-            state.number, field=deps.config.status_field, to=deps.config.started_status
+            state.number, field=deps.config.status_field, to=getattr(deps.config, self.setting)
         )
         if change is None:
             return "skipped"
@@ -160,7 +173,35 @@ class MoveStatusNode(UnitStep):
 
     async def run(self, ctx: Context) -> Next:
         await self.execute(ctx)
-        return self.after(ctx.state)  # the first stage of the pipeline
+        return self.after(ctx.state)
+
+
+@dataclass
+class StartAnalysisNode(StatusStage):
+    name = "Start the analysis"
+    stage = "start_analysis"
+    setting = "analysis_status"
+
+
+@dataclass
+class MarkReadyNode(StatusStage):
+    name = "Mark ready for implementation"
+    stage = "ready"
+    setting = "ready_status"
+
+
+@dataclass
+class StartImplementationNode(StatusStage):
+    name = "Start the implementation"
+    stage = "start_implementation"
+    setting = "started_status"
+
+
+@dataclass
+class StartReviewNode(StatusStage):
+    name = "Start the review"
+    stage = "start_review"
+    setting = "review_status"
 
 
 class AgentStage(UnitStep):
@@ -254,28 +295,45 @@ class Finish(BaseNode[UnitState, Deps, WorkResult]):
         )
 
 
-Next = PlanNode | ImplementNode | GateNode | ReviewNode | Finish
+Next = (
+    StartAnalysisNode
+    | PlanNode
+    | MarkReadyNode
+    | StartImplementationNode
+    | ImplementNode
+    | GateNode
+    | StartReviewNode
+    | ReviewNode
+    | Finish
+)
 
 STAGES: dict[str, type[UnitStep]] = {
+    "start_analysis": StartAnalysisNode,
     "plan": PlanNode,
+    "ready": MarkReadyNode,
+    "start_implementation": StartImplementationNode,
+    "start_review": StartReviewNode,
     "implement": ImplementNode,
     "gate": GateNode,
     "review": ReviewNode,
 }
 
+_BUILD = ("start_analysis", "plan", "ready", "start_implementation", "implement", "gate")
+
 PIPELINES: dict[Size, tuple[str, ...]] = {
-    Size.XS: ("plan", "implement", "gate"),
-    Size.S: ("plan", "implement", "gate", "review"),
+    Size.XS: _BUILD,
+    Size.S: (*_BUILD, "start_review", "review"),
 }
 """What a unit goes through once its worktree is ready, by Size. Both are planned, because the
-plan is where the unit learns what to change and where; only S is reviewed."""
+plan is where the unit learns what to change and where; only S is reviewed. The status stages
+move the unit through S1 (planned), S2 (plan written: the run stops before the next step, as it
+does before every step), S3 (implemented) and S4 (reviewed)."""
 
 PREFIX: tuple[type[UnitStep], ...] = (
     ReadTicketNode,
     ReadParentNode,
     LockBranchNode,
     PrepareBranchNode,
-    MoveStatusNode,
 )
 """The steps every unit starts with."""
 
@@ -294,11 +352,15 @@ __all__: list[Any] = [
     "GateNode",
     "ImplementNode",
     "LockBranchNode",
-    "MoveStatusNode",
+    "MarkReadyNode",
     "PlanNode",
     "PrepareBranchNode",
     "ReadParentNode",
     "ReadTicketNode",
     "ReviewNode",
+    "StartAnalysisNode",
+    "StartImplementationNode",
+    "StartReviewNode",
+    "StatusStage",
     "UnitStep",
 ]
