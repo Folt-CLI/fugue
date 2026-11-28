@@ -289,6 +289,16 @@ class Projects(Area):
             return ", ".join(cls._text(item) for item in value)
         return str(value)
 
+    @classmethod
+    def _field_text(cls, field: Any) -> str:
+        """A field's value as text. A parent issue also shows its number."""
+        value = cls._read(field, "value")
+        if cls._read(field, "data_type") == "parent_issue" and isinstance(value, dict):
+            number = value.get("number")
+            if number is not None:
+                return f"#{number} {cls._text(value.get('title'))}".strip()
+        return cls._text(value)
+
     def _to_project(self, project: Any) -> Project:
         return Project(
             number=project["number"],
@@ -328,7 +338,7 @@ class Projects(Area):
         if kind == "pull_request" and self._read(content, "merged_at"):
             state = "merged"
         values = {
-            self._read(field, "name"): self._text(self._read(field, "value"))
+            self._read(field, "name"): self._field_text(field)
             for field in (self._read(item, "fields") or [])
         }
         return ProjectItem(
