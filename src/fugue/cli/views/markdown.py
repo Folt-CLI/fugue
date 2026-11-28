@@ -53,6 +53,10 @@ class Diagram:
             self._drawn[key] = self._fit(width)
         return self._drawn[key]
 
+    def _closed(self, art: str) -> str:
+        """A sequence diagram gets its participants at the bottom too."""
+        return Closing.sequence(art) if self._source.lstrip().startswith("sequenceDiagram") else art
+
     def _fit(self, width: int) -> Drawing:
         problem = type_problem(self._source)
         if problem is not None:
@@ -65,8 +69,25 @@ class Diagram:
             except Exception as error:  # a diagram termaid cannot read is shown as its source
                 return Drawing(None, f"The terminal cannot draw this diagram ({error}).")
             if art and max(len(line) for line in art.splitlines()) <= width:
-                return Drawing(art)
+                return Drawing(self._closed(art))
         return Drawing(None, "This diagram is wider than the window.")  # squeezing garbles it
+
+
+class Closing:
+    """Draws the participants of a sequence diagram again under its last message.
+
+    `termaid` draws the participants once, at the top, and lets the lifelines run out below the last
+    message, which looks cut off. Mermaid on GitHub draws them at the bottom as well, so a copy of
+    the top row is added to match.
+    """
+
+    LIFELINE: ClassVar[str] = "┆"
+
+    @classmethod
+    def sequence(cls, art: str) -> str:
+        lines = art.splitlines()
+        first = next((n for n, line in enumerate(lines) if cls.LIFELINE in line), 0)
+        return "\n".join([*lines, *lines[:first]]) if first else art
 
 
 class MarkdownBody:
