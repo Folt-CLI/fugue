@@ -7,13 +7,22 @@ draws those itself, from the same text. A terminal cannot, so they are drawn her
 
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import ClassVar
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
-from termaid import render
+from termaid import render, type_problem
+
+
+@dataclass(frozen=True)
+class Drawing:
+    """A diagram drawn as text, or the reason it is not."""
+
+    art: str | None
+    note: str = ""
 
 
 class Diagram:
@@ -33,28 +42,31 @@ class Diagram:
     )
     """The gap, the horizontal padding and the widest label to try, in this order."""
 
-    _drawn: ClassVar[dict[tuple[str, int], str | None]] = {}
+    _drawn: ClassVar[dict[tuple[str, int], Drawing]] = {}
 
     def __init__(self, source: str) -> None:
         self._source = source
 
-    def draw(self, width: int) -> str | None:
+    def draw(self, width: int) -> Drawing:
         key = (self._source, width)
         if key not in self._drawn:
             self._drawn[key] = self._fit(width)
         return self._drawn[key]
 
-    def _fit(self, width: int) -> str | None:
+    def _fit(self, width: int) -> Drawing:
+        problem = type_problem(self._source)
+        if problem is not None:
+            return Drawing(None, f"The terminal cannot draw this diagram ({problem.rstrip('.')}).")
         for gap, padding, label in self.ATTEMPTS:
             try:
                 art = render(
                     self._source, gap=gap, padding_x=padding, padding_y=0, max_label_width=label
                 ).rstrip("\n")
-            except Exception:  # a diagram termaid cannot read is shown as its source
-                return None
+            except Exception as error:  # a diagram termaid cannot read is shown as its source
+                return Drawing(None, f"The terminal cannot draw this diagram ({error}).")
             if art and max(len(line) for line in art.splitlines()) <= width:
-                return art
-        return None  # squeezing further only garbles the lines
+                return Drawing(art)
+        return Drawing(None, "This diagram is wider than the window.")  # squeezing garbles it
 
 
 class MarkdownBody:
@@ -68,9 +80,8 @@ class MarkdownBody:
         r"^```mermaid[ \t]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL
     )
 
-    TOO_WIDE: ClassVar[str] = (
-        "This diagram is wider than the window or could not be drawn: it is shown as its source. "
-        "Hide the checklist with c, or read it on GitHub."
+    SOURCE_NOTE: ClassVar[str] = (
+        " It is shown as its source. Hide the checklist with c, or read it on GitHub."
     )
 
     def __init__(self, text: str) -> None:
@@ -82,12 +93,12 @@ class MarkdownBody:
                 if part.strip():
                     yield Markdown(part)
                 continue
-            art = Diagram(part).draw(options.max_width)
-            if art is None:
+            drawing = Diagram(part).draw(options.max_width)
+            if drawing.art is None:
                 yield Syntax(part, "text", theme="ansi_dark", word_wrap=True)
-                yield Text(self.TOO_WIDE, style="dim")
+                yield Text(drawing.note + self.SOURCE_NOTE, style="dim")
             else:
-                yield Text(art, no_wrap=True, overflow="ignore")
+                yield Text(drawing.art, no_wrap=True, overflow="ignore")
 
     def _parts(self) -> Iterator[tuple[str, str]]:
         """The text in order, as prose and Mermaid sources."""
