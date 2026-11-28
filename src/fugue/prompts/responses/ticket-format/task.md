@@ -1,15 +1,10 @@
-<!-- Ticket body for a Task, as it is created. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels and tables. Use no emojis. Analysis, Solution and Details stay as they are until an analysis fills them (see the analysis response); leave their text untouched. -->
+<!-- Ticket body for a Task, as it is created. A Task is a unit of work with an M ticket above it. It carries no analysis of its own: the logic is on the M ticket and the plan goes to the implementation agent. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels and tables. Use no emojis. -->
 
 ## Summary
 
 **The work.** <The bounded piece of work, in one or two sentences.>
 
 **The result.** <What is true when it is done.>
-
-**Who benefits**
-
-- **How:** <The benefit.>
-- **Why:** <The reason it matters.>
 
 ## Scope
 
@@ -21,27 +16,27 @@
 
 **Out of scope**
 
-- <Excluded work, including adjacent work that is left alone.>
+- <Excluded work.>
 
 **Scenarios**
 
 1. <Something a person can observe when the work is done.>
 2. <Something a person can observe when the work is done.>
 
-**Agreed in #<N>**
+**Agreed in #<M>**
 
-<!-- Only when a parent Question decided something the work must respect: one line per decision, quoting its id, such as: C2. Leave this heading out otherwise. -->
+<!-- Cite the constraint ids of the M ticket that this unit carries out, and do not copy their text. -->
 
-- **C<N>.** <The decision, as a constraint.>
+- C<N>
 
 ## Analysis
 
-_Not analysed yet._
+_Not applicable._
 
 ## Solution
 
-_Not selected yet._
+_Not applicable._
 
 ## Details
 
-_Pending._
+_Not applicable._

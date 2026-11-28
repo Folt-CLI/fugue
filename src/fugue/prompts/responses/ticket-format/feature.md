@@ -1,4 +1,4 @@
-<!-- Ticket body for a Feature, as it is created. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels and tables. Use no emojis. Analysis, Solution and Details stay as they are until an analysis fills them (see the analysis response); leave their text untouched. -->
+<!-- Ticket body for a Feature, as it is created. A Feature is an M ticket: it asks for logic and creates the unit tickets that build it. Analysis, Solution and Details stay as they are until the logic agent fills them (see the logic response); leave their text untouched. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels and tables. Use no emojis. -->
 
 ## Summary
 
@@ -23,16 +23,17 @@
 
 - <Excluded work, including adjacent work that is left alone.>
 
-**Scenarios**
+**Builds on**
 
-1. <Something a person can observe when the work is done.>
-2. <Something a person can observe when the work is done.>
+<!-- Only when earlier logic exists for this: the ticket, and the constraint ids that still hold. Leave this heading out otherwise. -->
 
-**Agreed in #<N>**
+- #<N>: <what it reuses.>
 
-<!-- Only when a parent Question decided something the work must respect: one line per decision, quoting its id, such as: C2. Leave this heading out otherwise. -->
+**Agreed in #<L>**
 
-- **C<N>.** <The decision, as a constraint.>
+<!-- Only when a Question above decided something the work must respect: cite the constraint ids and do not copy their text. Leave this heading out otherwise. -->
+
+- C<N>
 
 ## Analysis
 

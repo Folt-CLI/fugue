@@ -114,15 +114,16 @@ class AgentsConfig(Config):
     """Extra guidance for each kind of agent: the path of a Markdown file, added after Fugue's own
     prompt for that agent and never replacing it. A relative path is from the repository root.
 
-    FUGUE_AGENTS_ANALYSIS, _INTERVIEW, _IMPLEMENTATION and _REVIEWER, or
-    `fugue config set agents.analysis /some/path/guidance.md`.
+    FUGUE_AGENTS_INTERVIEW, _LOGIC, _PLAN, _IMPLEMENTATION and _REVIEWER, or
+    `fugue config set agents.logic /some/path/guidance.md`.
     """
 
     model_config = SettingsConfigDict(env_prefix="FUGUE_AGENTS_")
 
     section = "agents"
 
-    analysis: Path | None = None
     interview: Path | None = None
+    logic: Path | None = None
+    plan: Path | None = None
     implementation: Path | None = None
     reviewer: Path | None = None

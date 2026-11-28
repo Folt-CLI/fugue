@@ -1,12 +1,14 @@
-<!-- The solution: the specific plan for the selected option, written for an agent that cannot ask questions. It adds to the ticket and never repeats it: the ticket holds the overview, so do not restate its summary, its scope or its scenarios, and refer to a ticket scenario as "ticket scenario 2". Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Name symbols, not line numbers, except for a fact you checked. Give exact text only where exactness is the decision: public signatures, error variants, vocabulary and output formats. Use no emojis. Sections marked optional may be left out when they do not apply. -->
+<!-- The plan for one unit of work, written for an agent that cannot ask questions. It adds to the ticket and to the logic and never repeats them: do not restate the ticket's summary, its scenarios or the logic's constraints, and cite them as "ticket scenario 2" or "C2". Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. For an XS ticket, write only Changes and Verification. Name symbols, not line numbers, except for a fact you checked. Give exact text only where exactness is the decision: public signatures, error variants, vocabulary and output formats. Use no emojis. Sections marked optional may be left out when they do not apply. -->
 
-# Solution: <option name>
+# Plan: <short name>
 
-Implements #<N>.
+Plans #<N>, a unit of #<M>.
 
 ## Context
 
-<Where the change lives and how the project already does this kind of thing: the files and symbols involved and the existing code to follow, each fact with `path:line` and marked verified or unverified. Add only what the implementer could not find in a minute. When words change, state the authoritative definition and the exact vocabulary change here, and leave a missing term unresolved.>
+<!-- optional -->
+
+<Where the change lives and how the project already does this kind of thing: the files and symbols involved and the existing code to follow, each fact with `path:line` and marked verified or unverified. Add only what the implementer could not find in a minute.>
 
 ## Changes
 
@@ -18,7 +20,7 @@ Implements #<N>.
 
 <!-- optional -->
 
-<!-- Only what the ticket's scenarios do not already say: failure cases, restart cases, boundaries. -->
+<!-- Only what the ticket's scenarios do not already say: failure cases, restart cases, boundaries, taken from the logic's edge cases. -->
 
 1. **Given** <the state>, **when** <the action>, **then** <the observable result>.
 

@@ -2,16 +2,18 @@
 
 They are plain Markdown in `fugue/prompts`:
 
-- `agents/<role>.md`: what an agent is told: analysis, interview, implementation and
+- `agents/<role>.md`: what an agent is told: interview, logic, plan, implementation and
   reviewer. General on purpose, so it can be reused anywhere.
 - `responses/ticket-format/<type>.md`: how a ticket is created, one template per issue type.
-- `responses/analysis.md` and `responses/question.md`: the sections an analysis adds to a ticket
-  for the person who decides. The ticket is the overview; the specifics go in the solution.
-- `artifacts/<name>.md`: a file an agent writes for another agent, such as the solution.
+- `responses/logic.md` and `responses/question.md`: the sections the logic agent and the
+  interview add to a ticket for the person who decides. The ticket is the overview; the
+  specifics go in the logic file and the solution.
+- `artifacts/<name>.md`: a file an agent writes for another agent: the logic of an M ticket
+  and the solution (the plan) of a unit.
 
 An agent's instructions are, in this order: the general rules of writing and communicating
 (`system.md`, the same for every agent), the built-in prompt for its role, and the person's own
-guidance for that role if they set some (`agents.analysis = /some/path/guidance.md`). The guidance
+guidance for that role if they set some (`agents.logic = /some/path/guidance.md`). The guidance
 is appended last, so it adds to the instructions and can never replace them.
 
 A response or an artifact must follow its template, and `Template.missing` says which parts an
@@ -35,8 +37,9 @@ ROOT: Traversable = files("fugue") / "prompts"
 class Role(StrEnum):
     """What an agent is for. The value is the name of its prompt and of its setting."""
 
-    ANALYSIS = "analysis"  # an S or M ticket, or an M Question
-    INTERVIEW = "interview"  # an L Question: talks with the developer
+    INTERVIEW = "interview"  # L: explores an idea with the developer, decides, proposes M tickets
+    LOGIC = "logic"  # M: builds the logic, offers versions, the developer picks
+    PLAN = "plan"  # S and XS: reads the logic and plans the unit, automatically
     IMPLEMENTATION = "implementation"
     REVIEWER = "reviewer"
 
@@ -129,7 +132,7 @@ class Prompts:
     """Finds the prompts and templates, and joins a role's prompt with the person's own guidance.
 
     prompts = Prompts()
-    system = prompts.agent(Role.ANALYSIS)
+    system = prompts.agent(Role.LOGIC)
     body = prompts.response("Feature")
     solution = prompts.artifact("solution")
     """
@@ -172,14 +175,12 @@ class Prompts:
             )
         return Template(name=f"response/{name}", text=self._read(path))
 
-    def analysis_response(self) -> Template:
-        """The sections an analysis adds to a work item: Analysis, Solution and Details."""
-        return Template(
-            name="response/analysis", text=self._read(ROOT / "responses" / "analysis.md")
-        )
+    def logic_response(self) -> Template:
+        """The sections the logic agent adds to an M ticket: Analysis, Solution and Details."""
+        return Template(name="response/logic", text=self._read(ROOT / "responses" / "logic.md"))
 
     def question_response(self) -> Template:
-        """The sections an analysis adds to a Question, which records a decision."""
+        """The sections the interview adds to an L ticket, which records the decisions."""
         return Template(
             name="response/question", text=self._read(ROOT / "responses" / "question.md")
         )

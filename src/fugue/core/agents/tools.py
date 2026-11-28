@@ -1,6 +1,6 @@
 """The tools an agent uses to talk with the person running Fugue.
 
-An agent that may ask (the analysis agent when it cannot go on, the interview agent all the time)
+An agent that may ask (the logic agent when it cannot go on, the interview agent all the time)
 is given these tools. Each call is one question shown by the reporter, in whichever interface
 runs the flow: buttons, a tick list, a text box or a form on the screen, a prompt in a terminal.
 The call returns what the person answered, as JSON text the agent reads.
@@ -118,7 +118,7 @@ class UserTools:
     """
 
     ALLOWED: ClassVar[dict[Role, tuple[str, ...]]] = {
-        Role.ANALYSIS: ("ask_user", "select_from", "ask_user_to_write", "ask_user_form"),
+        Role.LOGIC: ("ask_user", "select_from", "ask_user_to_write", "ask_user_form"),
         Role.INTERVIEW: (
             "ask_user",
             "select_from",
@@ -128,8 +128,8 @@ class UserTools:
             "ready_to_analyse",
         ),
     }
-    """The tools each role gets. The implementation and reviewer agents get none: they do not
-    talk to the developer."""
+    """The tools each role gets. The plan, implementation and reviewer agents get none: they run
+    on their own, because the logic above them already answered what there was to ask."""
 
     def __init__(self, reporter: Reporter, agent: str, *, limit: int | None = None) -> None:
         self._reporter = reporter

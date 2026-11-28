@@ -1,4 +1,4 @@
-<!-- The sections an analysis adds to a Question, which records a decision. A Question carries no solution file: its child tickets carry the work, and they quote the decision. The ticket is the overview, so write the decision and what follows from it. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels, tables and callouts. Use no emojis. Sections marked optional may be left out when they do not apply. -->
+<!-- The sections the interview adds to a Question or an Incident, which records the decisions. It carries no solution file: its M tickets build the logic, and they cite the decisions by id. The ticket is the overview, so write the decision and what follows from it. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels, tables and callouts. Use no emojis. Sections marked optional may be left out when they do not apply. -->
 
 ## Analysis
 
@@ -13,9 +13,9 @@
 
 <!-- optional -->
 
-- <A criterion that decides between the options.>
+- <A criterion that decides between the directions.>
 
-### Option 1: <name>
+### Direction 1: <name>
 
 **You get**
 
@@ -29,20 +29,11 @@
 
 - <Risk or limitation.>
 
-<!-- Add one block per option, and the option of doing nothing when it is plausible. Include the comparison table before the options only when there are two or more: one row per driver, one column per option. -->
+<!-- Add one block per direction, and the direction of doing nothing when it is plausible. Include the comparison table before the directions only when there are two or more: one row per driver, one column per direction. -->
 
 ### Recommendation
 
-Option <N>: <one sentence of reason.>
-
-### Trigger check
-
-| Trigger | Fired | Evidence |
-| --- | --- | --- |
-| Requirements materially ambiguous | <yes or no> | <One line.> |
-| Meaningfully different user-visible behaviour | <yes or no> | <One line.> |
-| Significant architectural commitment | <yes or no> | <One line.> |
-| Destructive or hard to reverse | <yes or no> | <One line.> |
+Direction <N>: <one sentence of reason.>
 
 ## Solution
 
@@ -51,7 +42,7 @@ Option <N>: <one sentence of reason.>
 > [!IMPORTANT]
 > **Decision.** In the context of <the situation>, facing <the problem>, we decided <the option> to achieve <the quality>, accepting <the downside>.
 
-**Selected by** <the developer or the policy> on <date>: <reason.>
+**Selected by** <the developer> on <date>: <reason.>
 
 **Agreed constraints**
 
@@ -67,11 +58,11 @@ Option <N>: <one sentence of reason.>
 
 <!-- optional -->
 
-<!-- The child tickets that deliver the decision. Fill after they are created; until then this section is left out. -->
+<!-- The M tickets that build on the decision. Fill after they are created; until then leave this section out. -->
 
-| Ticket | Title | Type | Size | Blocked by | Delivers |
-| --- | --- | --- | --- | --- | --- |
-| #<N> | <title> | <type> | <size> | <ticket or none> | <the constraint ids it carries out> |
+| Ticket | Title | Type | Builds on | Carries |
+| --- | --- | --- | --- | --- |
+| #<N> | <title> | <Feature, Bug or Maintenance> | <earlier logic ticket, or none> | <the constraint ids it carries out> |
 
 ## Details
 

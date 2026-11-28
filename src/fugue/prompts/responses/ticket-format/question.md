@@ -1,8 +1,8 @@
-<!-- Ticket body for a Question, as it is created. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels and tables. Use no emojis. Analysis, Solution and Details stay as they are until an analysis fills them (see the question response); leave their text untouched. -->
+<!-- Ticket body for a Question, as it is created. A Question is exploratory: it records decisions, and the M tickets that build on them create the logic. Analysis, Solution and Details stay as they are until the interview fills them (see the question response); leave their text untouched. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels and tables. Use no emojis. -->
 
 ## Summary
 
-**The question.** <The decision to make, in one or two sentences.>
+**The question.** <The idea or decision to explore, in one or two sentences.>
 
 **Why now.** <What the answer unblocks, and who it affects.>
 
