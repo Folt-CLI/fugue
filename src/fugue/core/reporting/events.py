@@ -41,6 +41,24 @@ class Event(BaseModel):
     flow: str = ""
 
 
+class PlannedStep(BaseModel):
+    """A step in the list of what a run will do: its name and the parts it is made of."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    parts: tuple[str, ...] = ()
+
+
+class OutlineChanged(Event):
+    """The steps the run will go through are now these. Sent when the ticket's Size is known, and
+    again if analysis promotes the ticket, so a checklist always shows what is really ahead;
+    steps that already ran keep their state."""
+
+    kind: Literal["outline_changed"] = "outline_changed"
+    steps: tuple[PlannedStep, ...]
+
+
 class StepStarted(Event):
     kind: Literal["step_started"] = "step_started"
     step: str

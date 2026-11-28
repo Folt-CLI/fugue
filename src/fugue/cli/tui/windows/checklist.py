@@ -64,6 +64,24 @@ class ChecklistWindow(Window):
         """Where the step is in the checklist, counting from 1."""
         return list(self._rows).index(step) + 1 if step in self._rows else 0
 
+    def set_outline(self, steps: list[StepOutline]) -> None:
+        """The steps ahead changed (the Size became known, or analysis promoted the ticket). Steps
+        that are still in the list keep their state; steps that already ran stay, in their place."""
+        kept = {name: row for name, row in self._rows.items() if name in {s.name for s in steps}}
+        done = {
+            name: row
+            for name, row in self._rows.items()
+            if name not in kept and row.line.state != "pending"
+        }
+        rows: dict[str, Row] = {}
+        for step in steps:
+            row = kept.get(step.name) or Row()
+            for part in step.parts:
+                row.parts.setdefault(part, Line())
+            rows[step.name] = row
+        self._rows = {**done, **rows}
+        self._draw()
+
     def start(self, step: str) -> None:
         self._row(step).line = Line("running")
         self._draw()

@@ -24,6 +24,7 @@ from fugue.cli.tui.windows import (
     Window,
 )
 from fugue.cli.views import WorkView
+from fugue.core.flow import StepOutline
 from fugue.core.reporting import (
     AgentFinished,
     AgentStarted,
@@ -31,6 +32,7 @@ from fugue.core.reporting import (
     Event,
     Form,
     Message,
+    OutlineChanged,
     Output,
     PartFinished,
     PartStarted,
@@ -213,6 +215,8 @@ class WorkApp(App[None]):
                 checklist.finish_part(step, part, ok=ok, detail=detail)
             case TicketRead(repository=repository, ticket=ticket):
                 await self.query_one(TicketWindow).show(ticket, repository)
+            case OutlineChanged(steps=steps):
+                checklist.set_outline([StepOutline(s.name, s.parts) for s in steps])
             case TicketDetails(fields=fields):
                 await self.query_one(TicketWindow).details(fields)
             case StatusMoved(change=change):
