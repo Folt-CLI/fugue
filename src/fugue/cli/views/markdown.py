@@ -88,17 +88,21 @@ class MarkdownBody:
         self._text = text
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        for kind, part in self._parts():
+        parts = [(kind, part) for kind, part in self._parts() if kind == "diagram" or part.strip()]
+        for number, (kind, part) in enumerate(parts):
             if kind == "prose":
-                if part.strip():
-                    yield Markdown(part)
+                yield Markdown(part)
                 continue
+            if number > 0:
+                yield Text("")  # a line of space before a diagram
             drawing = Diagram(part).draw(options.max_width)
             if drawing.art is None:
                 yield Syntax(part, "text", theme="ansi_dark", word_wrap=True)
                 yield Text(drawing.note + self.SOURCE_NOTE, style="dim")
             else:
                 yield Text(drawing.art, no_wrap=True, overflow="ignore")
+            if number < len(parts) - 1:
+                yield Text("")  # and one after it
 
     def _parts(self) -> Iterator[tuple[str, str]]:
         """The text in order, as prose and Mermaid sources."""
