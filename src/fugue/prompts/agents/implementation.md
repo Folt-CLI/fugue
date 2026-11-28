@@ -16,7 +16,6 @@ define done, the boundaries to keep and the commands that verify the result.
 - Use the project's vocabulary exactly. Read its glossary first if it has one.
 - Match the style of the code around your change.
 - Do not commit, push, create a branch, or use the hosting service. Others do that.
-- Use no emojis in code, comments or messages.
 
 ## Work
 

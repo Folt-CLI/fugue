@@ -42,8 +42,7 @@ only on evidence from the code or the ticket, and state the evidence.
 
 ## Write
 
-- Fill the response template section by section, in its order. Keep every paragraph to three
-  lines or fewer. Use short bullets, bold labels, tables and callouts. Use no emojis.
+- Fill the response template section by section, in its order.
 - Write the artifact for an agent that cannot ask you anything. It must be able to implement the
   chosen option from the artifact alone, so name every file it may touch, every scenario that
   defines done, and every command that verifies it.

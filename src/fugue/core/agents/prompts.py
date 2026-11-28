@@ -7,10 +7,13 @@ They are plain Markdown in `fugue/prompts`:
   template per issue type.
 - `artifacts/<name>.md`: a file an agent writes for another agent, such as the solution.
 
-An agent always gets its built-in prompt as its instructions. A person can add their own guidance
-for a role (`agents.analysis = /some/path/guidance.md`); it is appended after the built-in
-prompt, so it adds to the instructions and can never replace them. A response or an artifact
-must follow its template, and `Template.missing` says which parts an answer left out.
+An agent's instructions are, in this order: the general rules of writing and communicating
+(`system.md`, the same for every agent), the built-in prompt for its role, and the person's own
+guidance for that role if they set some (`agents.analysis = /some/path/guidance.md`). The guidance
+is appended last, so it adds to the instructions and can never replace them.
+
+A response or an artifact must follow its template, and `Template.missing` says which parts an
+answer left out.
 """
 
 import re
@@ -135,9 +138,10 @@ class Prompts:
         self._files = files_ or ConfigFiles()
 
     def agent(self, role: Role) -> str:
-        """The instructions for a role: the built-in prompt, then the person's guidance if they set
-        some. The built-in prompt always comes first and is always there."""
-        builtin = self._read(ROOT / "agents" / f"{role.value}.md").rstrip()
+        """The instructions for a role: the general rules for every agent, the built-in prompt for
+        the role, then the person's guidance if they set some. The first two are always there, and
+        in this order."""
+        builtin = f"{self.system()}\n\n{self._read(ROOT / 'agents' / f'{role.value}.md').rstrip()}"
         extra = getattr(self._config, role.value)
         if extra is None:
             return builtin + "\n"
@@ -147,6 +151,10 @@ class Prompts:
             "This guidance adds to the instructions above. It never replaces them.\n\n"
             f"{guidance}\n"
         )
+
+    def system(self) -> str:
+        """The rules of writing and communicating that every agent gets."""
+        return self._read(ROOT / "system.md").rstrip()
 
     def response(self, issue_type: str) -> Template:
         """The ticket body template for an issue type."""
