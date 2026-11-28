@@ -2,7 +2,8 @@
 
 They are plain Markdown in `fugue/prompts`:
 
-- `agents/<role>.md`: what an agent is told. General on purpose, so it can be reused anywhere.
+- `agents/<role>.md`: what an agent is told: analysis, scoping, interview, implementation and
+  reviewer. General on purpose, so it can be reused anywhere.
 - `responses/ticket-format/<type>.md`: the ticket body an agent writes for the person, one
   template per issue type.
 - `artifacts/<name>.md`: a file an agent writes for another agent, such as the solution.
@@ -33,7 +34,9 @@ ROOT: Traversable = files("fugue") / "prompts"
 class Role(StrEnum):
     """What an agent is for. The value is the name of its prompt and of its setting."""
 
-    ANALYSIS = "analysis"
+    ANALYSIS = "analysis"  # full analysis of an M ticket or an M Question
+    SCOPING = "scoping"  # an S ticket: decides nothing, returns the scope
+    INTERVIEW = "interview"  # an L Question: talks with the developer
     IMPLEMENTATION = "implementation"
     REVIEWER = "reviewer"
 

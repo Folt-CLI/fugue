@@ -1,8 +1,4 @@
-<!--
-Ticket body for a Task. Follow this template exactly: keep every heading, in this order, and
-replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold
-labels, tables and callouts. Use no emojis. Do not paste long material here: link it.
--->
+<!-- Ticket body for a Task. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels, tables and callouts. Use no emojis. Link long material and keep it out of the body. -->
 
 ## Summary
 
@@ -27,6 +23,12 @@ labels, tables and callouts. Use no emojis. Do not paste long material here: lin
 **Out of scope**
 
 - <Excluded work, including adjacent work that is left alone.>
+
+**Agreed in #<N>**
+
+<!-- Only when a parent Question decided something the work must respect. State each decision as a constraint, in the Question's own words. Leave the heading out otherwise. -->
+
+- <A decision the work must respect.>
 
 **Scenarios**
 
@@ -74,8 +76,6 @@ labels, tables and callouts. Use no emojis. Do not paste long material here: lin
 
 - <Risk or limitation.>
 
-**Implementation scope:** <link to the solution artifact, for the recommended option only>
-
 ### Recommendation
 
 Option <N>: <one sentence of reason>.
@@ -89,6 +89,12 @@ Option <N>: <one sentence of reason>.
 | Significant architectural commitment | <yes or no> | <One line.> |
 | Destructive or hard to reverse | <yes or no> | <One line.> |
 
+<!-- Fill the next two lines after the selection. Options have no scope attachment: only the selected option has one. -->
+
+**Selected:** Option <N> by <the developer or the policy>: <reason>.
+
+**Implementation scope:** <link to the solution of the selected option>
+
 > [!TIP]
 > Only when a trigger fired: reply with the option number.
 
@@ -96,13 +102,13 @@ Option <N>: <one sentence of reason>.
 
 <!-- Fill after the selection. Until then write: _Not selected yet._ -->
 
-> More details are in the solution artifact marked **[Selected Solution]**.
+> More details are in the attachment tagged **[Selected Solution]** above.
 
 - <What changes, one short bullet each.>
 
 **Affected areas:** <The areas the chosen solution covers.>
 
-**Selected by:** <The person, or the policy.>
+**Selected by:** <The developer, or the policy.>
 
 **Why this one:** <One sentence.>
 

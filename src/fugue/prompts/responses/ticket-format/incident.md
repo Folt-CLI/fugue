@@ -1,14 +1,6 @@
-<!--
-Ticket body for a Incident. Follow this template exactly: keep every heading, in this order, and
-replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold
-labels, tables and callouts. Use no emojis. Do not paste long material here: link it.
--->
+<!-- Ticket body for a Incident. Follow this template exactly: keep every heading, in this order, and replace each <placeholder>. Keep paragraphs to three lines or fewer. Use short bullets, bold labels, tables and callouts. Use no emojis. Link long material and keep it out of the body. -->
 
-<!--
-An incident records a problem and its impact. It is not the fix: link separate work items for
-investigation, mitigation and correction. Keep it factual, and keep what was observed apart from
-what is learned later. Mark unknowns as unknown. Remove credentials and personal data.
--->
+<!-- An incident records a problem and its impact. It is not the fix: link separate work items for investigation, mitigation and correction. Keep it factual, and keep what was observed apart from what is learned later. Mark unknowns as unknown. Remove credentials and personal data. -->
 
 ## Summary
 
