@@ -4,8 +4,9 @@ They are plain Markdown in `fugue/prompts`:
 
 - `agents/<role>.md`: what an agent is told: analysis, interview, implementation and
   reviewer. General on purpose, so it can be reused anywhere.
-- `responses/ticket-format/<type>.md`: the ticket body an agent writes for the person, one
-  template per issue type.
+- `responses/ticket-format/<type>.md`: how a ticket is created, one template per issue type.
+- `responses/analysis.md` and `responses/question.md`: the sections an analysis adds to a ticket
+  for the person who decides. The ticket is the overview; the specifics go in the solution.
 - `artifacts/<name>.md`: a file an agent writes for another agent, such as the solution.
 
 An agent's instructions are, in this order: the general rules of writing and communicating
@@ -170,6 +171,18 @@ class Prompts:
                 f"there is no ticket body template for {issue_type!r}. Known: {known}"
             )
         return Template(name=f"response/{name}", text=self._read(path))
+
+    def analysis_response(self) -> Template:
+        """The sections an analysis adds to a work item: Analysis, Solution and Details."""
+        return Template(
+            name="response/analysis", text=self._read(ROOT / "responses" / "analysis.md")
+        )
+
+    def question_response(self) -> Template:
+        """The sections an analysis adds to a Question, which records a decision."""
+        return Template(
+            name="response/question", text=self._read(ROOT / "responses" / "question.md")
+        )
 
     def artifact(self, name: str) -> Template:
         """An artifact template, such as `solution`."""
