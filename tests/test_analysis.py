@@ -2,7 +2,7 @@
 
 import asyncio
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from test_engine_to_pr import FakeGitHub
 
 from fugue.agents import AccessMode, AdapterRegistry, AgentResult, ScriptedAdapter, ScriptStep
-from fugue.analysis import Handoff, analyse, handoff_schema
+from fugue.analysis import Handoff, handoff_schema
 from fugue.analysis.render import (
     render_analysis,
     render_attachments,
@@ -20,6 +20,7 @@ from fugue.analysis.render import (
     render_details,
     render_scope,
 )
+from fugue.analysis.stage import analyse
 from fugue.artifacts import ArtifactStore
 from fugue.cli.app import _StoreClosingEngine
 from fugue.config import FugueConfig
@@ -45,22 +46,25 @@ def handoff() -> Handoff:
                     "you_get": ["Verified scopes."],
                     "changes": ["Add a stage."],
                     "watch_out": ["Selection remains explicit."],
-                    "scope": {
-                        "standing_rules": ["Implement only."],
-                        "source_of_truth": ["GLOSSARY.md."],
-                        "allowed_files": ["src/fugue/analysis/stage.py"],
-                        "file_changes": ["Update stage.py."],
-                        "in_scope": ["Restart reuses uploads."],
-                        "out_of_scope": ["Merge approval."],
-                        "do_not_change": ["Dependencies."],
-                        "verification": ["Tests pass."],
-                        "final_message": ["Report changes."],
-                        "orchestrator_notes": ["Review boundaries."],
-                    },
                 }
             ],
             "recommendation": 1,
             "reason": "It provides verified scopes.",
+            "scope": {
+                "source_of_truth": ["GLOSSARY.md."],
+                "allowed_files": ["src/fugue/analysis/stage.py"],
+                "file_changes": ["Update stage.py."],
+                "in_scope": ["Restart reuses uploads."],
+                "out_of_scope": ["Merge approval."],
+                "do_not_change": ["Dependencies."],
+                "verification": ["Tests pass."],
+                "final_message": ["Report changes."],
+                "orchestrator_notes": ["Review boundaries."],
+            },
+            "triggers": [
+                {"name": name, "fired": False, "evidence": "Nothing found."}
+                for name in ("ambiguity", "behaviour", "architecture", "irreversible")
+            ],
             "findings": "# Findings\n\nstage.py:1 needs analysis.\n",
             "key_points": ["Analysis is pending.", "Selection remains explicit."],
         }
@@ -137,8 +141,14 @@ def test_analysis_exact_text() -> None:
 
 Option 1: It provides verified scopes.
 
-> [!TIP]
-> Reply with the option number to select its implementation scope.
+### Trigger check
+
+| Trigger | Fired | Evidence |
+| --- | --- | --- |
+| Requirements materially ambiguous | no | Nothing found. |
+| Meaningfully different user-visible behaviour | no | Nothing found. |
+| Significant architectural commitment | no | Nothing found. |
+| Destructive or hard to reverse | no | Nothing found. |
 """
     )
 
@@ -160,9 +170,8 @@ def test_details_exact_text() -> None:
 def test_scope_and_findings_exact_text() -> None:
     expected = """# 43 solution 1: Publish analysis
 
-## Standing rules
+## Allowed files
 
-- Implement only.
 - You may touch only these files (create them if new):
 - `src/fugue/analysis/stage.py`
 
@@ -170,7 +179,7 @@ def test_scope_and_findings_exact_text() -> None:
 
 - GLOSSARY.md.
 
-## File-by-file changes
+## Changes
 
 - Update stage.py.
 
@@ -198,7 +207,7 @@ def test_scope_and_findings_exact_text() -> None:
 
 - Review boundaries.
 """
-    assert render_scope(43, 1, handoff().options[0]) == expected
+    assert render_scope(43, 1, "Publish analysis", handoff().scope) == expected
     assert render_attachments(43, handoff()) == {
         "43-code-findings.md": "# Findings\n\nstage.py:1 needs analysis.\n",
         "43-solution-1.md": expected,
@@ -207,10 +216,10 @@ def test_scope_and_findings_exact_text() -> None:
 
 def test_allowed_files_round_trip_and_numbering() -> None:
     data = handoff().model_dump()
-    scope = data["options"][0]["scope"]
+    scope = data["scope"]
     scope["allowed_files"] = ["a.py", "`b/c.py`"]
     scope["in_scope"] = ["1. Foo", "Bar", "2) Baz"]
-    text = render_scope(43, 1, Handoff.model_validate(data).options[0])
+    text = render_scope(43, 1, "Publish analysis", Handoff.model_validate(data).scope)
     assert allowed_files(text) == ["a.py", "b/c.py"]
     assert "1. Foo\n2. Bar\n3. Baz" in text
     assert "1. 1." not in text
@@ -218,10 +227,10 @@ def test_allowed_files_round_trip_and_numbering() -> None:
 
 def test_schema_requires_allowed_files() -> None:
     data = handoff().model_dump()
-    del data["options"][0]["scope"]["allowed_files"]
+    del data["scope"]["allowed_files"]
     with pytest.raises(ValidationError):
         Handoff.model_validate(data)
-    data["options"][0]["scope"]["allowed_files"] = []
+    data["scope"]["allowed_files"] = []
     with pytest.raises(ValidationError):
         Handoff.model_validate(data)
 
@@ -454,17 +463,98 @@ def test_bad_analyst_output_does_not_publish(tmp_path: Path, invalid: str) -> No
         deps.store.close()
 
 
-@pytest.mark.parametrize("size", [Size.XS, Size.S, Size.XL])
-def test_other_sizes_do_not_call_analyst(tmp_path: Path, size: Size) -> None:
-    deps, github, adapter = make_deps(tmp_path, size=size)
+def test_a_size_that_does_not_analyse_in_full_does_not_call_analyst(tmp_path: Path) -> None:
+    deps, github, adapter = make_deps(tmp_path, size=Size.XL)
     try:
         outcome = asyncio.run(analyse(deps, github.ticket))
         assert outcome.state == RunState.BLOCKED
+        assert outcome.problems == ("The Size rule of XL does not analyse in full",)
         assert not adapter.requests
         assert not github.uploads
         assert github.ticket.status == Status.TO_DO
     finally:
         deps.store.close()
+
+
+@pytest.mark.parametrize("size", [Size.XS, Size.S])
+def test_xs_and_s_are_analysed_like_an_m(tmp_path: Path, size: Size) -> None:
+    deps, github, adapter = make_deps(tmp_path, size=size)
+    try:
+        outcome = asyncio.run(analyse(deps, github.ticket))
+        assert outcome.problems == ()
+        assert "Analysis applies only to M and L tickets" not in outcome.problems
+        assert len(adapter.requests) == 1
+        assert adapter.requests[0].output_schema == handoff_schema()
+        assert github.ticket.status == Status.IN_ANALYSIS
+        assert github.uploads == ["43-code-findings.md", "43-solution-1.md"]
+    finally:
+        deps.store.close()
+
+
+def _objects(schema: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(schema, dict):
+        if isinstance(schema.get("properties"), dict):
+            yield schema
+        for value in schema.values():
+            yield from _objects(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            yield from _objects(item)
+
+
+def test_the_batch_schema_is_valid_for_strict_structured_output() -> None:
+    from fugue.agents.codex import strict_schema
+    from fugue.analysis.schema import batch_schema
+
+    raw = batch_schema()
+    assert raw["required"] == ["analyses"] and raw["additionalProperties"] is False
+    assert raw["$defs"]["BatchEntry"]["required"] == ["ticket", "handoff"]
+    assert "Handoff" in raw["$defs"]
+    strict = strict_schema(raw)
+    objects = list(_objects(strict))
+    assert len(objects) >= 5
+    for item in objects:
+        assert item["required"] == list(item["properties"])
+        assert item["additionalProperties"] is False
+
+
+def test_each_batch_handoff_is_validated_on_its_own() -> None:
+    from fugue.analysis.schema import split_batch
+
+    good = handoff().model_dump(mode="json")
+    output = {
+        "analyses": [
+            {"ticket": 33, "handoff": good},
+            {"ticket": 34, "handoff": good | {"options": []}},
+            {"ticket": 35, "handoff": good},
+            {"ticket": 35, "handoff": good},
+            {"ticket": 99, "handoff": good},
+            {"ticket": True, "handoff": good},
+            "not an entry",
+        ]
+    }
+    assert split_batch(output, {33, 34, 35, 36}) == {33: handoff()}
+    assert split_batch({"analyses": None}, {33}) == {}
+    assert split_batch(None, {33}) == {}
+
+
+def test_a_batch_prompt_asks_for_each_ticket_in_full() -> None:
+    from fugue.analysis.batch import batch_prompt
+
+    tickets = [
+        Ticket(
+            number=number,
+            title=f"Child {number}",
+            issue_type=IssueType.FEATURE,
+            size=Size.S,
+            status=Status.TO_DO,
+            priority=Priority.MEDIUM,
+        )
+        for number in (33, 34)
+    ]
+    prompt = batch_prompt(tickets)
+    assert "Ticket #33:" in prompt and "Ticket #34:" in prompt
+    assert "Never abbreviate" in prompt and "Check each trigger" in prompt
 
 
 @pytest.mark.parametrize("to_green", [False, True])

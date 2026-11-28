@@ -1,17 +1,25 @@
 [project]
 name = "fugue"
-version = "0.2.0"
+version = "0.4.0"
 requires-python = ">=3.12"
 dependencies = [
-    "prompt-toolkit>=3.0.53",
-    "pydantic>=2.14.3",
-    "questionary>=2.1.1",
-    "rich>=15.0.0",
-    "typer>=0.29.1",
+    "claude-agent-sdk>=0.2.189,<0.3",
+    "githubkit>=0.17.1,<0.18",
+    "openai-codex>=0.172.0,<0.173",
+    "pydantic>=2.14.4,<3",
+    "pydantic-ai-slim[claude-agent,openai]",
+    "pydantic-graph",
+    "pydantic-settings>=2.16.3,<3",
+    "pygit2>=1.21.0,<1.22",
+    "rich>=15.0.0,<16",
+    "termaid>=0.14.1,<0.15",
+    "textual>=8.2.8,<9",
+    "tomlkit>=0.15.3,<0.16",
+    "typer>=0.29.3",
 ]
 
 [project.scripts]
-fugue = "fugue.cli.app:app"
+fugue = "fugue.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -35,3 +43,7 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fugue"]
+
+[tool.uv.sources]
+pydantic-ai-slim = { git = "https://github.com/pydantic/pydantic-ai", subdirectory = "pydantic_ai_slim", rev = "1cbd8fa8b18c835a06b2007e463e8c210d553a8e" }
+pydantic-graph = { git = "https://github.com/pydantic/pydantic-ai", subdirectory = "pydantic_graph", rev = "1cbd8fa8b18c835a06b2007e463e8c210d553a8e" }

@@ -19,7 +19,8 @@ in that change's ticket. Test ticket commits use `Test[#N]:`.
 
 The implementation agent implements and fixes in the ticket's dedicated worktree. It does not
 analyse code, reviews or CI. The orchestrator investigates, runs the gate,
-reads CI and supplies findings and failing output to fix. A separate read-only
+reads CI and supplies findings and failing output to fix. With no review on XS
+and S, the gate and CI are the checks of those tickets. A separate read-only
 reviewer reviews the diff, changed tests and supplied CI results; it does
 not run builds or checks. See the [campaign exceptions](process.md#autonomous-development-campaign-exceptions).
 

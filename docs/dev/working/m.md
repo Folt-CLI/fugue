@@ -2,11 +2,13 @@
 
 For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](../process.md#autonomous-development-campaign-exceptions) for the campaign.
 
-Use M when a ticket is still loose and can be read several ways. It needs
-analysis and review, and the developer selects a solution. If there is one
-straightforward solution, use S or XS, not M.
+Use M when a ticket is still loose and can be read several ways. It needs full
+analysis and review. The developer is asked only when a
+[trigger](README.md#analysis-triggers-and-re-sizing) fires. If the decision is
+already made, use S or XS, not M.
 
-Split it into M/S items when warranted.
+An M may be a Question; see [M Question](l-question.md#m-question). An M sits
+under an L or an XL. Split it into M/S items when warranted.
 
 ## The ticket must contain
 
@@ -15,12 +17,14 @@ Set the milestone, Priority, Size, Status and ownership from the [shared steps](
 
 ## Analysis and review
 
-M needs analysis AND review. Analysis agents are read-only and produce drafts
-as files: findings, solution scopes and Analysis text. The orchestrator publishes
-them to the ticket and attaches them.
+An M is analysed by its own agent, one per ticket, and only once it has no open blocker; XS and S share an [analysis batch](README.md#analysis-depths) instead.
+Analysis agents are read-only and produce drafts as files: findings, the options
+with their trade-offs, a recommendation with the trigger check, and the scope of
+the selected option. The orchestrator publishes them to the ticket.
 
 The orchestrator writes Analysis inline, links the findings attachment from
-Details and attaches each solution as a complete implementation scope.
+Details and attaches the selected option's implementation scope. Options stay
+inline and have no files until selected.
 
 Follow [Analysis and solution selection](../issue-format.md#analysis-and-solution-selection)
 for the layouts, uploads and selection.
@@ -28,15 +32,16 @@ Use a read-only [review](../review.md).
 
 ## Solution
 
-The developer selects the solution before implementation. Mark its implementation scope
-attachment **[Selected Solution]**.
+When no trigger fires, the recommendation is selected by policy and recorded as
+such with its reason. When one fires, the ticket parks and the developer selects.
+Mark the scope attachment **[Selected Solution]**.
 Summarize changes, Affected areas and Why this one in Solution; link findings and two to four key points in Details.
 
 ## Statuses
 
 Status path: `S0: To Do` -> `S1: In Analysis` -> `S3: Ready For Implementation` -> `S4: In Implementation` -> `S5: Done`.
 
-S3 requires a recorded selected solution: mark the attachment
+S3 requires a recorded selection: mark the attachment
 **[Selected Solution]** and fill Solution. Do not start the implementation agent or move the ticket
 to S3 or S4 before this is recorded.
 

@@ -2,7 +2,7 @@
 
 For developer decisions, questions and merge authorization below, ordinary repository rules apply; see [Autonomous development campaign exceptions](process.md#autonomous-development-campaign-exceptions) for the campaign.
 
-After a pull request is opened or updated, where the [size requires review](working/README.md),
+After a pull request is opened or updated, where the [size requires review](working/README.md) (M),
 run a read-only review of its
 diff against the pull request's base. For a stack, review each pull request
 against its own base. CI and branch protection on the bottom base apply to

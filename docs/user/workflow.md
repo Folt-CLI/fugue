@@ -39,12 +39,12 @@ uv run fugue report runs 1
 ```
 
 `run` drives a ticket to a pull request; `--to-green` also waits for green CI.
-On a Question or Epic it works the children as one stack; see
-[Run a Question or Epic as a stack](#run-a-question-or-epic-as-a-stack).
+On a Question or Epic it works the children on one feature branch; see
+[Run a Question or Epic on a feature branch](#run-a-question-or-epic-on-a-feature-branch).
 These are alternative starting commands. They can invoke providers and mutate
 Git, the filesystem and GitHub. The workflow validates the ticket, uses a
 worktree, implements the selected scope, verifies changes and delivers a pull
-request. Size M and L tickets needing analysis stop for solution selection.
+request. A ticket whose Size analyses in full (XS, S, M and L by default) is analysed first; it stops for solution selection when a trigger fired or its Size rule leaves the selection to you.
 A Size XL Epic groups release work and is not an implementation ticket.
 
 `report runs` lists up to 20 recent runs, optionally filtered by ticket. A run detail
@@ -77,9 +77,9 @@ unfinished runs, the five most recently merged pull requests and the five most
 recently closed tickets. An empty section prints `<title>: none`.
 
 - A ticket is ready to start when it passes the readiness checks of `run`, has
-  Status S0 (XS/S) or S3 (M/L), is not a Question, Epic or XL and has no open
+  Status S0 or S3 (XS/S) or S3 (M/L), is not a Question, Epic or XL and has no open
   blocker.
-- A ticket is waiting for a decision when it is an M/L ticket or Question with
+- A ticket is waiting for a decision when it is an M/L ticket, a Question or an XS/S ticket parked at S1 with
   an Analysis and no `[Selected Solution]` marker (`fugue question N`), or when
   a local run is in `waiting_for_selection`, `waiting_for_decision` or
   `waiting_for_merge_approval`, shown with the exact command that continues it.
@@ -175,8 +175,8 @@ creates nothing; `fugue new --resume ID` continues. An unknown or unreadable id
 exits with 2 naming the id. Creation is journalled: after an interruption,
 `--resume ID` finds the issue by its marker and performs only the remaining
 steps. If the attachment upload fails the ticket exists without a scope link, so
-`fugue run` blocks with `A scope attachment is required` until
-`fugue new --resume ID` completes it.
+`fugue run` analyses the ticket in full when its Size rule says so (XS and S by default); otherwise it blocks with
+`A scope attachment is required` until `fugue new --resume ID` completes it.
 
 Exit codes: 0 created or ended without creating, 2 usage or an unknown draft,
 4 a failure (the draft stays saved), 6 interrupted.
@@ -262,7 +262,11 @@ Ctrl-C leaves the walkthrough.
 Select an option opens a list of options, then a confirmation prompt naming
 the chosen option, defaulting to No. After confirming, `Reason (optional):`
 asks for a reason; Enter keeps the default reason. The decision is recorded
-once. Declining or quitting records nothing. After a recorded selection,
+once. Declining or quitting records nothing. Only the recommended option has an
+implementation scope when the Analysis is published. Selecting another option first asks
+the analyst to scope it: the scope is uploaded, verified and linked in that option's block,
+and only then is the selection recorded; if scoping or the upload fails, nothing is
+recorded. After a recorded selection,
 a child proposal is derived read-only from the selected scope, Analysis and
 interview turns. Review its table of keys, titles, issue types, Sizes, priorities,
 Components and blocked-by keys. The Question is the parent; its milestone and
@@ -273,10 +277,11 @@ The review menu offers Edit a child, Remove a child, Add a child, Confirm and
 create, and Save and quit. Typed input accepts `e KEY FIELD TEXT`, `r KEY`, `a`,
 `yes`, and `q`. List fields accept JSON arrays or items separated by `|`. Add
 asks for a JSON object with `key`, `title`, `issue_type`, `size`, `priority`,
-`components`, `summary`, `scope`, `decision`, `agreed`, `you_get`, `changes`,
-`not_changed`, `watch_out`, `scope_text` and `blocked_by`. Use `e KEY scope_text` to view
-a child's scope, or `e KEY scope_text @PATH` to replace it from a file (pasted
-text is also accepted). Removing a child reports dropped blocked-by references.
+`components`, `summary`, `scope`, `agreed` and `blocked_by`. A child carries its outcome in
+`summary`, its numbered scenarios in `scope` and the parent's decisions as constraints in
+`agreed`; it has no scope file, because an S or XS child is analysed in full once it is ready. An
+optional `scope_text` pins a hand-written scope instead: use `e KEY scope_text @PATH` to
+set it from a file (pasted text is also accepted). Removing a child reports dropped blocked-by references.
 Validation problems must be resolved before creation is offered.
 
 Creation requires the literal `yes` in typed input or a confirmation defaulting
@@ -303,7 +308,7 @@ command to review the child proposal:
 uv run fugue question 47 --select 1 --reason 'This scope meets the requirements' --by developer
 ```
 
-The same command selects the solution for an analysed M or L ticket of any
+The same command selects the solution for an analysed XS, S, M or L ticket of any
 issue type that has Analysis options, for example a Feature in
 `waiting_for_selection`.
 
@@ -321,6 +326,25 @@ uv run fugue children children.toml --apply
 The second command creates children and their native relationships. Use a
 prepared, validated child specification; the filename is an input file you
 supply, not a file generated by these commands.
+
+## An M Question answers itself
+
+A Question whose Size analyses in full and selects by policy (M by default) needs no
+interview. `fugue run N` or `fugue question N` on one does this in order:
+
+1. Run the analysis, which checks the four triggers.
+2. With no trigger fired, record the recommendation as selected by policy, with a comment
+   saying so, and move the Question to S3. A fired trigger stops here with
+   `waiting_for_selection`; choose with `fugue question N` as for any Question.
+3. Ask the analyst for the children and create them at once, without a `yes`. The proposal
+   is saved first; if it is invalid the run stops with the problem, and `fugue question N`
+   shows the saved proposal for editing. Children already created are never duplicated.
+4. `fugue run N` then goes on to run those children on the Question's feature branch.
+
+Inside the run of its parent, an M Question with an open blocker is not answered yet: it waits until its sibling blockers are merged into the feature branch and its outside blockers are closed, and is reported as waiting for them; see [Analysis batches](#analysis-batches).
+
+The Question needs a milestone and an assignee, as for any child proposal. An L Question is
+never answered this way: it keeps its interview and its confirmation.
 
 ## Review, approval and merge
 
@@ -345,38 +369,113 @@ The earlier review, decision, approval and merge commands remain only as
 deprecated aliases until 0.4.0. Do not use them as the normal way to review,
 approve or merge.
 
-## Run a Question or Epic as a stack
+## Run a Question or Epic on a feature branch
 
 ```sh
-uv run fugue run 47
-uv run fugue run 47 --authorise
+uv run fugue run 32
+uv run fugue run 32 --authorise
 ```
 
-When ticket 47 is a Question or an Epic, `run` works its children as one stack:
-a chain of pull requests in which the bottom targets `develop` and each upper
-pull request targets the branch below. Each child gets its own worktree, work,
-gate and review, in blocker order. Running again after an interruption keeps the
-stack current and does not repeat finished work.
+When ticket 32 is a Question or an Epic, `run` works its open children on one
+[feature branch](../../GLOSSARY.md#feature-branch) and delivers them to
+`develop` with a single
+[feature pull request](../../GLOSSARY.md#feature-pull-request).
 
-A Question child without an answer is a stop point. The run works every child
-before it, then stops and exits with code 7 (waiting). After the stop, answer
-the Question with `fugue question`, then run the parent again; the run continues
-from the stop point and does not redo the earlier children.
+1. The run creates `feature/32-<slug of the title>` from the current head of
+   `develop` and pushes it. Running the parent again reuses the branch, and an
+   existing branch of that name on `origin` is reused too.
+2. Each child gets its own worktree and branch, started from the current head
+   of the feature branch, so it already holds every child merged before it. Its
+   pull request targets the feature branch, not `develop`. It is implemented,
+   gated, reviewed and checked by CI as a single ticket is.
+3. When a child is green and reviewed (every finding decided), its pull request
+   is merged into the feature branch with a merge commit: an
+   [integration merge](../../GLOSSARY.md#integration-merge). Only then do the
+   children it blocks become ready.
+4. A child is ready when every open blocker that is a child of the same parent
+   is merged into the feature branch. A child blocked by two siblings waits
+   until both are merged. A blocker that is not a child of this parent and is
+   still open blocks the child with a problem; a closed or Done blocker never
+   blocks.
+5. When every child is merged, the run opens the feature pull request from the
+   feature branch to `develop`, titled in the parent's commit subject format
+   (for example `Question[#32]: Deliver the feature`), listing each merged
+   child and its pull request, with `Closes #N` for each child. It waits for
+   green CI, runs the gate on the feature head and stops at
+   `waiting_for_merge_approval`.
 
-When every pull request of the stack is green and reviewed, the run ends with
-one stack approval: a single decision covering every layer at its current head
-SHA. Record it with the command the run prints, or pass `--authorise` so the
-run records the stack approval itself. `--authorise` is your explicit consent
-for those exact heads and for that invocation only; if any layer gets a new
-commit afterwards, the approval lapses and the run asks again. Without
-`--authorise` the run stops and waits for you.
+For example, child 33 has no blocker and children 34 and 45 are both blocked
+only by 33. Child 33 runs first and is merged into the feature branch; then 34
+and 45 both start from the feature head, which holds 33.
 
-With an approved stack the run performs a single merge of the whole stack
-rather than one merge per layer, then closes the children and the parent.
-Failures before the merge leave every layer unmerged, and running again resumes
-where it stopped.
+### Parallel children
+
+`limits.parallel_children` (default 1) is the most children worked at once.
+With 1 the children run one at a time. A child starts only after its open
+blockers; among the children that are ready, the one with the most urgent
+Priority (Urgent, High, Medium, Low) starts first, and ties go to the lower
+ticket number. A blocker does not take on the Priority of the children that wait
+for it. With 2 in the example, 34 and 45 run together. Integration merges are
+made one at a time. When a sibling was merged first, the later child's branch
+is no longer up to date with the feature branch: the run merges the feature
+branch into it with a merge commit (not a rebase, so the reviewed commits keep
+their identity), runs the gate, pushes, and then reviews and checks CI again on
+the new head before it merges that child. A merge conflict stops that child at
+`blocked` with a problem naming the branch and its worktree; resolve the merge
+there, commit it and run the parent again. The other children continue.
+
+A child that fails, is blocked or waits for a decision stops only the children
+that depend on it; independent children still finish. The run ends when no
+further child can start and prints every child's state: merged into the
+feature branch, its run state with a `next:` line, or not started with the
+blockers it waits for. A Question child without an answer, or a child of any Size
+whose analysis parked it without a selected solution, is such a stop: answer it with `fugue question N`,
+then run the parent again. Running again after an interruption continues each
+child where it stopped and never creates a second branch, pull request or
+merge.
+
+### Analysis batches
+
+A child is analysed only when it is ready: every sibling blocker is merged into the feature branch and every outside blocker is closed. Nothing is analysed on code that does not exist yet, so a blocked child, or a blocked M Question, waits and is reported as waiting for its blockers, and is analysed in a later step of the run, or a later run, once they are merged.
+
+The ready S and XS children that have no selected solution are analysed together in an [analysis batch](../../GLOSSARY.md#analysis-batch): one analyst call for up to `limits.analysis_batch_size` (default 5) children, taken by Priority (Urgent, High, Medium, Low), then ticket number. More ready children form further batches, and children that merges make ready form the next batch. Each child gets its own complete analysis, of the same shape and depth as an M's, because no review follows S and XS. Each child's result is checked on its own: a child whose analysis is missing or invalid is analysed again alone, and the others are kept. Usage is recorded once for the batch call, on the run of its first child.
+
+Each child is then published on its own ticket: Analysis and Solution inline, the `<N>-code-findings.md` and scope attachments and the four trigger checks. With no trigger fired, the recommendation is selected by policy and the child is implemented from its selected scope, like an M but without review; its Status goes S0 -> S1 -> S3 -> S4 -> S5. A fired trigger parks only that child at `waiting_for_selection`; the rest of the batch goes on. M and L children are never batched: each is analysed by its own agent when it is ready. A lone `fugue run N` on one S or XS ticket is a batch of one.
+
+### Approvals
+
+Each integration merge needs a merge approval bound to the child pull
+request's exact head SHA. Without `--authorise` the run stops each green,
+reviewed child at `waiting_for_merge_approval` and prints the command to record
+the approval: `fugue approval record RUN --reason 'reason text'`, then
+`fugue run 32` again. The next run merges the approved child into the feature
+branch and continues with the children it unblocks. A new commit on the child,
+including the merge of a moved feature branch, voids the approval and the run
+asks again.
+
+`--authorise` is your explicit consent, for that invocation only, to let the
+run record those approvals itself and make each integration merge as soon as a
+child is green and reviewed, each at its exact head SHA. The approvals record
+the authorising identity (`--by`, default the OS user) and the reason
+`authorised for this run`.
+
+The feature pull request is never covered by `--authorise`. When it is green
+and gated the run stops at `waiting_for_merge_approval` with the run id of the
+feature pull request. Record your approval of its exact head with
+`fugue approval record RUN --reason 'reason text'` and run `fugue run 32`
+again: the run merges the feature pull request into `develop` with a merge
+commit, then closes each child with `Disposition: Merged` and `S5: Done`,
+comments on it, and removes the worktrees and the child and feature branches.
+Children stay open until then, because GitHub closes issues only for merges
+into the default branch; the run store records which children are merged into
+the feature branch. The parent closes under the existing rules once its
+children are closed; the run does not close it. `fugue merge` and
+`fugue resume` on a child or feature pull request run point back to
+`fugue run 32`.
 
 ## Recover and measure
+
+`fugue report sizes` shows, per run, the Size it started with, the Size it was re-sized to (if any), whether the developer or the Size rule selected the solution, how many repairs and review rounds it needed, and its state. Use it to see whether the Size boundaries save work: many re-sizes from S, or many repairs on M, mean a boundary is in the wrong place.
 
 ```sh
 uv run fugue resume 1
@@ -416,7 +515,9 @@ For several tickets the highest-precedence code applies: interrupted (6), then
 failed or error (4), provider-limited (5), blocked, skipped or lock-conflicted (3),
 then waiting for an answer, a decision or merge approval (7), otherwise 0.
 Code 7 also applies when continuing a run with `resume`, and when a run of a
-Question or Epic stops at a stop point or waits for the stack approval.
+Question or Epic waits for an answer, a decision or a merge approval of a child
+or of the feature pull request. A parent run reports the most severe state of
+its unfinished children: failed, provider-limited, blocked, then waiting.
 
 An exit code of zero alone does not mean the ticket was merged or that the run
 completed. Check the printed state and `report runs`.

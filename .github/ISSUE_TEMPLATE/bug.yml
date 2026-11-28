@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: >-
-        For an XS or S ticket, write the Solution now and put 'No analysis needed.' under Analysis; for M, leave Analysis and Solution pending.
+        Leave Analysis and Solution pending for XS, S and M: the run analyses the ticket in full and fills them.
 
   - type: textarea
     id: summary

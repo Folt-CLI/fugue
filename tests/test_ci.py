@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -94,4 +95,12 @@ def test_monitor_read_does_not_retry_malformed_json() -> None:
     client = GitHubClient("example/fugue", "example", 2, runner=runner)
     with pytest.raises(json.JSONDecodeError):
         asyncio.run(read_checks(lambda: client.checks(PR)))
+    assert runner.await_count == 1
+
+
+def test_monitor_read_treats_no_checks_reported_as_pending() -> None:
+    message = "no checks reported on the 'feature/example' branch"
+    runner = AsyncMock(return_value=replace(reply("", 1), stderr=message))
+    client = GitHubClient("example/fugue", "example", 2, runner=runner)
+    assert asyncio.run(read_checks(lambda: client.checks(PR))) == []
     assert runner.await_count == 1

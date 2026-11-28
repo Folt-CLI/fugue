@@ -50,14 +50,14 @@ For ordinary developer decisions and merge rules below, apply the
   for the remaining sections.
 - See [working templates](docs/dev/working/README.md) for how a ticket is worked
   by its size and issue type.
-- Implementation agents implement and fix only; they do not analyse code, reviews or CI. The orchestrator investigates. For M and L tickets the developer selects the solution before implementation; XS and S carry their solution. Follow [Testing](docs/dev/testing.md) for roles and handoffs.
-- Ask the developer questions only on Question tickets, and give ticket tracking
+- Implementation agents implement and fix only; they do not analyse code, reviews or CI. The orchestrator investigates. For XS, S, M and Questions the selection is recorded before implementation: by the developer when a trigger fired, otherwise by policy. XS and S carry their outcome and scenarios and are analysed in full, several together in an analysis batch. Follow [Testing](docs/dev/testing.md) for roles and handoffs.
+- Ask the developer questions only on Question tickets and when a trigger parks a ticket, and give ticket tracking
   to background sub-agents; see
   [shared steps](docs/dev/working/README.md#shared-steps).
 - Write Analysis inline in the ticket using the layout in
   [Issue format](docs/dev/issue-format.md#analysis-and-solution-selection).
-  Attach findings as `<N>-code-findings.md` and each solution as a complete
-  implementation scope `<N>-solution-<k>.md` using gh-attach. Verify uploads and use real
+  Attach findings as `<N>-code-findings.md` and the selected option's implementation
+  scope `<N>-solution-<k>.md` using gh-attach; options have no files. Verify uploads and use real
   attachment links. Analyses and scopes use `GLOSSARY.md` terms exactly and no
   emojis.
 - Reviews follow the [review contract](docs/dev/review.md#review-contract): only

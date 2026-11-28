@@ -141,7 +141,7 @@ def test_ready_requires_the_guard_status_and_no_blocker() -> None:
             ticket(1),  # XS in S0
             ticket(2, status=Status.IN_IMPLEMENTATION),  # XS in S4
             ticket(3, size=Size.S, solution=LINK.format(n=3)),  # S in S0 with scope attachment
-            ticket(4, size=Size.S),  # S without a scope attachment
+            ticket(4, size=Size.S),  # S without a scope attachment: scoping derives it
             ticket(
                 5,
                 size=Size.M,
@@ -154,7 +154,7 @@ def test_ready_requires_the_guard_status_and_no_blocker() -> None:
             ticket(9, size=Size.M, status=Status.IN_IMPLEMENTATION, solution=SELECTED.format(n=9)),
         ]
     )
-    assert [r.number for r in collect(port).ready] == [1, 3, 5]
+    assert [r.number for r in collect(port).ready] == [1, 3, 4, 5]
 
 
 def test_blocked_ticket_lists_open_blockers_and_is_not_ready() -> None:

@@ -13,14 +13,15 @@ Terms are defined in [GLOSSARY.md](../../GLOSSARY.md).
 Use the forms under `.github/ISSUE_TEMPLATE`, one per issue type: Task, Bug,
 Feature, Question, Epic, Maintenance, Documentation, Incident and Test. Follow the
 [working templates](working/README.md) for what each size contains; the table
-below describes sections when their stage applies.
+below describes sections when their stage applies. XS and S fill Summary and
+Scope at creation; their analysis fills the rest, as for an M. See [XS and S body layout](#xs-and-s-body-layout).
 
 | Section | When to fill it | Purpose |
 | --- | --- | --- |
 | Summary | At creation | State the current situation or user need, expected outcome, and who benefits. |
 | Scope | At creation | Name affected area and what is in and out. |
 | Analysis | During refinement | Record current behavior, cause when relevant, constraints, compatibility, and viable options. |
-| Solution | At creation for S/XS; after the developer chooses for M/L | S/XS: record the enabling Question's decision and required implementation scope. M/L: summarize the selected solution, affected areas, and reason for choosing it. |
+| Solution | After the selection, for XS, S, M and Questions | Summarize the selected solution, affected areas, the reason for choosing it and whether the developer or the policy selected it. Until then XS and S hold `_Not applicable._` |
 | Details | After investigation | Link the code findings attachment and summarize two to four key facts. |
 
 For a defect, describe what happens and what should happen without presuming a
@@ -45,29 +46,33 @@ attachment. Leave Details pending until investigation has produced findings.
 - <important finding>
 ```
 
-The orchestrator, not the implementation agent, investigates and writes Analysis inline in the
-ticket, as if the developer had already asked for context, comparison and the
-next step. The developer selects the solution; a recommendation is not a
-selection.
+The orchestrator, not the implementation agent, investigates and writes Analysis
+inline in the ticket, as if the developer had already asked for context,
+comparison and the next step. A recommendation is not a selection. The developer
+selects, or the policy selects when no
+[trigger](working/README.md#analysis-triggers-and-re-sizing) fires; an agent
+never does.
 
-XS and S tickets have no Analysis; write their Solution in the ticket at creation,
-from the enabling Question, with no solution selection.
+XS and S get the same full analysis as an M, shared with other ready XS and S tickets in an [analysis batch](working/README.md#analysis-depths) but complete for each ticket: the steps below apply to each of them on its own. XL has no
+analysis.
 
-S always has a scope attachment; self-descriptive XS may skip it. A Question's
-answer does not replace a missing Solution or scope. XL has no analysis.
-
-1. Record facts with exact `file:line` references in `<N>-code-findings.md`,
-   linked from Details.
-2. Write each viable solution as a complete implementation scope of work in
-   `<N>-solution-<k>.md`, using the layout below. The implementation agent must be able to run the
-   selected scope as written, without another prompt after selection. Offer
-   alternatives only when there is a real trade-off.
-3. Write Analysis inline using the layout below. Discuss the options with the
-   developer.
-4. Wait for the developer's choice before implementation. Leave Solution pending.
-   If no option fits, revise the scopes.
-5. Mark the chosen attachment **[Selected Solution]**, record the decision in the
-   issue, and fill Solution from it.
+1. Record the facts that bear on the decision, with exact `file:line` references
+   and each marked verified or unverified, in `<N>-code-findings.md`, linked from
+   Details. Do not tour the repository.
+2. Write the options inline in Analysis using the layout below. One option is
+   enough when one approach is clearly right; offer alternatives only when there
+   is a real trade-off. An option is a short paragraph and its trade-offs, not a
+   scope.
+3. Recommend one option and check the four triggers, each with its evidence.
+4. Select. With no trigger fired, the policy selects the recommendation and the
+   selection is recorded as made by policy with the reason. With a trigger fired,
+   park the ticket and wait for the developer's choice. If no option fits, revise
+   the options.
+5. The recommended option's implementation scope is written with the analysis, as
+   `<N>-solution-<k>.md`, using the layout below. Another option is scoped only
+   when it is selected. Mark the selected attachment **[Selected Solution]** and
+   fill Solution from the selection. The implementation agent must be able to run
+   the scope as written, without another prompt.
 
 ### Analysis layout
 
@@ -81,10 +86,15 @@ Use this order in the ticket's `## Analysis` section:
 3. A comparison table when there are two or more options. Use rows such as rule
    duplication, diff size, main risk and reader.
 4. One `### Option N: <name>` block per option, with bold labels **You get**,
-   **Changes**, **Watch out** and **Implementation scope**. The last links to its scope
+   **Changes** and **Watch out**. Only the recommended option, or one that has
+   been selected, also has **Implementation scope**, which links its scope
    attachment.
 5. `### Recommendation`: one option and one sentence of reason.
-6. A `> [!TIP]` callout telling the developer to reply with the option number.
+6. `### Trigger check`: the four triggers, each marked fired or not, with one
+   line of evidence.
+7. After the selection, one line naming who selected and the reason. When a
+   trigger fired, add a `> [!TIP]` callout telling the developer to reply with
+   the option number.
 
 Use short bullets, bold labels, tables and callouts. No paragraph may exceed
 three lines. Use no emojis. A short skeleton for two options:
@@ -144,83 +154,75 @@ three lines. Use no emojis. A short skeleton for two options:
 
 - <Risk or limitation.>
 
-**Implementation scope:** [<N>-solution-2.md](<attachment-url>)
-
 ### Recommendation
 
 Option <N>: <one sentence of reason>.
 
+### Trigger check
+
+| Trigger | Fired | Evidence |
+| --- | --- | --- |
+| Requirements materially ambiguous | <yes or no> | <One line.> |
+| Meaningfully different user-visible behaviour | <yes or no> | <One line.> |
+| Significant architectural commitment | <yes or no> | <One line.> |
+| Destructive or hard to reverse | <yes or no> | <One line.> |
+
 > [!TIP]
-> Reply with the option number to select its implementation scope.
+> Only when a trigger fired: reply with the option number.
 ```
 
-### S and XS Solution layout
+### XS and S body layout
 
-Write a short, readable Solution at creation, in the style of Analysis. Use the
-order below; **Agreed in #N** records what the parent Question decided.
-The solution comes from that Question; it is not selected on the S/XS ticket.
+XS and S are created with their outcome in the ticket body and no scope attachment. Fill Analysis, Solution and Details
+with `_Not applicable._`; the full analysis replaces Analysis and Details, and the selection fills Solution.
 
-**Implementation scope** links the complete `<N>-solution-1.md` scope, using the layout
-below. Attach with gh-attach and verify by downloading and comparing at creation.
-S always has this file; XS may skip it when the ticket is self-descriptive.
-
-```markdown
-## Solution
-
-> [!IMPORTANT]
-> <Decision in one sentence.>
-
-**Agreed in #N**
-
-- <What the parent Question decided.>
-
-**You get**
-
-- <Result.>
-
-**Changes**
-
-- <Change.>
-
-**Not changed**
-
-- <Excluded work.>
-
-**Watch out**
-
-- <Risk or limitation.>
-
-**Implementation scope:** [<N>-solution-1.md](<attachment-url>)
-```
+- **Summary:** the outcome and who benefits, in one or two sentences.
+- **Scope:** `In scope`, `Out of scope`, and two to five numbered scenarios, each
+  stating something that can be observed when the work is done. XS needs two or
+  three.
+- **Agreed in #N:** under Scope, when a parent Question decided something the
+  work must respect. State each decision as a constraint, in the Question's own
+  words. A vague decision makes the analysis guess.
+- **File hints:** optional, under Scope. They name areas, not the files the agent
+  may touch; the analysis decides those.
 
 ### Implementation scope layout
 
-Each `<N>-solution-<k>.md` attachment is a complete scope of work. Use these
-sections in order:
+The `<N>-solution-<k>.md` attachment is the complete scope of one option. A ticket whose Size rule has the `scope` depth derives the same content by scoping at run time and does not attach it. Use
+these sections in order:
 
-- **Standing rules:** implement only; no Git commit, push or `gh`; the exact
-  worktree path and Git branch; the exact files the implementation agent may touch; no attribution
-  lines; no emojis. Require reading `GLOSSARY.md` first and using its terms
-  exactly as defined, never in another sense.
+- **Allowed files:** the exact files the implementation agent may touch,
+  including their test files, introduced by the sentence "You may touch only
+  these files" and one bullet per path in backticks. Tooling reads this list as
+  the boundary. The worktree path and the Git branch come from the prompt, not
+  from the scope.
 - **Source of truth** and **Vocabulary changes:** include both when words
   change. State the authoritative definitions and exact vocabulary changes;
   leave missing terms unresolved rather than inventing them.
-- **File-by-file changes:** give line references and the exact intent for each
-  file, including affected areas.
+- **Changes:** one line per file with the behaviour change it must make. Give
+  exact text only where exactness is the decision: public signatures, error
+  variants, glossary wording and output formats. Name symbols, not line numbers.
 - **In-scope scenarios:** numbered; each states the situation and the expected
   outcome, including restart or failure cases the implementation must handle.
+  These define done and are what the review checks.
 - **Out-of-scope scenarios:** situations deliberately not handled. Both
   scenario sections are required for any scope that adds stateful or
   external-effect behaviour; a purely documentation scope may omit them.
 - **Do not change:** list the boundaries the implementation agent must preserve.
 - **Verification:** give commands and their expected output, mapped to the
   In-scope scenarios.
-- **Final message:** state what the implementation agent returns, including the result for each
-  verification step.
-- **Notes for the orchestrator (not for the implementation agent):** give the Git commit plan, PR
-  fields and review focus. These are instructions for the orchestrator only.
+- **Final message:** state what the implementation agent returns, including the
+  result for each verification step.
+- **Notes for the orchestrator (not for the implementation agent):** only what
+  the orchestrator needs, such as a Test-change trailer reason. Tooling removes
+  this section from what the implementation agent reads. Commit plans, PR fields
+  and review focus are orchestrator work and are not part of the scope.
 
-For M and L, Solution contains the selected result, not another plan document:
+The standing rules (implement only, no Git commit, push or `gh`, no emojis, read
+`GLOSSARY.md` first and use its terms exactly) are in the implementation prompt;
+the scope does not repeat them.
+
+For M and Questions, Solution contains the selected result, not another plan document:
 
 ```markdown
 ## Solution
@@ -230,6 +232,8 @@ For M and L, Solution contains the selected result, not another plan document:
 - <what changes, one short bullet each>
 
 **Affected areas:** <pages, routes, or components covered by the chosen solution>
+
+**Selected by:** <the developer or policy>
 
 **Why this one:** <one sentence>
 ```

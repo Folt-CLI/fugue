@@ -1,0 +1,20 @@
+"""`fugue github repo`: the repository itself."""
+
+import asyncio
+
+import typer
+
+from fugue.cli.views import Messages, RepoView
+from fugue.core.github import Github
+
+app = typer.Typer(help="Show the repository.", no_args_is_help=True)
+
+
+@app.command()
+def info() -> None:
+    """Show what GitHub knows about the repository."""
+    messages = Messages()
+    with messages.guard():
+        github = Github()
+        found = asyncio.run(github.repo.info())
+    RepoView().show(found)

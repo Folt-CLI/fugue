@@ -21,6 +21,7 @@ from fugue.engine.facts import (
     allowed_files,
     branch_name,
     explanation,
+    read_test_change_reason,
     scope_url,
     selected_solution,
     slug,
@@ -150,6 +151,10 @@ def test_selected_solution(body: str, expected: bool) -> None:
             ["a.py", "b.py"],
         ),
         ("You may touch only these files\nNo files\n- `wrong.py`", []),
+        (
+            "You may touch only these files:\n- `docs/a.md (create)`\n- `docs/b.md (add one row)`",
+            ["docs/a.md", "docs/b.md"],
+        ),
         ("You may touch only these files\n- no backticks\n* `x/`\n+ `y`", ["x/", "y"]),
     ],
 )
@@ -263,8 +268,15 @@ SNAPSHOT = Snapshot(
             {"pr": PullRequest(1, "url"), "dirty": ("other.txt",)},
             Done(PullRequest(1, "url"), "head"),
         ),
-        ({"dirty": ("other.txt",)}, Block(("Outside allowed files: other.txt",))),
-        ({"changed": ("other.txt",)}, Block(("Outside allowed files: other.txt",))),
+        (
+            {"dirty": (".github/workflows/ci.yml",)},
+            Block(("Protected path changed: .github/workflows/ci.yml",)),
+        ),
+        (
+            {"changed": ("scripts/test-integrity.sh",)},
+            Block(("Protected path changed: scripts/test-integrity.sh",)),
+        ),
+        ({"dirty": ("other.txt",)}, Verify()),
         ({"worktree": False, "ahead": ()}, Prepare()),
         ({"status": Status.TO_DO}, Prepare()),
         ({"ahead": (), "remote_head_sha": None}, Implement()),
@@ -335,3 +347,43 @@ def test_prompts_put_prepared_identity_before_scope(workdir: Path, repair: bool)
     assert prompt.startswith(preamble + "\n\n")
     assert prompt.endswith(scope)
     assert "No git commit, push or gh" in prompt
+
+
+def test_test_change_reason_is_read_from_the_orchestrator_notes() -> None:
+    scope = (
+        "## Standing rules\n\n- Implement only.\n\n"
+        "## Notes for the orchestrator\n\n- Commit: one.\n"
+        "- Test-change trailer: RulesError moves; pattern paths only\n"
+    )
+    assert read_test_change_reason(scope) == "RulesError moves; pattern paths only"
+    assert read_test_change_reason("- Test-change: not a scope line\n") is None
+    assert read_test_change_reason("## Notes\n\n- Commit: one.\n") is None
+
+
+def test_a_repair_that_changes_nothing_stops_with_the_agents_own_words() -> None:
+    from fugue.engine.pipeline import Engine
+    from fugue.workflow import RunState
+
+    stop = Engine._no_change_stop("CI repair", "Tried.\n\nThe check needs a trailer.\n")
+    assert stop.state == RunState.BLOCKED
+    assert stop.problems == ("The CI repair made no changes: Tried. The check needs a trailer.",)
+    assert "no explanation" in Engine._no_change_stop("CI repair", "").problems[0]
+
+
+def test_a_gate_command_may_name_a_mechanical_fix() -> None:
+    from fugue.config import FugueConfig
+
+    config = FugueConfig.model_validate(
+        {"policy": {"fix_commands": {"cargo fmt --all --check": ["cargo", "fmt", "--all"]}}}
+    )
+    assert config.policy.fix_commands["cargo fmt --all --check"] == ["cargo", "fmt", "--all"]
+    assert FugueConfig().policy.fix_commands == {}
+
+
+def test_a_role_may_name_the_shell_commands_it_is_allowed() -> None:
+    from fugue.config import FugueConfig
+
+    config = FugueConfig.model_validate(
+        {"roles": {"implementer": {"provider": "claude", "bash_allow": ["cargo:*"]}}}
+    )
+    assert [r for r in config.roles.values() if r.provider == "claude" and r.bash_allow]

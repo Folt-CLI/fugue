@@ -1,0 +1,19 @@
+"""Settings every flow has."""
+
+from pathlib import Path
+
+from fugue.config import Config
+
+
+class FlowConfig(Config):
+    """The base of every flow's settings. A flow adds its own and picks its environment prefix.
+
+    `record_runs`: write every event of a run to `<runs_dir>/<run id>.jsonl`.
+    `runs_dir`: where those files go; default `.fugue/runs` in the repository.
+    `auto`: answer the questions that only ask leave to go on (the yes before each step) by
+    themselves, so the run goes through without stopping.
+    """
+
+    auto: bool = False
+    record_runs: bool = True
+    runs_dir: Path | None = None

@@ -1,9 +1,3 @@
-from fugue.cli.app import app
+from fugue.cli import main
 
-
-def main() -> None:
-    app(prog_name="fugue")
-
-
-if __name__ == "__main__":
-    main()
+main()

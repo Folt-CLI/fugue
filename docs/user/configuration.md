@@ -132,6 +132,8 @@ All integer fields under `[limits]` must be greater than zero.
 | --- | --- | --- |
 | `max_repair_attempts` | `3` | Repair limit for one stage |
 | `max_concurrent_runs` | `1` | Maximum concurrent runs |
+| `parallel_children` | `1` | Most children of a Question or Epic worked at once on its feature branch; `1` works them one at a time, blockers first, then by Priority and ticket number |
+| `analysis_batch_size` | `5` | Most ready S and XS children analysed together in one analysis batch, one analyst call; M and L are always analysed one agent per ticket |
 | `database_wait_seconds` | `30` | Seconds to wait for the run database when another Fugue process is writing |
 | `agent_timeout_seconds` | `3600` | Agent call timeout |
 | `max_output_bytes` | `65536` | Output capture limit |
@@ -172,24 +174,35 @@ gate_commands = [
 Each command is an argument array, not a shell command string. Replace the list
 with the target repository's gate; required tools must already be installed.
 
-| Size | `analysis` | `review` | `max_components` |
-| --- | --- | --- | --- |
-| XS | `false` | `false` | `1` |
-| S | `false` | `true` | `1` |
-| M | `true` | `true` | `2` |
-| L | `true` | `true` | Unset (no maximum) |
-| XL | `false` | `false` | `0` |
+| Size | `analysis` | `review` | `max_components` | `selection` |
+| --- | --- | --- | --- | --- |
+| XS | `"full"` | `false` | `1` | `"policy"` |
+| S | `"full"` | `false` | `1` | `"policy"` |
+| M | `"full"` | `true` | `2` | `"policy"` |
+| L | `"full"` | `false` | Unset (no maximum) | `"developer"` |
+| XL | `"none"` | `false` | `0` | `"developer"` |
+
+`analysis` is `"none"`, `"scope"` or `"full"`. `"full"` publishes the
+options, a recommendation, the findings, the scope of the recommended option and a check of the four triggers. XS and S are analysed in full by default: there is no review behind them, so the analysis is complete, never abbreviated. `"scope"` is not a default but stays available: it scopes the ticket when its
+run starts, asking the analyst for the allowed files, scenarios and verification,
+and re-sizes the ticket to M when it does not fit the code. A ticket that already carries a scope attachment, such as an XS or S made by `fugue new`, is not analysed again. With `selection = "policy"`
+the recommendation is selected without you when no trigger fired, and the run goes on to
+implement; a fired trigger waits for you as before. `selection = "developer"` always
+waits.
+
+In a parent run, the ready S and XS children with no selected solution are analysed together in analysis batches of at most `limits.analysis_batch_size`, taken by Priority, then ticket number; each still gets its own complete analysis, trigger check and selection. A child is analysed only when it is ready, with no open blocker, and every M child and M Question waits the same way. A lone `fugue run N` on one S or XS ticket is a batch of one. See [the workflow](workflow.md#analysis-batches).
 
 Override a Size with a table such as `[policy.size_rules.S]`, supplying `analysis`
-and `review` booleans and, optionally, `max_components`. Omitted Sizes retain
+and `review` and, optionally, `max_components` and `selection`. Omitted Sizes retain
 their defaults. TOML has no null literal; omit an optional field to leave it unset.
 
 The default `human` profile preserves developer solution selection and explicit
 approval. `campaign` represents the repository's
 [autonomy exceptions](../dev/process.md#autonomous-development-campaign-exceptions);
 choosing the value is not a substitute for actual consent or credentials. The
-`human` profile still stops a run at the stack approval unless you pass
-`fugue run --authorise` for that invocation.
+`human` profile still stops each child of a Question or Epic at its merge
+approval unless you pass `fugue run --authorise` for that invocation, and always
+stops at the approval of the feature pull request.
 
 ### Interview configuration
 

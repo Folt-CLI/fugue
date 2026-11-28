@@ -1,28 +1,37 @@
-"""Public core data models."""
+"""Core data models."""
 
-from fugue.models.enums import (
-    AuthenticationMode,
-    Component,
-    Disposition,
-    IssueType,
-    ModelTier,
-    Priority,
-    Role,
-    Size,
-    Status,
+from fugue.models.branch import Branch
+from fugue.models.comment import Comment
+from fugue.models.gate import CheckResult, GateResult
+from fugue.models.label import Label
+from fugue.models.project import (
+    FieldChange,
+    Project,
+    ProjectField,
+    ProjectItem,
+    ProjectOption,
+    ProjectOverview,
+    ProjectTable,
 )
-from fugue.models.ticket import SizeRule, Ticket
+from fugue.models.pull_request import Check, PullRequest
+from fugue.models.repo_info import RepoInfo
+from fugue.models.ticket import Ticket
 
 __all__ = [
-    "AuthenticationMode",
-    "Component",
-    "Disposition",
-    "IssueType",
-    "ModelTier",
-    "Priority",
-    "Role",
-    "Size",
-    "SizeRule",
-    "Status",
+    "Branch",
+    "Check",
+    "CheckResult",
+    "Comment",
+    "FieldChange",
+    "GateResult",
+    "Label",
+    "Project",
+    "ProjectField",
+    "ProjectItem",
+    "ProjectOption",
+    "ProjectOverview",
+    "ProjectTable",
+    "PullRequest",
+    "RepoInfo",
     "Ticket",
 ]

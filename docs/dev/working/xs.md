@@ -11,31 +11,22 @@ Set the milestone, Priority, Size, Status and ownership from the [shared steps](
 
 ## Analysis and review
 
-XS needs no analysis and no review.
+XS gets a [full analysis](README.md#analysis-depths), shared with other ready XS and S tickets in an analysis batch, and no review. There is no review behind it, so the analysis is complete, never abbreviated: findings, options, a recommendation, the four trigger checks, key points and the scope of the recommended option.
 
-## Solution
+## Outcome
 
-Write Solution at creation, short and readable for the developer, in the style
-of Analysis. It comes from the enabling Question, with no solution selection;
-the Question's answer does not replace a missing Solution or scope.
+Write the outcome in Summary and two or three numbered scenarios in Scope, with
+**Agreed in #N** when a parent Question decided something the work must respect.
+XS is created with no scope attachment; its analysis publishes Analysis, the findings and the recommended option's scope, and the selection fills Solution. When no trigger fired the policy selects; a fired trigger parks the ticket for the developer.
 
-Use a `> [!IMPORTANT]` decision line, **Agreed in #N** (what the parent Question
-decided), **You get**, **Changes**, **Not changed** and **Watch out**, then
-**Implementation scope** linking the complete `<N>-solution-1.md` scope attachment.
-
-Attach with gh-attach and verify at creation by downloading and comparing.
-
-XS may skip the scope file when the ticket is self-descriptive. Follow the
-[S and XS Solution layout](../issue-format.md#s-and-xs-solution-layout) and the
-applicable [type row](README.md#by-issue-type).
+If implementation needs more than the ticket says, stop and re-size to S. See
+[Re-sizing](README.md#analysis-triggers-and-re-sizing).
 
 ## Statuses
 
-The ticket is ready when its Solution and scope exist at creation.
-Only self-descriptive XS may skip the scope.
-Do not start the implementation agent or move the ticket to S3 or S4 before these requirements are met.
+The ticket is ready to analyse when its outcome and scenarios exist and it has no open blocker. It is analysed only then, never on code that does not exist yet.
 
-Status path: `S0: To Do` -> `S4: In Implementation` -> `S5: Done`.
+Status path: `S0: To Do` -> `S1: In Analysis` -> `S3: Ready For Implementation` -> `S4: In Implementation` -> `S5: Done`. An XS that already carries its scope attachment goes `S0: To Do` -> `S4: In Implementation` -> `S5: Done`.
 Project workflows set Done on close and on merge.
 
 ## Who does what

@@ -1,0 +1,317 @@
+#windows {
+    height: 1fr;
+}
+
+#pages {
+    width: 1fr;
+}
+
+TabPane {
+    padding: 0;
+}
+
+TabPane > Window {
+    border: none;
+    height: 1fr;
+}
+
+Window {
+    border: round $primary-background-lighten-2;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+Window:focus,
+Window:focus-within {
+    border: round $accent;
+}
+
+Window > Static {
+    margin-bottom: 1;
+}
+
+LogWindow > Static {
+    margin-bottom: 0;
+}
+
+Window > .placeholder {
+    color: $text-muted;
+}
+
+ChecklistWindow {
+    width: 38;
+}
+
+StatusBar {
+    height: 1;
+    padding: 0 1;
+    background: $primary-background;
+}
+
+ActionWindow {
+    height: auto;
+    max-height: 60%;
+    padding: 0 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#action-text {
+    text-style: bold;
+}
+
+#action-body {
+    height: auto;
+    max-height: 8;
+    margin-top: 1;
+}
+
+#action-area {
+    height: auto;
+}
+
+#action-choices {
+    height: auto;
+    margin-top: 1;
+    grid-gutter: 0 2;
+}
+
+#action-other {
+    height: 3;
+    margin-top: 1;
+}
+
+#action-other .marker {
+    width: 3;
+    padding: 1 1 0 1;
+    color: $text-muted;
+}
+
+#action-other.-chosen .marker {
+    color: $accent;
+}
+
+#action-other Input {
+    width: 1fr;
+    border: round $panel-lighten-2;
+    background: transparent;
+}
+
+#action-other Input:focus,
+#action-other.-chosen Input {
+    border: round $accent;
+}
+
+#action-picker {
+    height: auto;
+    max-height: 8;
+    margin-top: 1;
+    border: round $panel-lighten-2;
+    background: transparent;
+}
+
+#action-picker:focus {
+    border: round $accent;
+}
+
+#action-chat {
+    height: auto;
+    min-height: 3;
+    max-height: 8;
+    margin-top: 1;
+    border: round $panel-lighten-2;
+    background: transparent;
+}
+
+#action-chat:focus {
+    border: round $accent;
+}
+
+.hint {
+    color: $text-muted;
+    margin-bottom: 0;
+}
+
+#action-choices Button {
+    width: 100%;
+    height: 3;
+    border: round $panel-lighten-2;
+    border-top: round $panel-lighten-2;
+    border-bottom: round $panel-lighten-2;
+    background: transparent;
+    color: $text-muted;
+    text-style: none;
+}
+
+#action-choices Button:hover {
+    border: round $accent;
+    color: $text;
+}
+
+#action-choices Button:focus {
+    border: round $accent;
+    background: $accent 25%;
+    color: $text;
+    text-style: bold;
+}
+
+Action {
+    height: auto;
+}
+
+#action-choices Button.-picked {
+    border: round $success;
+    color: $text;
+}
+
+#form-progress {
+    margin-top: 1;
+    color: $text-muted;
+}
+
+#form-fields {
+    height: auto;
+    max-height: 12;
+    margin-top: 1;
+    border: round $panel-lighten-2;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+.form-field {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-question {
+    text-style: bold;
+    color: $accent;
+}
+
+.form-body {
+    color: $text-muted;
+}
+
+#form-actions {
+    height: 3;
+    margin-top: 1;
+    align-horizontal: right;
+}
+
+#form-submit {
+    width: auto;
+    min-width: 22;
+    height: 3;
+    border: round $success;
+    background: transparent;
+    color: $text;
+}
+
+#form-submit:hover {
+    background: $success 20%;
+}
+
+#form-submit:focus {
+    background: $success 35%;
+    text-style: bold;
+}
+
+FormScreen {
+    align: center middle;
+    background: $background 70%;
+}
+
+#form-window {
+    width: 90%;
+    height: 90%;
+    padding: 0 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#form-intro {
+    margin-top: 1;
+}
+
+FormScreen FormAction {
+    height: 1fr;
+}
+
+FormScreen #form-fields {
+    height: 1fr;
+    max-height: 100%;
+}
+
+AiWindow {
+    overflow: hidden;
+    padding: 0;
+}
+
+AiWindow > Horizontal {
+    height: 100%;
+}
+
+#agent-list {
+    width: 28;
+    height: 100%;
+    border: none;
+    border-right: tall $panel-lighten-2;
+    background: transparent;
+    padding: 0;
+}
+
+#agent-list:focus {
+    border-right: tall $accent;
+}
+
+#agent-logs {
+    width: 1fr;
+    height: 100%;
+}
+
+#agent-logs AgentLog {
+    height: 100%;
+    scrollbar-size-vertical: 1;
+    background: transparent;
+    padding: 0 1;
+}
+
+#agents-empty {
+    padding: 0 1;
+}
+
+#agent-list > .option-list--option-highlighted {
+    background: $accent 30%;
+    color: $text;
+    text-style: bold;
+}
+
+#agent-list:focus > .option-list--option-highlighted {
+    background: $accent 60%;
+}
+
+#agent-list > .option-list--option-hover {
+    background: transparent;
+}
+
+#agent-list > .option-list--option-hover-highlighted {
+    background: $accent 30%;
+}
+
+.agent-line {
+    height: auto;
+}
+
+ErrorScreen {
+    align: center middle;
+    background: $background 70%;
+}
+
+#error-window {
+    width: 70%;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    border: round $error;
+    background: $surface;
+}

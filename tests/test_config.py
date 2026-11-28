@@ -32,6 +32,8 @@ def test_load_defaults() -> None:
         "interview_automatic_max_seconds": 1800,
         "max_repair_attempts": 3,
         "max_concurrent_runs": 1,
+        "parallel_children": 1,
+        "analysis_batch_size": 5,
         "database_wait_seconds": 30,
         "agent_timeout_seconds": 3600,
         "max_output_bytes": 65536,
@@ -40,6 +42,7 @@ def test_load_defaults() -> None:
         "provider_cooldown_seconds": 300,
         "overview_max_tickets": 100,
         "overview_cache_seconds": 300,
+        "ignored_checks": [],
         "infrastructure_markers": [
             "runner lost",
             "the runner has received a shutdown signal",
@@ -47,6 +50,9 @@ def test_load_defaults() -> None:
             "temporary failure in name resolution",
             "503 service unavailable",
             "no space left on device",
+            "was not acquired by runner",
+            "_result: abandoned",
+            "capacity constraints",
         ],
     }
     assert {role: settings.provider for role, settings in config.roles.items()} == {
@@ -74,12 +80,13 @@ autonomy_profile = "campaign"
 commit_subject_max = 60
 gate_commands = [["uv", "run", "pytest"]]
 [policy.size_rules.S]
-analysis = true
-review = false
+analysis = "full"
+review = true
 max_components = 2
 [limits]
 max_repair_attempts = 5
 max_concurrent_runs = 2
+parallel_children = 3
 agent_timeout_seconds = 60
 max_output_bytes = 1024
 [roles.analyst]
@@ -93,9 +100,10 @@ model = "chosen-model"
     assert config.policy.commit_subject_max == 60
     assert config.policy.gate_commands == [["uv", "run", "pytest"]]
     assert config.policy.size_rules[Size.S].model_dump() == {
-        "analysis": True,
-        "review": False,
+        "analysis": "full",
+        "review": True,
         "max_components": 2,
+        "selection": "developer",
     }
     assert config.limits.model_dump() == {
         "interview_max_turns": 10,
@@ -103,6 +111,8 @@ model = "chosen-model"
         "interview_automatic_max_seconds": 1800,
         "max_repair_attempts": 5,
         "max_concurrent_runs": 2,
+        "parallel_children": 3,
+        "analysis_batch_size": 5,
         "database_wait_seconds": 30,
         "agent_timeout_seconds": 60,
         "max_output_bytes": 1024,
@@ -111,6 +121,7 @@ model = "chosen-model"
         "provider_cooldown_seconds": 300,
         "overview_max_tickets": 100,
         "overview_cache_seconds": 300,
+        "ignored_checks": [],
         "infrastructure_markers": [
             "runner lost",
             "the runner has received a shutdown signal",
@@ -118,6 +129,9 @@ model = "chosen-model"
             "temporary failure in name resolution",
             "503 service unavailable",
             "no space left on device",
+            "was not acquired by runner",
+            "_result: abandoned",
+            "capacity constraints",
         ],
     }
     assert config.roles[Role.ANALYST].provider == "codex"
@@ -141,15 +155,16 @@ def test_size_rule_override_keeps_other_size_defaults(tmp_path: Path) -> None:
     config = load_config(
         write_config(
             tmp_path,
-            "[policy.size_rules.S]\nanalysis = true\nreview = false\nmax_components = 3",
+            '[policy.size_rules.S]\nanalysis = "full"\nreview = true\nmax_components = 3',
         )
     )
     defaults = load_config(None)
     assert set(config.policy.size_rules) == set(Size)
     assert config.policy.size_rules[Size.S].model_dump() == {
-        "analysis": True,
-        "review": False,
+        "analysis": "full",
+        "review": True,
         "max_components": 3,
+        "selection": "developer",
     }
     for size in (Size.XS, Size.M, Size.L, Size.XL):
         assert config.policy.size_rules[size] == defaults.policy.size_rules[size]
@@ -159,7 +174,7 @@ def test_size_rule_override_keeps_other_size_defaults(tmp_path: Path) -> None:
     ("content", "key"),
     [
         ('[roles.reviewer]\nmodel = "review-model"', "roles.reviewer.provider"),
-        ("[policy.size_rules.S]\nanalysis = true", "policy.size_rules.S.review"),
+        ('[policy.size_rules.S]\nanalysis = "full"', "policy.size_rules.S.review"),
     ],
 )
 def test_overridden_entries_replace_the_entire_entry(
@@ -181,7 +196,7 @@ def test_overridden_entries_replace_the_entire_entry(
             "roles.analyst.unknown",
         ),
         (
-            "[policy.size_rules.S]\nanalysis = false\nreview = true\n"
+            '[policy.size_rules.S]\nanalysis = "none"\nreview = true\n'
             "max_components = 1\nunknown = true",
             "policy.size_rules.S.unknown",
         ),
@@ -193,7 +208,7 @@ def test_overridden_entries_replace_the_entire_entry(
         ),
         ('[policy]\nautonomy_profile = "unknown"', "policy.autonomy_profile"),
         (
-            "[policy.size_rules.XXL]\nanalysis = false\nreview = true\nmax_components = 1",
+            '[policy.size_rules.XXL]\nanalysis = "none"\nreview = true\nmax_components = 1',
             "policy.size_rules.XXL",
         ),
     ],
@@ -227,6 +242,8 @@ def test_api_key_requires_explicit_toml(tmp_path: Path) -> None:
     [
         "max_repair_attempts",
         "max_concurrent_runs",
+        "parallel_children",
+        "analysis_batch_size",
         "database_wait_seconds",
         "agent_timeout_seconds",
         "max_output_bytes",
@@ -244,15 +261,24 @@ def test_positive_limit_boundaries(tmp_path: Path) -> None:
             tmp_path,
             "[limits]\ninterview_max_turns = 1\ninterview_call_timeout_seconds = 1\n"
             "interview_automatic_max_seconds = 1\n"
-            "max_repair_attempts = 1\nmax_concurrent_runs = 1\n"
+            "max_repair_attempts = 1\nmax_concurrent_runs = 1\nparallel_children = 1\n"
+            "analysis_batch_size = 1\n"
             "database_wait_seconds = 1\nagent_timeout_seconds = 1\nmax_output_bytes = 1\n"
             "ci_poll_interval_seconds = 1\nci_timeout_seconds = 1\n"
             "provider_cooldown_seconds = 1\noverview_max_tickets = 1\noverview_cache_seconds = 1",
         )
     )
-    integers = config.limits.model_dump(exclude={"infrastructure_markers"})
-    assert len(integers) == 13
+    integers = config.limits.model_dump(exclude={"infrastructure_markers", "ignored_checks"})
+    assert len(integers) == 15
     assert set(integers.values()) == {1}
+
+
+def test_analysis_batch_size_is_configurable(tmp_path: Path) -> None:
+    assert FugueConfig().limits.analysis_batch_size == 5
+    config = load_config(write_config(tmp_path, "[limits]\nanalysis_batch_size = 2"))
+    assert config.limits.analysis_batch_size == 2
+    with pytest.raises(ConfigError, match=r"limits\.analysis_batch_size"):
+        load_config(write_config(tmp_path, '[limits]\nanalysis_batch_size = "five"'))
 
 
 def test_missing_file(tmp_path: Path) -> None:

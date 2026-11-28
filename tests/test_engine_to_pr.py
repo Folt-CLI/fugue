@@ -40,6 +40,14 @@ from fugue.workflow import RunState
 SCOPE = "You may touch only these files:\n- `allowed.txt`\n\nImplement the change."
 
 
+def as_prompted(scope: str) -> str:
+    """The scope as the agent reads it: the file list is expected files, not a limit."""
+    return scope.replace(
+        "You may touch only these files",
+        "Files this work is expected to change (change others when the work needs them)",
+    )
+
+
 class FakeGitHub:
     def __init__(self, ticket: Ticket) -> None:
         self.ticket = ticket
@@ -319,7 +327,7 @@ def test_gate_repair_resumes_session(harness: Harness, session_id: str | None) -
         "placeholder and use this directory and branch.\n\n"
     )
     if session_id is None:
-        assert SCOPE in adapter.requests[1].prompt
+        assert as_prompted(SCOPE) in adapter.requests[1].prompt
     assert "Gate failed:" in adapter.requests[1].prompt
     assert harness.deps.store.usage_summary(outcome.run_id)["input_tokens"] == 20
 
@@ -356,7 +364,8 @@ def test_repair_limit(harness: Harness) -> None:
 def test_staging_violation(harness: Harness) -> None:
     def write_disallowed(request: AgentRequest) -> None:
         write_allowed(request)
-        (request.cwd / "disallowed.txt").write_text("outside scope")
+        (request.cwd / ".fugue").mkdir(exist_ok=True)
+        (request.cwd / ".fugue" / "disallowed.txt").write_text("outside scope")
 
     adapter = ScriptedAdapter(
         [ScriptStep(result=result(), side_effect=write_disallowed)], name="codex"
@@ -378,8 +387,9 @@ def test_commits_ahead_outside_allowed_files_block(
     path = stop_after_commit(harness, monkeypatch)
 
     async def tamper() -> None:
-        (path / "disallowed.txt").write_text("outside scope")
-        await git_command(path, "add", "--", "disallowed.txt")
+        (path / ".fugue").mkdir(exist_ok=True)
+        (path / ".fugue" / "disallowed.txt").write_text("outside scope")
+        await git_command(path, "add", "--", ".fugue/disallowed.txt")
         if how == "amended":
             await git_command(path, "commit", "--amend", "--no-edit")
         else:
@@ -389,7 +399,7 @@ def test_commits_ahead_outside_allowed_files_block(
     forbid_push(monkeypatch)
     outcome = harness.run()
     assert outcome.state == RunState.BLOCKED
-    assert outcome.problems == ("Outside allowed files: disallowed.txt",)
+    assert outcome.problems == ("Protected path changed: .fugue/disallowed.txt",)
     assert not harness.github.created
     assert asyncio.run(git_command(harness.origin, "branch", "--list", "feature/*")) == ""
 
@@ -544,7 +554,7 @@ def test_replaced_scope_implements_again(harness: Harness, monkeypatch: pytest.M
     outcome = harness.run()
     assert outcome.state == RunState.WAITING_FOR_CI
     assert len(adapter.requests) == 2
-    assert adapter.requests[1].prompt.endswith(new_scope)
+    assert adapter.requests[1].prompt.endswith(as_prompted(new_scope))
     assert (path / "allowed.txt").read_text() == "revised"
     assert commit_count(path, "develop") == 2
     assert harness.github.calls.count("download") == 2
@@ -650,7 +660,7 @@ def test_session_reuse_requires_matching_provider_and_authentication(
     assert second.state == RunState.WAITING_FOR_CI
     assert second.run_id == first.run_id
     assert replacement.requests[0].session_id is None
-    assert SCOPE in replacement.requests[0].prompt
+    assert as_prompted(SCOPE) in replacement.requests[0].prompt
 
 
 # Scenario 11
@@ -753,12 +763,8 @@ def test_special_changed_paths_block_without_delivery(
     outcome = harness.run()
     assert outcome.state == RunState.BLOCKED
     assert harness.deps.store.get_run(outcome.run_id).state == RunState.BLOCKED
-    if allowed:
-        assert name in stage_paths
-        assert any(f"Cannot stage path {name!r}" in problem for problem in outcome.problems)
-    else:
-        assert not stage_paths
-        assert f"Outside allowed files: {name}" in outcome.problems
+    assert name in stage_paths
+    assert any(f"Cannot stage path {name!r}" in problem for problem in outcome.problems)
     path = worktree_path(harness.deps.worktrees_root, harness.github.ticket)
     assert asyncio.run(Git(path).head_sha()) == harness.initial_head
     assert not harness.github.created
@@ -968,7 +974,7 @@ def test_delivery_prompt_uses_prepared_identity_over_scope(harness: Harness) -> 
         "If the scope below names a different worktree path or branch, treat that as a "
         "placeholder and use this directory and branch.\n\n"
     )
-    assert request.prompt.endswith(harness.github.scope)
+    assert request.prompt.endswith(as_prompted(harness.github.scope))
 
 
 DIVERGED = "The remote branch has diverged from the local branch; resolve it before pushing"
