@@ -10,12 +10,16 @@ import pygit2
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic_core import PydanticUndefined
 
-from fugue.config import Config, GithubConfig
+from fugue.config import AgentsConfig, Config, GithubConfig
 from fugue.configfiles import ConfigFiles, Scope
 from fugue.core.work.config import WorkConfig
 from fugue.errors import ConfigError
 
-SECTIONS: dict[str, type[Config]] = {"github": GithubConfig, "work": WorkConfig}
+SECTIONS: dict[str, type[Config]] = {
+    "github": GithubConfig,
+    "work": WorkConfig,
+    "agents": AgentsConfig,
+}
 
 
 @dataclass(frozen=True)

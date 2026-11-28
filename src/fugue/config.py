@@ -1,6 +1,7 @@
 """Configuration, one class per concern. Each is read from the environment and, for a setting
 that can be kept in a file, from the settings files (see `Scope`)."""
 
+from pathlib import Path
 from typing import Any, ClassVar, Self
 
 from pydantic import SecretStr, ValidationError
@@ -107,3 +108,20 @@ class GithubConfig(Config):
     token: SecretStr
     api_url: str = "https://api.github.com"
     project: int | None = None
+
+
+class AgentsConfig(Config):
+    """Extra guidance for each kind of agent: the path of a Markdown file, added after Fugue's own
+    prompt for that agent and never replacing it. A relative path is from the repository root.
+
+    FUGUE_AGENTS_ANALYSIS, FUGUE_AGENTS_IMPLEMENTATION and FUGUE_AGENTS_REVIEWER, or
+    `fugue config set agents.analysis /some/path/guidance.md`.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="FUGUE_AGENTS_")
+
+    section = "agents"
+
+    analysis: Path | None = None
+    implementation: Path | None = None
+    reviewer: Path | None = None
