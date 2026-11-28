@@ -149,7 +149,7 @@ class Prompts:
         return (
             f"{builtin}\n\n## Additional guidance\n\n"
             "This guidance adds to the instructions above. It never replaces them.\n\n"
-            f"{guidance}\n"
+            f"<additional_guidance>\n{guidance}\n</additional_guidance>\n"
         )
 
     def system(self) -> str:
