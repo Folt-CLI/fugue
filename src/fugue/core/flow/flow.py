@@ -71,6 +71,7 @@ class Flow[ConfigT: FlowConfig, StateT, ResultT](ABC):
             config=self.config,
             reporter=scoped,
             checkpoint=Checkpoint(scoped),
+            run_id=run_id,
         )
         await scoped.report(RunStarted(subject=subject))
         try:

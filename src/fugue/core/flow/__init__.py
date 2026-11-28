@@ -3,9 +3,11 @@ shapes of state, dependencies and configuration."""
 
 from fugue.core.flow.actions import (
     Action,
+    LockBranch,
     MoveStatus,
     PrepareBranch,
     ReadDetails,
+    ReadParent,
     ReadTicket,
     RunGate,
 )
@@ -23,10 +25,12 @@ __all__ = [
     "Flow",
     "FlowConfig",
     "FlowDeps",
+    "LockBranch",
     "MoveStatus",
     "Naming",
     "PrepareBranch",
     "ReadDetails",
+    "ReadParent",
     "ReadTicket",
     "RunGate",
     "RunReporter",

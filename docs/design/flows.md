@@ -6,17 +6,28 @@ The flows are pydantic-graph graphs of class nodes. Each step reports `StepStart
 
 ## What is built today
 
-**Built.** One flow, `work`, with these steps:
+**Built.** `fugue work N` reads the ticket's type and picks the flow (`core/work/route.py`):
 
-1. Read the ticket, and the project's fields for it (status, size, type, priority, component, disposition, milestone, assignees and the rest).
-2. Move the project status to `work.started_status` (by default `S4: In Implementation`).
-3. Prepare the branch and the worktree: `<type>/<N>-<slug>` from `origin/<base>`, in `.worktrees/<branch>`.
-4. The pipeline stages for the ticket's Size: analyse, implement, gate, review. Analyse, implement and review say "no agent set" and go on. The gate runs the configured checks.
-5. Finish.
+| Type | Tier | Flow |
+| --- | --- | --- |
+| Epic | XL | Refused: an Epic is not worked. |
+| Question, Incident | L | Stops with "not built yet". |
+| Feature, Bug, Maintenance | M | Stops with "not built yet". |
+| Task, Test, Documentation | S, XS | The unit flow. |
 
-It reads the ticket's Size from the project (and asks when it is missing), refuses any type but Task, Feature and Maintenance, and refuses L and XL sizes. This is the older routing and it is to be replaced by the routing below.
+A ticket with no type, or a type with no flow, is refused with a message that says so.
 
-**Agreed.** The first change is to route by type. Everything below describes the target.
+The unit flow has these steps:
+
+1. Read the ticket, and the project's fields for it. A closed ticket is refused. Its Size must be XS or S (it is asked when missing).
+2. Check the parent. A unit must have a parent that is a Feature, Bug or Maintenance, and it must be open. When the M says `Builds on #N` and #N is still open, the run is refused until #N is closed, because the M's code would be missing from the base branch.
+3. Lock the branch. The lock is a file in Git's own folder, so it never shows as a change. A branch worked by a live run is refused. A lock left by a run that is gone is taken over only when the developer says yes.
+4. Prepare the branch and the worktree, for the M: `<type>/<M>-<slug>`. Fugue fetches the branch from origin. When it exists there and the worktree exists, the worktree is reset to it. When the worktree is missing it is created from it. When the branch is not on origin it is created from the base branch. A worktree with uncommitted changes, or a branch with commits origin does not have, is refused, so nothing local is lost.
+5. Move the project status to `work.started_status` (by default `S3: In Implementation`).
+6. The stages: XS plans, implements and runs the gate. S plans, implements, runs the gate and is reviewed. The plan, implementation and review say "no agent set" and go on. The gate runs the configured checks.
+7. Finish, and let go of the lock.
+
+**Agreed.** The L and M flows below, and the agents of the unit flow.
 
 ## Before every step: the checkpoint
 

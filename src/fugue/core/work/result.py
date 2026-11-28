@@ -11,6 +11,7 @@ class WorkResult(BaseModel):
 
     repository: str
     ticket: Ticket
+    parent: Ticket | None = None
     status: str | None = None
     worktree: Worktree | None = None
     gate: GateResult | None = None

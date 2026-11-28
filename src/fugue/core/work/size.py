@@ -4,8 +4,8 @@ from enum import StrEnum
 
 
 class Size(StrEnum):
-    """XS, S and M are worked by `fugue work`. L is always a Question and XL an Epic, so they
-    are not implementation work."""
+    """Only XS and S are told apart by `fugue work`: they are the sizes of a unit. The other
+    tiers are chosen by issue type, not by Size."""
 
     XS = "XS"
     S = "S"
@@ -20,8 +20,5 @@ class Size(StrEnum):
         return next((size for size in cls if size.value == wanted), None)
 
 
-WORKED_SIZES = (Size.XS, Size.S, Size.M)
-"""The sizes an implementation ticket can have."""
-
-WORKED_TYPES = ("Task", "Feature", "Maintenance")
-"""The issue types that follow the implementation pipelines."""
+UNIT_SIZES = (Size.XS, Size.S)
+"""The sizes a unit (a Task, Test or Documentation) can have."""

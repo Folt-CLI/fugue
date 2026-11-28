@@ -128,10 +128,13 @@ Rules:
 
 ## Statuses
 
-The project's status values are `S0: To Do`, `S1: In Analysis`, `S3: Ready For Implementation`, `S4: In Implementation`, `S5: Done`. The project workflows set Done on close and on merge.
+The agreed status values are `S0: To Do`, `S1: In Analysis`, `S2: Ready for Implementation`, `S3: In Implementation`, `S4: In Review` and `S5: Done`. S3 and S4 go both ways: a blocking review finding sends a unit back to S3.
 
-- **Built.** The work flow moves the ticket to `S4: In Implementation` right after reading it, for every ticket. The value is a setting (`work.started_status`), and so is the project field's name (`work.status_field`).
-- **Open.** The status for each tier and step is not decided. A suggestion: an M is `S1` while the logic is built, `S3` once a version is picked, and `S4` while its units are being worked. A unit is `S4` while it runs.
+- **Open.** The project on GitHub still has the old values (`S3: Ready For Implementation`, `S4: In Implementation`), so it has to be renamed before a run can move a ticket. The project workflows set Done on close and on merge.
+
+- **Built.** The unit flow moves the unit to `S3: In Implementation` once its worktree is ready. The value is a setting (`work.started_status`), and so is the project field's name (`work.status_field`).
+- **Agreed.** A unit is S3 while it works, S4 while it is reviewed, S5 when merged. An L and an M are S1 while the interview or the logic runs and S2 once the M list or the units exist. An M is S3 on its first unit, S4 when its pull request is ready, S5 when merged.
+- **Open.** Moving the other statuses is built with the flows that need them.
 
 ## Parents and the backlog
 

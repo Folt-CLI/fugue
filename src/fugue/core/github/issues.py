@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from typing import Any, Literal
 
+from githubkit.exception import RequestFailed
 from githubkit.utils import UNSET
 
 from fugue.core.github.area import Area
@@ -83,6 +84,28 @@ class Issues(Area):
     async def reopen(self, number: int) -> Ticket:
         """Reopen a closed issue."""
         return await self._update(number, {"state": "open"})
+
+    async def parent(self, number: int) -> Ticket | None:
+        """The issue `number` is a sub-issue of, or None when it has no parent."""
+        await self.get(number)  # a 404 below must mean "no parent", so the issue has to exist
+        try:
+            response = await self._client.rest.issues.async_get_parent(
+                self._owner, self._name, number
+            )
+        except RequestFailed as error:
+            if error.response.status_code == 404:
+                return None
+            with self._github.guard(f"the parent of {self._slug}#{number}"):
+                raise
+        return self._to_ticket(response.parsed_data)
+
+    async def sub_issues(self, number: int, *, limit: int = 100) -> Sequence[Ticket]:
+        """The sub-issues of an issue, in their order."""
+        with self._github.guard(f"{self._slug}#{number}"):
+            response = await self._client.rest.issues.async_list_sub_issues(
+                self._owner, self._name, number, per_page=self._page(limit)
+            )
+        return [self._to_ticket(issue) for issue in self._each(response.parsed_data)][:limit]
 
     async def comment(self, number: int, body: str) -> Comment:
         """Add a comment to an issue or a pull request."""

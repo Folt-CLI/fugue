@@ -16,13 +16,15 @@
 | Questions: Ask, Select, Chat, Form, Other, hold and resume | Built | `cli/tui/action/` |
 | Run states: Running, Stopped, Finished | Built | `core/reporting/events.py` |
 | `--headless`, `--auto`, `--quiet`, `--project` | Built | `cli/commands/work.py` |
-| Worktrees under `.worktrees` | Built, per ticket (to become per M) | `core/gitops/worktrees.py` |
+| Worktrees under `.worktrees`, per M, brought up to date with origin, refused when dirty or ahead | Built | `core/gitops/worktrees.py` |
+| A lock on an M's branch, with takeover of a dead run | Built | `core/gitops/lock.py` |
+| Parent and sub-issue reads | Built | `core/github/issues.py` |
 | The gate, with its checks listed in the checklist | Built | `core/flow/actions/run_gate.py` |
 | The project's fields under the ticket | Built | `core/flow/actions/read_details.py` |
 | Mermaid diagrams drawn as text in the terminal | Built | `cli/views/markdown.py`, with `termaid` |
 | Agent prompts, templates, the loader and `Template.missing` | Built | `src/fugue/prompts/`, `core/agents/prompts.py` |
 | Question tools for agents | Built in core, no adapter | `core/agents/tools.py` |
-| The work flow | Built, older routing | `core/work/` |
+| `fugue work` routes by type; the unit flow reads, checks the parent, locks, prepares the branch and moves the status; L and M say not built | Built, agent stages are empty | `core/work/` |
 
 The work flow runs: read the ticket, read its project fields, move the status, prepare the branch, then the stages for the Size, with the gate running and the agent stages saying "no agent set".
 

@@ -41,3 +41,4 @@ class FlowDeps[ConfigT]:
     config: ConfigT
     reporter: Reporter
     checkpoint: Checkpoint
+    run_id: str = ""
