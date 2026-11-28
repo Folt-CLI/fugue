@@ -128,8 +128,8 @@ class UserTools:
             "ready_to_analyse",
         ),
     }
-    """The tools each role gets. The scoping, implementation and reviewer agents get none: scoping
-    re-sizes instead of asking, and the other two do not talk to the developer."""
+    """The tools each role gets. The implementation and reviewer agents get none: they do not
+    talk to the developer."""
 
     def __init__(self, reporter: Reporter, agent: str, *, limit: int | None = None) -> None:
         self._reporter = reporter
