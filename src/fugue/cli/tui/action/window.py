@@ -54,6 +54,7 @@ class ActionWindow(Vertical):
         """Show the question and wait for an answer. Focus goes back to `returning_to` after.
 
         A question tagged as a hold is not shown: it waits until `show` is called."""
+        self.border_title = f"{question.asked_by} asks" if question.asked_by else "Action needed"
         action = self.ACTIONS[type(question)](question)
         await self._present(question, action)
         self._action = action

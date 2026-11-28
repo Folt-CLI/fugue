@@ -26,7 +26,8 @@ class FormScreen(ModalScreen[Answer]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#form-window").border_title = self._form.text
+        asker = f"{self._form.asked_by}: " if self._form.asked_by else ""
+        self.query_one("#form-window").border_title = f"{asker}{self._form.text}"
         self.call_after_refresh(self.query_one(FormAction).focus_first)
 
     def on_action_answered(self, event: Action.Answered) -> None:

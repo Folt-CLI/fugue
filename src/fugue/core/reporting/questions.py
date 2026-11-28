@@ -51,7 +51,8 @@ class Answer(BaseModel):
 
 class Question(BaseModel, ABC):
     """What every question has: the `text` that asks it, a `body` in Markdown to read before
-    answering (a plan, a summary), and `tags` that say what kind of question it is.
+    answering (a plan, a summary), `tags` that say what kind of question it is, and `asked_by`,
+    the name of the agent that asks when one does, so the screen can say who is asking.
 
     A question tagged `PERMISSION` only asks leave to go on, and an automatic run skips it. One
     tagged `HOLD` waits until the person calls it up."""
@@ -61,6 +62,7 @@ class Question(BaseModel, ABC):
     text: str
     body: str = ""
     tags: tuple[str, ...] = ()
+    asked_by: str = ""
 
     @property
     def is_permission(self) -> bool:
