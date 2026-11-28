@@ -19,6 +19,7 @@
 | Worktrees under `.worktrees` | Built, per ticket (to become per M) | `core/gitops/worktrees.py` |
 | The gate, with its checks listed in the checklist | Built | `core/flow/actions/run_gate.py` |
 | The project's fields under the ticket | Built | `core/flow/actions/read_details.py` |
+| Mermaid diagrams drawn as text in the terminal | Built | `cli/views/markdown.py`, with `termaid` |
 | Agent prompts, templates, the loader and `Template.missing` | Built | `src/fugue/prompts/`, `core/agents/prompts.py` |
 | Question tools for agents | Built in core, no adapter | `core/agents/tools.py` |
 | The work flow | Built, older routing | `core/work/` |
@@ -123,6 +124,7 @@ Everything the developer decided, in order. A quotation is the developer's own w
 61. Branching: an M creates `feature/5-...`, `bug/5-...` or `maintenance/5-...`. S and XS are commits on that branch, and a Task carries the M's tag.
 62. Non-blocking findings are not handled in the M. They are filed in the backlog and moved under a relevant M when one is created. Logic gaps get their own M-sized Bug ticket.
 63. Unblocked XS and S tickets run through the same analysis agent, because it relies on the M ticket. **Superseded.** The developer decided grouping is not for now: it will be a different command, and `work` only targets one ticket.
+64. Flows and diagrams are Mermaid, one source for GitHub and the terminal. GitHub draws it, `termaid` draws it in the terminal, and a diagram that does not fit the window is shown as its source.
 
 ### Unaddressed until this write-up
 

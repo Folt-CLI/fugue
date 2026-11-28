@@ -2,7 +2,6 @@
 
 from typing import ClassVar
 
-from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widget import Widget
@@ -12,6 +11,7 @@ from fugue.cli.tui.action.ask import AskAction
 from fugue.cli.tui.action.base import Action
 from fugue.cli.tui.action.chat import ChatAction
 from fugue.cli.tui.action.select import SelectAction
+from fugue.cli.views.markdown import MarkdownBody
 from fugue.core.reporting import Answer, Ask, Chat, Question, Select
 
 
@@ -90,7 +90,7 @@ class ActionWindow(Vertical):
         self.query_one("#action-text", Label).update(question.text)
         body = self.query_one("#action-body", VerticalScroll)
         body.display = bool(question.body)
-        self.query_one("#action-body Static", Static).update(Markdown(question.body))
+        self.query_one("#action-body Static", Static).update(MarkdownBody(question.body))
         area = self.query_one("#action-area", Vertical)
         await area.remove_children()
         await area.mount(action)

@@ -490,6 +490,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pygit2" },
     { name = "rich" },
+    { name = "termaid" },
     { name = "textual" },
     { name = "tomlkit" },
     { name = "typer" },
@@ -513,6 +514,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.16.3,<3" },
     { name = "pygit2", specifier = ">=1.21.0,<1.22" },
     { name = "rich", specifier = ">=15.0.0,<16" },
+    { name = "termaid", specifier = ">=0.14.1,<0.15" },
     { name = "textual", specifier = ">=8.2.8,<9" },
     { name = "tomlkit", specifier = ">=0.15.3,<0.16" },
     { name = "typer", specifier = ">=0.29.3" },
@@ -1931,6 +1933,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/48/bb/3d8757f21e9a53d9035c9eb039a777047139a16bfdbedfc7a58241c3d914/starlette-1.10.0.tar.gz", hash = "sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b", size = 2734356, upload-time = "2026-10-24T15:04:12.342Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/2e/947cfe02def9371c07cd5bf5b6b61c829e9aecb9904db02a66cfafbc1eec/starlette-1.10.0-py3-none-any.whl", hash = "sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4", size = 80571, upload-time = "2026-10-24T15:04:10.371Z" },
+]
+
+[[package]]
+name = "termaid"
+version = "0.14.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/8e/f8265c9229f5b1fd80e0b8af1fa09495c822048d434bbf011276686fabf9/termaid-0.14.1.tar.gz", hash = "sha256:7cfe898cea57ba647a1ac172207620a6c80ab0d5ca2418e2b7c97f0c31c68814", size = 362575, upload-time = "2026-11-25T18:56:43.101Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/dc/d58e63b99906dcfee4dc4b8bd5d0d4798db648b6c8052353752ff29f2e33/termaid-0.14.1-py3-none-any.whl", hash = "sha256:53a8a2f26c2f439ef5a155fb63a24868f4766b839624029270f63f9c3cee0a68", size = 216905, upload-time = "2026-11-25T18:56:41.723Z" },
 ]
 
 [[package]]

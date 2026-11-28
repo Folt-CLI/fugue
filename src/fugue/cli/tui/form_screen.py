@@ -1,12 +1,12 @@
 """The window a form is filled in: its own screen over the main one."""
 
-from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Static
 
 from fugue.cli.tui.action import Action, FormAction
+from fugue.cli.views.markdown import MarkdownBody
 from fugue.core.reporting import Answer, Form
 
 
@@ -21,7 +21,7 @@ class FormScreen(ModalScreen[Answer]):
     def compose(self) -> ComposeResult:
         with Vertical(id="form-window"):
             if self._form.body:
-                yield Static(Markdown(self._form.body), id="form-intro")
+                yield Static(MarkdownBody(self._form.body), id="form-intro")
             yield FormAction(self._form)
         yield Footer()
 

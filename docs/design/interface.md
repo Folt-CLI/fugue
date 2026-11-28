@@ -103,6 +103,18 @@ The developer: "we need to give the agents tools to interact with the user", and
 - `PERMISSION`: the question only asks leave to go on. An automatic run answers it with its default, so such a question must default to yes. The developer: "We need a tag on questions, so that anything that is purely a permission can get skipped by this."
 - `HOLD`: the run waits on the question quietly. The screen does not open it by itself, and the developer calls it up with `r`.
 
+## Diagrams
+
+**Built.** Flows are Mermaid text, in a fenced block, and Mermaid is the single source. The developer's first thought was Mermaid, and the question was how far it is supported.
+
+- **GitHub** draws a fenced `mermaid` block itself in issues, discussions, pull requests, wikis and Markdown files. GitHub's documentation does not state which Mermaid version it runs. It says to post a block containing only `info` to find out, which is not done yet. Third-party Mermaid plugins can cause errors. A client that reads the ticket through the API gets the text and not a picture, which is what Fugue stores.
+- **The terminal** draws the same text with `termaid` (0.14.1, MIT, pure Python, no dependencies, 18 diagram types), added as a dependency after the developer ran it on `flows.md` and it loaded. `MarkdownBody` in `cli/views/markdown.py` splits a body at its Mermaid blocks, so prose goes through Rich's Markdown as before and each diagram is drawn as text. It is used for ticket bodies, question bodies, form bodies and the headless output.
+- **Fit.** A diagram is drawn compactly, with no empty lines inside the boxes, and the spacing and label widths are tightened step by step until it fits the window. Squeezing past that only garbles the lines, so a diagram that still does not fit, or cannot be read, is shown as its source with a note to hide the checklist (`c`) or read it on GitHub. A window is laid out again when it is resized.
+- **A safe subset** for the agents: `flowchart TD`, `stateDiagram-v2` and `sequenceDiagram`, short labels, about 20 nodes, no links, click handlers or styling. This is in the logic agent's prompt and the logic template.
+- **Open.** The Mermaid version on GitHub. A syntax check that the text is valid for GitHub's Mermaid and not only for `termaid`: the real check needs Mermaid's own command line with a browser, which is heavy.
+
+Alternatives considered and dropped: diagrams drawn by hand in ASCII by the agent (error-prone, and a second copy of the same information), PlantUML, Graphviz and D2 (GitHub does not draw them in issues), and images or SVG (an upload, and not text).
+
 ## Run states
 
 The developer: "There is 3 states: Running, Stopped, Finished. When stopped i can click R to bring up the question i clicked NO to, i can continue clicking No as many times as i want, the only time we mark a Finished run is if it finished OR if we force finish it outside with a command (we dont have this yet its for later). There will also be other ways to stop a run so that is also something you need to keep in mind."

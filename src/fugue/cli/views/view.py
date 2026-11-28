@@ -6,10 +6,11 @@ from typing import ClassVar
 
 from rich import box
 from rich.console import Console, Group, RenderableType
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+from fugue.cli.views.markdown import MarkdownBody
 
 
 class View:
@@ -75,7 +76,7 @@ class View:
 
     @staticmethod
     def _body(text: str) -> RenderableType:
-        return Markdown(text) if text.strip() else Text("No description.", style="dim")
+        return MarkdownBody(text) if text.strip() else Text("No description.", style="dim")
 
     @staticmethod
     def _chip(name: str, color: str | None = None) -> Text:

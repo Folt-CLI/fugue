@@ -23,6 +23,16 @@ Make flows and diagrams the centre of it. A reader should see how it works befor
 
 For a bug, the logic explains the gap: which case the current behaviour does not cover, what should happen instead, and one or two ways the fix could work as examples.
 
+## Draw diagrams that work in both places
+
+The same Mermaid text is drawn by GitHub on the ticket and as text in a terminal window about 60 to 110 columns wide, so write it for both.
+
+- Use only `flowchart TD`, `stateDiagram-v2` and `sequenceDiagram`. Prefer top-down to left-to-right, because a terminal is wide enough for few columns of boxes.
+- Keep each label to a few words, and each diagram to about 20 nodes. Split a larger flow into two diagrams, each with a short sentence saying what it shows.
+- Give nodes simple ids (`A`, `B`, or one word) and put the words in the label.
+- Leave out links, click handlers, styling, notes with Markdown, and anything that is not plain text in a label.
+- A decision's branches carry their answer on the edge (`-- yes -->`), and a loop goes back with an edge and not a second copy of the node.
+
 ## Versions
 
 Offer a few versions of the logic when there is a real choice about behaviour, and one when one approach is clearly right. Do not invent a second version to have one.

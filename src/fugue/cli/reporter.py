@@ -2,10 +2,10 @@
 
 import typer
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.status import Status
 
 from fugue.cli.views import TicketView, WorkView
+from fugue.cli.views.markdown import MarkdownBody
 from fugue.core.reporting import (
     AgentFinished,
     AgentStarted,
@@ -101,7 +101,7 @@ class RichReporter(Reporter):
         """Ask on the terminal. Giving up (Ctrl-C, or no input left) stops the flow."""
         self._stop()
         if question.body:
-            self._console.print(Markdown(question.body))
+            self._console.print(MarkdownBody(question.body))
         try:
             match question:
                 case Ask():

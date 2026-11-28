@@ -2,7 +2,6 @@
 
 from typing import ClassVar
 
-from rich.markdown import Markdown
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -14,6 +13,7 @@ from fugue.cli.tui.action.ask import AskAction
 from fugue.cli.tui.action.base import Action
 from fugue.cli.tui.action.chat import ChatAction
 from fugue.cli.tui.action.select import SelectAction
+from fugue.cli.views.markdown import MarkdownBody
 from fugue.core.reporting import Answer, Ask, Chat, Form, Question, Select
 
 
@@ -51,7 +51,7 @@ class FormAction(Action[Form]):
                 with Vertical(classes="form-field", id=f"form-field-{index}"):
                     yield Label(field.text, classes="form-question")
                     if field.body:
-                        yield Static(Markdown(field.body), classes="form-body")
+                        yield Static(MarkdownBody(field.body), classes="form-body")
                     yield action
         with Horizontal(id="form-actions"):
             yield Button(self.question.submit, id="form-submit")
